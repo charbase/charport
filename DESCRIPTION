@@ -1,0 +1,24 @@
+Package: charport
+Title: Interconnect for ALTREP Character Vector Backends
+Version: 0.0.0.9000
+Date: 2026-06-10
+Authors@R: c(
+    person("Travers", "Ching", email = "traversc@gmail.com", role = c("aut", "cre", "cph")))
+Maintainer: Travers Ching <traversc@gmail.com>
+Description: Infrastructure for ALTREP character vectors: a reference
+    ALTREP string class ('charvec') backed by stable memory slices with a
+    parallel-constructible builder, a runtime registration interface for
+    third-party ALTREP string backends, and a common zero-copy read path
+    so consumer packages can iterate over any character vector with a
+    single code path. Writable interop (mutating another package's
+    backend through a generic interface) is out of scope.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Suggests:
+    knitr, rmarkdown
+VignetteBuilder: knitr
+Biarch: true
+Depends: R (>= 3.6.0)
+URL: https://github.com/traversc/charport
+BugReports: https://github.com/traversc/charport/issues
+Config/roxygen2/version: 8.0.0

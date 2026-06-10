@@ -1,0 +1,13 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^\.claude$
+^\.github$
+^\.vscode$
+^local$
+^.*\.tar\.gz$
+^charport\.Rcheck$
+^benchmark_results$
+^LICENSE\.md$
+^Makefile$
+^inst/extra$
+^scratch$
