@@ -2,6 +2,9 @@
 #define CHARPORT_INTERNAL_CHARVEC_STORE_H
 
 #include "base.h"
+#include <algorithm>
+#include <cstring>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -9,15 +12,27 @@
 //
 // Records are strview-shaped: storage is a `records` array (one
 // charport_strview per element -- the record type IS the ABI element type, so
-// the registered get_strview is `return records[i]`) plus `slices`: stable
+// the registered get_strview is `return records[i]`). It is a fixed-size owning
+// array (strview_array): allocated once at the element count and only assigned
+// by index, so it carries no capacity word -- 16 bytes, no spare per vector
+// (the large-list-of-small-vectors case). Payload lives in `slices`: stable
 // memory blocks, bump-allocated, geometric growth capped per block. Blocks
 // never move on append, so record pointers are stable under growth.
 //
+// Slices are an intrusive singly-linked chain rather than a vector of owning
+// pointers: each block is `new char[slice_header_bytes() + capacity]`, its
+// first slice_header_bytes() bytes hold the next-block pointer and the payload
+// starts at slice_payload(block). The store keeps only an 8-byte head, which is
+// also the current bump block (head == current invariant: new blocks prepend).
+// This costs manual lifetime management (free_slices in the destructor, the
+// hand-written moves below) in exchange for one fewer allocation per vector and
+// O(1) slice bookkeeping regardless of block count.
+//
 // charvec_shard is for multi-threaded construction (the caller brings the
-// threading framework): shards share one records vector but own private
-// slices, merged by block-move via the
-// charvec_data(std::vector<charport_strview>&&, Shards&) constructor. Each
-// record index must be written by exactly one shard, exactly once.
+// threading framework): shards point at one shared records array but own
+// private slice chains, spliced in (no payload copy) by the
+// charvec_data(strview_array&&, Shards&) constructor. Each record index must be
+// written by exactly one shard, exactly once.
 //
 // Slice size growth:
 //   The initial slice size depends on the initialized vector length.
@@ -58,6 +73,34 @@ constexpr size_t compact_dead_threshold() noexcept { return 1U << 20; }    // 1 
 constexpr size_t slice_alignment() noexcept { return 64; }
 constexpr size_t vector_len_scale() noexcept { return 4; }
 
+// Intrusive slice chain: each block reserves its first slice_header_bytes() for
+// the next-block pointer; the payload follows. The link is read/written through
+// memcpy so it is alignment- and aliasing-clean.
+constexpr size_t slice_header_bytes() noexcept { return sizeof(char *); }
+
+inline char * slice_next(char * block) noexcept {
+  char * nxt;
+  std::memcpy(&nxt, block, sizeof(nxt));
+  return nxt;
+}
+
+inline void slice_set_next(char * block, char * nxt) noexcept {
+  std::memcpy(block, &nxt, sizeof(nxt));
+}
+
+inline char * slice_payload(char * block) noexcept {
+  return block + slice_header_bytes();
+}
+
+// Walk an intrusive slice chain, freeing every block. Safe on nullptr.
+inline void free_slice_chain(char * head) noexcept {
+  while(head != nullptr) {
+    char * next = slice_next(head);
+    delete[] head;
+    head = next;
+  }
+}
+
 // shared pointer target for all zero-length strings
 inline const char * empty_data() noexcept {
   static const char empty = '\0';
@@ -80,40 +123,119 @@ inline size_t initial_slice_heuristic(size_t vector_len) noexcept {
   return std::min(std::max(min_multi_string_slice_bytes(), scaled), max_initial_slice_bytes());
 }
 
+// Fixed-size owning array of records. Allocated once at the store's element
+// count and only assigned by index -- no capacity word, no growth -- so it is
+// 16 bytes against std::vector's 24 and carries no spare bytes per vector. The
+// read API mirrors the std::vector slice the store used to expose, so call
+// sites stay `records.size()` / `records[i]` / range-for.
+struct strview_array {
+  std::unique_ptr<charport_strview[]> data_;
+  size_t n_;
+
+  strview_array() noexcept : data_(), n_(0) {}
+
+  explicit strview_array(size_t n) : data_(n ? new charport_strview[n] : nullptr), n_(n) {
+    for(size_t i = 0; i < n; ++i) {
+      data_[i] = na_record();
+    }
+  }
+
+  strview_array(const strview_array & other)
+    : data_(other.n_ ? new charport_strview[other.n_] : nullptr), n_(other.n_) {
+    std::copy(other.data_.get(), other.data_.get() + n_, data_.get());
+  }
+
+  strview_array & operator=(const strview_array & other) {
+    strview_array tmp(other);
+    *this = std::move(tmp);
+    return *this;
+  }
+
+  strview_array(strview_array && other) noexcept : data_(std::move(other.data_)), n_(other.n_) {
+    other.n_ = 0;
+  }
+
+  strview_array & operator=(strview_array && other) noexcept {
+    data_ = std::move(other.data_);
+    n_ = other.n_;
+    other.n_ = 0;
+    return *this;
+  }
+
+  size_t size() const noexcept { return n_; }
+  charport_strview * data() noexcept { return data_.get(); }
+  const charport_strview * data() const noexcept { return data_.get(); }
+  charport_strview & operator[](size_t i) noexcept { return data_[i]; }
+  const charport_strview & operator[](size_t i) const noexcept { return data_[i]; }
+  charport_strview * begin() noexcept { return data_.get(); }
+  charport_strview * end() noexcept { return data_.get() + n_; }
+  const charport_strview * begin() const noexcept { return data_.get(); }
+  const charport_strview * end() const noexcept { return data_.get() + n_; }
+};
+
 struct charvec_shard {
-  std::vector<std::unique_ptr<char[]>> slices;
-  std::vector<charport_strview> * records;
+  char * slice_head;                 // intrusive chain head == current bump block
+  charport_strview * records;        // non-owning, shared across shards
+  size_t n_records;
   size_t allocated_bytes;
   uint32_t current_slice_used;
   uint32_t current_slice_capacity;
 
-  charvec_shard() :
-    slices(),
+  charvec_shard() noexcept :
+    slice_head(nullptr),
     records(nullptr),
+    n_records(0),
     allocated_bytes(0),
     current_slice_used(0),
     current_slice_capacity(0) {}
 
-  explicit charvec_shard(std::vector<charport_strview> & records) :
-    slices(),
-    records(&records),
+  charvec_shard(charport_strview * records, size_t n) noexcept :
+    slice_head(nullptr),
+    records(records),
+    n_records(n),
     allocated_bytes(0),
     current_slice_used(0),
     current_slice_capacity(0) {}
 
   charvec_shard(const charvec_shard &) = delete;
   charvec_shard & operator=(const charvec_shard &) = delete;
-  charvec_shard(charvec_shard &&) noexcept = default;
-  charvec_shard & operator=(charvec_shard &&) noexcept = default;
+
+  charvec_shard(charvec_shard && other) noexcept :
+    slice_head(other.slice_head),
+    records(other.records),
+    n_records(other.n_records),
+    allocated_bytes(other.allocated_bytes),
+    current_slice_used(other.current_slice_used),
+    current_slice_capacity(other.current_slice_capacity) {
+    other.slice_head = nullptr;
+  }
+
+  charvec_shard & operator=(charvec_shard && other) noexcept {
+    if(this != &other) {
+      free_slice_chain(slice_head);
+      slice_head = other.slice_head;
+      records = other.records;
+      n_records = other.n_records;
+      allocated_bytes = other.allocated_bytes;
+      current_slice_used = other.current_slice_used;
+      current_slice_capacity = other.current_slice_capacity;
+      other.slice_head = nullptr;
+    }
+    return *this;
+  }
+
+  ~charvec_shard() { free_slice_chain(slice_head); }
 
   size_t next_regular_slice_size() const noexcept {
-    const size_t initial = initial_slice_heuristic(records == nullptr ? 0 : records->size());
+    const size_t initial = initial_slice_heuristic(n_records);
     const size_t grown = round_up(std::max(initial, allocated_bytes / 2), slice_alignment());
     return std::min(grown, max_slice_bytes());
   }
 
   void allocate_slice(uint32_t capacity) {
-    slices.emplace_back(new char[capacity]);
+    char * block = new char[slice_header_bytes() + capacity];
+    slice_set_next(block, slice_head);  // prepend; head == current bump block
+    slice_head = block;
     current_slice_used = 0;
     current_slice_capacity = capacity;
   }
@@ -122,11 +244,11 @@ struct charvec_shard {
     if(len == 0) {
       return const_cast<char*>(empty_data());
     }
-    if(slices.empty() || current_slice_capacity - current_slice_used < len) {
+    if(slice_head == nullptr || current_slice_capacity - current_slice_used < len) {
       const size_t next_size = round_up(std::max(next_regular_slice_size(), static_cast<size_t>(len)), slice_alignment());
       allocate_slice(checked_u32(next_size, "slice size"));
     }
-    char * dest = slices.back().get() + current_slice_used;
+    char * dest = slice_payload(slice_head) + current_slice_used;
     current_slice_used += len;
     allocated_bytes += static_cast<size_t>(len);
     return dest;
@@ -136,7 +258,7 @@ struct charvec_shard {
     if(records == nullptr) {
       throw std::runtime_error("charvec_shard has no records");
     }
-    if(idx >= records->size()) {
+    if(idx >= n_records) {
       throw std::runtime_error("charvec_shard assignment out of bounds");
     }
     if(!check_r_string_len(len)) {
@@ -144,15 +266,15 @@ struct charvec_shard {
     }
     const uint32_t stored_len = static_cast<uint32_t>(len);
     if(enc == charport_enc::CE_NA) {
-      (*records)[idx] = na_record();
+      records[idx] = na_record();
       return nullptr;
     }
     if(stored_len == 0) {
-      (*records)[idx] = empty_record(enc);
+      records[idx] = empty_record(enc);
       return const_cast<char*>(empty_data());
     }
     char * dest = allocate_bytes(stored_len);
-    (*records)[idx] = make_strview(dest, stored_len, enc);
+    records[idx] = make_strview(dest, stored_len, enc);
     return dest;
   }
 
@@ -168,8 +290,8 @@ struct charvec_shard {
 };
 
 struct charvec_data {
-  std::vector<std::unique_ptr<char[]>> slices;
-  std::vector<charport_strview> records;
+  char * slice_head;                 // intrusive chain head == current bump block
+  strview_array records;
   size_t allocated_bytes;
   size_t dead_bytes;
   uint32_t current_slice_used;
@@ -191,7 +313,9 @@ struct charvec_data {
   }
 
   void allocate_slice(uint32_t capacity) {
-    slices.emplace_back(new char[capacity]);
+    char * block = new char[slice_header_bytes() + capacity];
+    slice_set_next(block, slice_head);  // prepend; head == current bump block
+    slice_head = block;
     current_slice_used = 0;
     current_slice_capacity = capacity;
   }
@@ -200,7 +324,7 @@ struct charvec_data {
     if(len == 0) {
       return const_cast<char*>(empty_data());
     }
-    if(slices.empty()) {
+    if(slice_head == nullptr) {
       const size_t next_size = round_up(
         std::max(initial_slice_heuristic(records.size()), static_cast<size_t>(len)),
         slice_alignment()
@@ -210,7 +334,7 @@ struct charvec_data {
       const size_t next_size = round_up(std::max(next_regular_slice_size(), static_cast<size_t>(len)), slice_alignment());
       allocate_slice(checked_u32(next_size, "slice size"));
     }
-    char * dest = slices.back().get() + current_slice_used;
+    char * dest = slice_payload(slice_head) + current_slice_used;
     current_slice_used += len;
     allocated_bytes += static_cast<size_t>(len);
     return dest;
@@ -227,8 +351,21 @@ struct charvec_data {
     return dead_bytes >= ((live + 1) / 2);
   }
 
-  charvec_data() :
-    slices(),
+  void free_slices() noexcept {
+    free_slice_chain(slice_head);
+    slice_head = nullptr;
+  }
+
+  size_t slice_count() const noexcept {
+    size_t n = 0;
+    for(char * block = slice_head; block != nullptr; block = slice_next(block)) {
+      ++n;
+    }
+    return n;
+  }
+
+  charvec_data() noexcept :
+    slice_head(nullptr),
     records(),
     allocated_bytes(0),
     dead_bytes(0),
@@ -236,7 +373,7 @@ struct charvec_data {
     current_slice_capacity(0) {}
 
   explicit charvec_data(size_t len) : charvec_data() {
-    records.resize(len, na_record());
+    records = strview_array(len);
   }
 
   // initial_slice_size > 0 preallocates the first slice (rounded up to
@@ -244,8 +381,7 @@ struct charvec_data {
   // honored here and deliberately not stored: the store is per-vector
   // overhead (think a large list of small string vectors), so it carries
   // no field whose only job is remembering a construction argument.
-  charvec_data(size_t len, size_t initial_slice_size) : charvec_data() {
-    records.resize(len, na_record());
+  charvec_data(size_t len, size_t initial_slice_size) : charvec_data(len) {
     const size_t initial = normalize_initial_slice_size(initial_slice_size);
     if(initial > 0) {
       allocate_slice(static_cast<uint32_t>(initial));
@@ -256,7 +392,7 @@ struct charvec_data {
   // slice for all of it instead of replaying the growth heuristic record by
   // record (a compaction for free; falls back to growth in the >4 GiB case).
   charvec_data(const charvec_data & other) : charvec_data() {
-    records.resize(other.records.size(), na_record());
+    records = strview_array(other.records.size());
     size_t live = 0;
     for(const auto & rec : other.records) {
       if(!rec.is_na()) {
@@ -282,63 +418,80 @@ struct charvec_data {
   }
 
   // Merge sharded construction output: take ownership of every shard's slice
-  // blocks without copying payload. The shard with the most remaining tail
-  // capacity is appended last so the merged store keeps the roomiest tail.
+  // chain without copying payload. The shard with the most remaining tail
+  // capacity becomes the merged head (head == current bump block invariant) so
+  // the store keeps bumping into the roomiest tail; the rest are spliced after.
   template<typename Shards>
-  charvec_data(std::vector<charport_strview> && source_records, Shards & shards) :
-    slices(),
+  charvec_data(strview_array && source_records, Shards & shards) :
+    slice_head(nullptr),
     records(std::move(source_records)),
     allocated_bytes(0),
     dead_bytes(0),
     current_slice_used(0),
     current_slice_capacity(0) {
-    bool have_best = false;
+    charvec_shard * best = nullptr;
     uint32_t best_remaining = 0;
-    const void * best_shard = nullptr;
     for(auto & shard : shards) {
-      if(shard.slices.empty()) {
-        continue;
-      }
-      const uint32_t remaining = shard.current_slice_capacity - shard.current_slice_used;
-      if(!have_best || remaining > best_remaining) {
-        have_best = true;
-        best_remaining = remaining;
-        best_shard = static_cast<const void*>(&shard);
-      }
-    }
-
-    auto append_shard = [&](charvec_shard & shard) {
-      if(shard.slices.empty()) {
-        return;
+      if(shard.slice_head == nullptr) {
+        continue;  // empty/NA-only shards contribute no bytes
       }
       allocated_bytes += shard.allocated_bytes;
-      for(auto & slice : shard.slices) {
-        slices.push_back(std::move(slice));
+      const uint32_t remaining = shard.current_slice_capacity - shard.current_slice_used;
+      if(best == nullptr || remaining > best_remaining) {
+        best = &shard;
+        best_remaining = remaining;
       }
-      current_slice_used = shard.current_slice_used;
-      current_slice_capacity = shard.current_slice_capacity;
-    };
+    }
+    if(best != nullptr) {
+      current_slice_used = best->current_slice_used;
+      current_slice_capacity = best->current_slice_capacity;
+    }
 
+    // concatenate: best chain first (its head is our head/current block), then
+    // the rest; each shard donates its chain and is emptied so its destructor
+    // does not free what we now own.
+    char * tail = nullptr;
+    auto splice = [&](charvec_shard & shard) {
+      char * head = shard.slice_head;
+      if(head == nullptr) {
+        return;
+      }
+      shard.slice_head = nullptr;
+      if(slice_head == nullptr) {
+        slice_head = head;
+      } else {
+        slice_set_next(tail, head);
+      }
+      char * block = head;
+      while(slice_next(block) != nullptr) {
+        block = slice_next(block);
+      }
+      tail = block;
+    };
+    if(best != nullptr) {
+      splice(*best);
+    }
     for(auto & shard : shards) {
-      if(have_best && static_cast<const void*>(&shard) == best_shard) {
+      if(&shard == best) {
         continue;
       }
-      append_shard(shard);
-    }
-    if(have_best) {
-      for(auto & shard : shards) {
-        if(static_cast<const void*>(&shard) == best_shard) {
-          append_shard(shard);
-          break;
-        }
-      }
-    } else {
-      current_slice_used = 0;
-      current_slice_capacity = 0;
+      splice(shard);
     }
   }
 
-  charvec_data(charvec_data &&) noexcept = default;
+  charvec_data(charvec_data && other) noexcept :
+    slice_head(other.slice_head),
+    records(std::move(other.records)),
+    allocated_bytes(other.allocated_bytes),
+    dead_bytes(other.dead_bytes),
+    current_slice_used(other.current_slice_used),
+    current_slice_capacity(other.current_slice_capacity) {
+    other.slice_head = nullptr;
+    other.allocated_bytes = 0;
+    other.dead_bytes = 0;
+    other.current_slice_used = 0;
+    other.current_slice_capacity = 0;
+  }
 
   charvec_data & operator=(const charvec_data & other) {
     if(this == &other) {
@@ -349,7 +502,25 @@ struct charvec_data {
     return *this;
   }
 
-  charvec_data & operator=(charvec_data &&) noexcept = default;
+  charvec_data & operator=(charvec_data && other) noexcept {
+    if(this != &other) {
+      free_slices();
+      slice_head = other.slice_head;
+      records = std::move(other.records);
+      allocated_bytes = other.allocated_bytes;
+      dead_bytes = other.dead_bytes;
+      current_slice_used = other.current_slice_used;
+      current_slice_capacity = other.current_slice_capacity;
+      other.slice_head = nullptr;
+      other.allocated_bytes = 0;
+      other.dead_bytes = 0;
+      other.current_slice_used = 0;
+      other.current_slice_capacity = 0;
+    }
+    return *this;
+  }
+
+  ~charvec_data() { free_slices(); }
 
   size_t size() const noexcept {
     return records.size();
@@ -359,18 +530,9 @@ struct charvec_data {
     return records[idx];
   }
 
-  void reserve_records(size_t n) {
-    records.reserve(n);
-  }
-
-  void resize(size_t n) {
-    // shrinking drops records without retiring their bytes; grow-only in practice
-    records.resize(n, na_record());
-  }
-
   void clear() {
-    slices.clear();
-    records.clear();
+    free_slices();
+    records = strview_array();
     allocated_bytes = 0;
     dead_bytes = 0;
     current_slice_used = 0;
@@ -391,7 +553,7 @@ struct charvec_data {
           throw std::runtime_error("charvec store accounting corrupted (live record with all bytes dead)");
         }
       }
-      slices.clear();
+      free_slices();
       allocated_bytes = 0;
       dead_bytes = 0;
       current_slice_used = 0;
@@ -399,8 +561,10 @@ struct charvec_data {
       return;
     }
 
-    std::vector<charport_strview> compacted_records(records);
-    std::vector<std::unique_ptr<char[]>> compacted_slices;
+    strview_array compacted_records(records);
+    // exception-safe staging: blocks stay RAII-owned until the whole rewrite
+    // succeeds, then they are released into the intrusive chain
+    std::vector<std::unique_ptr<char[]>> blocks;
     uint32_t last_block_size = 0;
     size_t total_emitted = 0;
     const size_t max_block_bytes = static_cast<size_t>(std::numeric_limits<uint32_t>::max());
@@ -410,8 +574,8 @@ struct charvec_data {
         return;
       }
       uint32_t compacted_size = checked_u32(block_size, "compacted slice size");
-      std::unique_ptr<char[]> slice(new char[compacted_size]);
-      char * write_ptr = slice.get();
+      std::unique_ptr<char[]> block(new char[slice_header_bytes() + compacted_size]);
+      char * write_ptr = slice_payload(block.get());
       char * block_start = write_ptr;
       for(size_t i = start; i < end; ++i) {
         const auto & rec = records[i];
@@ -425,7 +589,7 @@ struct charvec_data {
       if(static_cast<size_t>(write_ptr - block_start) != block_size) {
         throw std::runtime_error("charvec store compact size mismatch");
       }
-      compacted_slices.push_back(std::move(slice));
+      blocks.push_back(std::move(block));
       last_block_size = compacted_size;
       total_emitted += block_size;
     };
@@ -447,7 +611,16 @@ struct charvec_data {
     }
     emit_block(block_start, block_end, block_size);
 
-    slices = std::move(compacted_slices);
+    // commit: release the staged blocks into the chain. Prepending in emit
+    // order leaves the last-emitted block at the head -- the current bump block.
+    free_slices();
+    char * head = nullptr;
+    for(auto & block : blocks) {
+      char * raw = block.release();
+      slice_set_next(raw, head);
+      head = raw;
+    }
+    slice_head = head;
     records = std::move(compacted_records);
     // total_emitted == sum(records[i].len): exact by construction, where the
     // pre-compaction accounting identity could only promise it indirectly
@@ -460,24 +633,6 @@ struct charvec_data {
       current_slice_used = last_block_size;
       current_slice_capacity = last_block_size;
     }
-  }
-
-  void append(const char * ptr, size_t len, charport_enc enc) {
-    if(!check_r_string_len(len)) {
-      throw std::runtime_error("stored string length exceeds R string size");
-    }
-    const uint32_t stored_len = static_cast<uint32_t>(len);
-    if(enc == charport_enc::CE_NA || ptr == nullptr) {
-      records.emplace_back(na_record());
-      return;
-    }
-    if(stored_len == 0) {
-      records.emplace_back(empty_record(enc));
-      return;
-    }
-    char * dest = allocate_bytes(stored_len);
-    std::memcpy(dest, ptr, static_cast<size_t>(stored_len));
-    records.emplace_back(make_strview(dest, stored_len, enc));
   }
 
   char * reserve(size_t idx, size_t len, charport_enc enc) {

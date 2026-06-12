@@ -164,8 +164,8 @@ extern "C" SEXP C_bench_sumlen_reader(SEXP x) {
 
 // Construction baseline: mkCharLenCE + SET_STRING_ELT into a fresh STRSXP.
 // Input comes through a reader so all construction benches read identically.
-// Timing this is only honest while the strings are NOT already interned in
-// R's string cache; benchmark.R runs each repetition in a fresh R session
+// This timing is comparable only while the strings are not already interned
+// in R's string cache; benchmark.R runs each repetition in a fresh R session
 // (gc alone is not enough: the cache keeps its grown table afterwards).
 extern "C" SEXP C_bench_build_strsxp(SEXP x) {
   cp::Reader r(x);

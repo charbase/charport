@@ -135,7 +135,7 @@ SEXP C_charvec_stats(SEXP x) {
       SET_VECTOR_ELT(out, 0, Rf_ScalarReal(static_cast<double>(store.records.size())));
       SET_VECTOR_ELT(out, 1, Rf_ScalarReal(static_cast<double>(store.allocated_bytes)));
       SET_VECTOR_ELT(out, 2, Rf_ScalarReal(static_cast<double>(store.dead_bytes)));
-      SET_VECTOR_ELT(out, 3, Rf_ScalarReal(static_cast<double>(store.slices.size())));
+      SET_VECTOR_ELT(out, 3, Rf_ScalarReal(static_cast<double>(store.slice_count())));
       SET_VECTOR_ELT(out, 4, Rf_ScalarReal(static_cast<double>(store.current_slice_used)));
       SET_VECTOR_ELT(out, 5, Rf_ScalarReal(static_cast<double>(store.current_slice_capacity)));
     }
@@ -225,11 +225,11 @@ SEXP C_charvec_build_sharded(SEXP chunks) {
       throw std::runtime_error("sharded length exceeds R_xlen_t");
     }
 
-    std::vector<charport_strview> records(total, cpi::na_record());
+    cpi::strview_array records(total);
     std::vector<cpi::charvec_shard> shards;
     shards.reserve(static_cast<size_t>(n_chunks));
     for(R_xlen_t j = 0; j < n_chunks; ++j) {
-      shards.emplace_back(records);
+      shards.emplace_back(records.data(), records.size());
     }
 
     size_t offset = 0;

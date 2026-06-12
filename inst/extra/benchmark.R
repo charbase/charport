@@ -101,9 +101,9 @@ ms <- function(thunk) {
 }
 
 # One fresh R session per repetition: ingest in C, time exactly one build.
-# This is the only honest way to benchmark mkCharLenCE on fresh strings;
-# even after gc() the string cache keeps its grown table, so a long-running
-# session stops resembling the session a user actually runs in.
+# A fresh session keeps the mkCharLenCE benchmark on new strings. Even after
+# gc(), the string cache retains its grown table, so later repetitions in one
+# session would measure a different cache state.
 worker_script <- file.path(build_dir, "worker_build_strsxp.R")
 writeLines(c(
   'args <- commandArgs(trailingOnly = TRUE)',

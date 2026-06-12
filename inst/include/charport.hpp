@@ -38,7 +38,7 @@
 // guarded by CHARPORT_ABI_VERSION rather than promised stable
 #include "charport_internal/charvec_store.h"
 
-#define CHARPORT_ABI_VERSION 2
+#define CHARPORT_ABI_VERSION 3
 
 extern "C" {
 
@@ -304,8 +304,7 @@ public:
     if(n < 0) {
       throw std::runtime_error("charvec builder: negative length");
     }
-    records_ = charport::internal::make_unique<std::vector<charport_strview>>(
-      static_cast<size_t>(n), charport::internal::na_record());
+    records_ = charport::internal::strview_array(static_cast<size_t>(n));
   }
 
   Builder(const Builder &) = delete;
@@ -314,12 +313,13 @@ public:
   Builder & operator=(Builder &&) noexcept = default;
 
   // main R thread (or externally synchronized); handles stay valid until
-  // finish() / destruction (deque: slots never move)
+  // finish() / destruction (deque: slots never move). records_'s heap buffer
+  // is move-stable, so shards may point straight into it.
   BuilderShard shard() {
-    if(records_ == nullptr) {
+    if(finished_) {
       throw std::runtime_error("charvec builder: already finished");
     }
-    shards_.emplace_back(*records_);
+    shards_.emplace_back(records_.data(), records_.size());
     return BuilderShard(&shards_.back());
   }
 
@@ -337,7 +337,7 @@ public:
   // merge the shards and wrap the store in a charvec SEXP; single-shot,
   // invalidates every shard handle. Main R thread.
   SEXP finish() {
-    if(records_ == nullptr) {
+    if(finished_) {
       throw std::runtime_error("charvec builder: already finished");
     }
     std::vector<charport::internal::charvec_shard> merged;
@@ -346,8 +346,8 @@ public:
       merged.push_back(std::move(s));
     }
     auto store = charport::internal::make_unique<charport::internal::charvec_data>(
-      std::move(*records_), merged);
-    records_.reset();
+      std::move(records_), merged);
+    finished_ = true;
     shards_.clear();
     serial_ = BuilderShard();
     static charport_charvec_wrap_t wrap =
@@ -363,11 +363,13 @@ private:
     return serial_;
   }
 
-  // records_ lives behind a stable address (shards point into it), keeping
-  // the Builder movable
-  std::unique_ptr<std::vector<charport_strview>> records_;
+  // records_'s heap buffer keeps a stable address across Builder moves (the
+  // unique_ptr inside strview_array moves by pointer), so shards point straight
+  // into it
+  charport::internal::strview_array records_;
   std::deque<charport::internal::charvec_shard> shards_;
   BuilderShard serial_;
+  bool finished_ = false;
 };
 
 } // namespace charvec
