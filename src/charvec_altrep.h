@@ -180,10 +180,11 @@ struct charvec_altrep {
       SEXP data2 = R_altrep_data2(vec);
       if(data2 != R_NilValue) {
         const R_xlen_t n = Rf_xlength(data2);
-        auto out = cpi::make_unique<cpi::charvec_data>(static_cast<size_t>(n));
-        for(R_xlen_t i = 0; i < n; ++i) {
-          cpi::assign_charsxp(*out, static_cast<size_t>(i), STRING_ELT(data2, i));
-        }
+        auto out = cpi::build_charvec(static_cast<size_t>(n), [&](cpi::charvec_shard & ctx) {
+          for(R_xlen_t i = 0; i < n; ++i) {
+            cpi::assign_charsxp(ctx, static_cast<size_t>(i), STRING_ELT(data2, i));
+          }
+        });
         return Make(out.release(), true);
       }
       auto * out = new cpi::charvec_data(Get(vec));
@@ -266,8 +267,9 @@ struct charvec_altrep {
         : static_cast<R_xlen_t>(Get(x).records.size());
 
       // out-of-range and NA subscripts produce NA elements; out records start
-      // NA, so only valid subscripts need a write
-      auto copy_element = [&](cpi::charvec_data & out, size_t out_i, R_xlen_t zero_based) {
+      // NA, so only valid subscripts need a write. Builds go through a transient
+      // shard context (one bump-packed chain) rather than the store directly.
+      auto copy_element = [&](cpi::charvec_shard & out, size_t out_i, R_xlen_t zero_based) {
         if(zero_based < 0 || zero_based >= xlen) {
           return;
         }
@@ -296,38 +298,41 @@ struct charvec_altrep {
           }
         }
 
-        auto out = cpi::make_unique<cpi::charvec_data>(static_cast<size_t>(out_len));
-        R_xlen_t out_i = 0;
-        for(R_xlen_t i = 0; i < xlen; ++i) {
-          const int idx_i = idx[i % idx_len];
-          if(idx_i == TRUE) {
-            copy_element(*out, static_cast<size_t>(out_i++), i);
-          } else if(idx_i == NA_LOGICAL) {
-            ++out_i;  // stays NA
+        auto out = cpi::build_charvec(static_cast<size_t>(out_len), [&](cpi::charvec_shard & ctx) {
+          R_xlen_t out_i = 0;
+          for(R_xlen_t i = 0; i < xlen; ++i) {
+            const int idx_i = idx[i % idx_len];
+            if(idx_i == TRUE) {
+              copy_element(ctx, static_cast<size_t>(out_i++), i);
+            } else if(idx_i == NA_LOGICAL) {
+              ++out_i;  // stays NA
+            }
           }
-        }
+        });
         return Make(out.release(), true);
       }
 
-      const R_xlen_t len = Rf_xlength(indx);
-      auto out = cpi::make_unique<cpi::charvec_data>(static_cast<size_t>(len));
-      if(TYPEOF(indx) == INTSXP) {
-        const int * idx = INTEGER(indx);
-        for(R_xlen_t i = 0; i < len; ++i) {
-          if(idx[i] != NA_INTEGER) {
-            copy_element(*out, static_cast<size_t>(i), static_cast<R_xlen_t>(idx[i]) - 1);
-          }
-        }
-      } else if(TYPEOF(indx) == REALSXP) {
-        const double * idx = REAL(indx);
-        for(R_xlen_t i = 0; i < len; ++i) {
-          if(!ISNAN(idx[i])) {
-            copy_element(*out, static_cast<size_t>(i), static_cast<R_xlen_t>(idx[i]) - 1);
-          }
-        }
-      } else {
+      if(TYPEOF(indx) != INTSXP && TYPEOF(indx) != REALSXP) {
         throw std::runtime_error("invalid indx type in Extract_subset method");
       }
+      const R_xlen_t len = Rf_xlength(indx);
+      auto out = cpi::build_charvec(static_cast<size_t>(len), [&](cpi::charvec_shard & ctx) {
+        if(TYPEOF(indx) == INTSXP) {
+          const int * idx = INTEGER(indx);
+          for(R_xlen_t i = 0; i < len; ++i) {
+            if(idx[i] != NA_INTEGER) {
+              copy_element(ctx, static_cast<size_t>(i), static_cast<R_xlen_t>(idx[i]) - 1);
+            }
+          }
+        } else {
+          const double * idx = REAL(indx);
+          for(R_xlen_t i = 0; i < len; ++i) {
+            if(!ISNAN(idx[i])) {
+              copy_element(ctx, static_cast<size_t>(i), static_cast<R_xlen_t>(idx[i]) - 1);
+            }
+          }
+        }
+      });
       return Make(out.release(), true);
     });
   }
@@ -383,42 +388,45 @@ struct charvec_altrep {
         return serialized_state;
       }
       charvec_serialized_layout layout = charvec_parse_serialized(serialized_state);
-      auto ret = cpi::make_unique<cpi::charvec_data>(layout.n);
 
       const unsigned char * size_offset = layout.size_offset;
       const unsigned char * enc_offset = layout.enc_offset;
       const unsigned char * data_offset = layout.data_offset;
 
-      for(size_t i = 0; i < layout.n; ++i) {
-        uint32_t size = 0;
-        std::memcpy(&size, size_offset, sizeof(uint32_t));
-        size_offset += sizeof(uint32_t);
-        if(!cpi::check_r_string_len(size)) {
-          throw std::runtime_error("serialized string size exceeds R string size");
-        }
-        const charport_enc encoding = static_cast<charport_enc>(*enc_offset++);
-        const size_t stored_len = static_cast<size_t>(size);
-        const char * payload = charvec_serialized_payload(data_offset, layout.data_end, stored_len);
-        // store invariant: records hold only what the backend emission policy
-        // allows (ASCII / UTF-8 / ASCII_OR_UTF8 / BYTES / NA); charvec never
-        // writes CE_NATIVE or CE_LATIN1 records, so none are accepted here
-        switch(encoding) {
-        case charport_enc::CE_ASCII:
-        case charport_enc::CE_UTF8:
-        case charport_enc::CE_ASCII_OR_UTF8:
-        case charport_enc::CE_BYTES:
-          ret->assign(i, payload, stored_len, encoding);
-          break;
-        case charport_enc::CE_NA:
-          if(stored_len != 0) {
-            throw std::runtime_error("serialized NA string must have zero length");
+      auto ret = cpi::build_charvec(layout.n, [&](cpi::charvec_shard & ctx) {
+        for(size_t i = 0; i < layout.n; ++i) {
+          uint32_t size = 0;
+          std::memcpy(&size, size_offset, sizeof(uint32_t));
+          size_offset += sizeof(uint32_t);
+          if(!cpi::check_r_string_len(size)) {
+            throw std::runtime_error("serialized string size exceeds R string size");
           }
-          ret->assign(i, nullptr, 0, charport_enc::CE_NA);
-          break;
-        default:
-          throw std::runtime_error("invalid string encoding in serialized_state");
+          const charport_enc encoding = static_cast<charport_enc>(*enc_offset++);
+          const size_t stored_len = static_cast<size_t>(size);
+          const char * payload = charvec_serialized_payload(data_offset, layout.data_end, stored_len);
+          // Untrusted input: accept every encoding a record can legitimately
+          // hold (the store keeps encodings verbatim, so any of these can have
+          // been serialized) and reject only an out-of-range encoding byte.
+          switch(encoding) {
+          case charport_enc::CE_ASCII:
+          case charport_enc::CE_UTF8:
+          case charport_enc::CE_ASCII_OR_UTF8:
+          case charport_enc::CE_LATIN1:
+          case charport_enc::CE_NATIVE:
+          case charport_enc::CE_BYTES:
+            ctx.assign(i, payload, stored_len, encoding);
+            break;
+          case charport_enc::CE_NA:
+            if(stored_len != 0) {
+              throw std::runtime_error("serialized NA string must have zero length");
+            }
+            ctx.assign(i, nullptr, 0, charport_enc::CE_NA);
+            break;
+          default:
+            throw std::runtime_error("invalid string encoding in serialized_state");
+          }
         }
-      }
+      });
 
       if(data_offset != layout.data_end) {
         throw std::runtime_error("serialized_state has trailing bytes");

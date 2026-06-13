@@ -5,11 +5,11 @@
 // Makevars, so charport itself carries none.
 //
 // The parallel-consumer pattern: worker threads read x through copies of
-// the reader POD and write disjoint ranges through their own shards -- no R
-// API off the main thread on either side. Worker exceptions are caught in
-// the worker and re-raised after the join.
+// the reader POD and write disjoint ranges through their own BuilderMT shard
+// index -- no R API off the main thread on either side. Worker exceptions are
+// caught in the worker and re-raised after the join.
 
-#include "charport.hpp"
+#include "charport.h"
 
 #include <stdexcept>
 #include <string>
@@ -50,12 +50,7 @@ SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
       throw std::runtime_error("input reader is not reentrant");
     }
 
-    cp::charvec::Builder b(n);
-    std::vector<cp::charvec::BuilderShard> shards;
-    shards.reserve(static_cast<size_t>(k));
-    for(int j = 0; j < k; ++j) {
-      shards.push_back(b.shard());
-    }
+    cp::charvec::BuilderMT b(n, static_cast<size_t>(k));
 
     const charport_reader raw = r.raw();
     std::vector<std::string> worker_errors(static_cast<size_t>(k));
@@ -64,18 +59,52 @@ SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
     for(int j = 0; j < k; ++j) {
       const R_xlen_t lo = n * j / k;
       const R_xlen_t hi = n * (j + 1) / k;
-      const cp::charvec::BuilderShard shard = shards[static_cast<size_t>(j)];
+      const size_t shard = static_cast<size_t>(j);
       std::string * err = &worker_errors[static_cast<size_t>(j)];
-      threads.emplace_back([raw, shard, lo, hi, err]() {
+      threads.emplace_back([&b, raw, shard, lo, hi, err]() {
         try {
           const cp::Reader worker_reader(raw);  // adopt the POD on the worker
           for(R_xlen_t i = lo; i < hi; ++i) {
-            shard.set(i, worker_reader[i]);
+            b.set(shard, i, worker_reader[i]);  // distinct shard per worker -> no sync
           }
         } catch(const std::exception & e) {
           *err = e.what();
         } catch(...) {
           *err = "unknown C++ exception";
+        }
+      });
+    }
+    for(std::thread & t : threads) {
+      t.join();
+    }
+    for(const std::string & err : worker_errors) {
+      if(!err.empty()) {
+        throw std::runtime_error(err);
+      }
+    }
+    return b.finish();
+  });
+}
+
+// Exercise the catch-join-re-raise path directly: the builder has no encoding
+// policy, so no normal input makes a worker set() throw. One worker throws a
+// std::runtime_error; it must be caught in the worker, surface after the join,
+// and be re-raised as an R error on the main thread.
+SEXP C_consumer_worker_throws(void) {
+  return guarded("worker_throws", [&]() -> SEXP {
+    cp::charvec::BuilderMT b(2, 2);
+    std::vector<std::string> worker_errors(2);
+    std::vector<std::thread> threads;
+    for(int j = 0; j < 2; ++j) {
+      std::string * err = &worker_errors[static_cast<size_t>(j)];
+      threads.emplace_back([&b, j, err]() {
+        try {
+          if(j == 1) {
+            throw std::runtime_error("injected worker failure");
+          }
+          b.set(static_cast<size_t>(j), j, "ok", 2, charport_enc::CE_ASCII);
+        } catch(const std::exception & e) {
+          *err = e.what();
         }
       });
     }

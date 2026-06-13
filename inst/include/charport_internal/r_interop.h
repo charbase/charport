@@ -5,10 +5,16 @@
 // and record -> CHARSXP materialization. Everything here runs on the main R
 // thread only (R API calls throughout).
 //
-// API-status note: uses Rf_getCharCE, Rf_translateCharUTF8, Rf_mkCharLenCE,
-// Rf_charIsASCII (>= 4.5.0), and Rf_xlength on CHARSXPs. All believed to be
-// on the supported-API list after the R 4.4-4.6 non-API cleanup; re-audit
-// against the current classification before the first CRAN release.
+// Encoding policy: the store keeps whatever encoding the input carried -- it
+// does not translate or reject. An incoming CHARSXP is classified to UTF-8,
+// LATIN1, NATIVE, BYTES, ASCII (an unmarked all-< 0x80 string), or NA, stored
+// verbatim, and materialized back to the matching base cetype_t so the
+// encoding mark round-trips unchanged.
+//
+// API-status note: uses Rf_getCharCE, Rf_mkCharLenCE, Rf_charIsASCII
+// (>= 4.5.0), and Rf_xlength on CHARSXPs. All believed to be on the
+// supported-API list after the R 4.4-4.6 non-API cleanup; re-audit against
+// the current classification before the first CRAN release.
 
 #define R_NO_REMAP
 #include <Rinternals.h>
@@ -54,13 +60,15 @@ inline SEXP make_charsxp(const charport_strview & v) {
   return Rf_mkCharLenCE(v.ptr, static_cast<int>(v.len), to_base_encoding(v.enc));
 }
 
-// Classify an incoming CHARSXP (not NA_STRING) against the storage policy:
-// returns CE_ASCII / CE_UTF8 / CE_BYTES for borrowable bytes, or
-// CE_LATIN1 / CE_NATIVE meaning the caller must translate to UTF-8 first.
+// Classify an incoming CHARSXP (not NA_STRING) to the encoding the store will
+// keep, preserving the mark for fidelity: a marked CHARSXP keeps its mark
+// (UTF-8 / LATIN1 / BYTES); an unmarked (native) string is probed and becomes
+// CE_ASCII if all bytes are < 0x80, else CE_NATIVE. R never encoding-marks a
+// pure-ASCII string, so the probe only needs to run on the unmarked branch --
+// and keeping the mark elsewhere means a UTF-8/latin1 string round-trips with
+// its original mark, not collapsed to ASCII. Nothing is translated or rejected.
 inline charport_enc classify_charsxp(SEXP x) {
   switch(Rf_getCharCE(x)) {
-  // pure-ASCII strings are never encoding-marked in R, so a marked CHARSXP
-  // cannot be ASCII -- the ASCII probe only runs for unmarked (native) ones
   case CE_UTF8:
     return charport_enc::CE_UTF8;
   case CE_LATIN1:
@@ -73,31 +81,16 @@ inline charport_enc classify_charsxp(SEXP x) {
   }
 }
 
-// Store a CHARSXP into Store (charvec_data or charvec_shard) at idx,
-// normalizing to the backend emission policy: records are only ever
-// CE_ASCII, CE_UTF8, CE_BYTES, or NA. latin1/native inputs are translated
-// via Rf_translateCharUTF8 (R_alloc scratch, released here via
-// vmaxget/vmaxset; can raise an R error on invalid bytes, so call only where
-// a longjmp is safe).
+// Store a CHARSXP into Store (charvec_data or charvec_shard) at idx, verbatim:
+// the classified encoding is kept as-is, the bytes are borrowed from the
+// CHARSXP (no translation, no allocation, no R error path).
 template <typename Store>
 inline void assign_charsxp(Store & store, size_t idx, SEXP x) {
   if(x == NA_STRING) {
     store.assign(idx, nullptr, 0, charport_enc::CE_NA);
     return;
   }
-  const charport_enc enc = classify_charsxp(x);
-  if(enc == charport_enc::CE_LATIN1 || enc == charport_enc::CE_NATIVE) {
-    const void * vmax = vmaxget();
-    const char * translated = Rf_translateCharUTF8(x);
-    const size_t len = std::strlen(translated);
-    // native input can translate to pure ASCII even when the source bytes weren't
-    const charport_enc out_enc = check_ascii(translated, len)
-      ? charport_enc::CE_ASCII : charport_enc::CE_UTF8;
-    store.assign(idx, translated, len, out_enc);
-    vmaxset(vmax);
-    return;
-  }
-  store.assign(idx, CHAR(x), static_cast<size_t>(Rf_xlength(x)), enc);
+  store.assign(idx, CHAR(x), static_cast<size_t>(Rf_xlength(x)), classify_charsxp(x));
 }
 
 } // namespace internal

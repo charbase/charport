@@ -39,10 +39,17 @@ cp_reader_roundtrip <- function(x) {
 }
 
 # Reader -> Builder -> charvec, no CHARSXPs in between. n_shards = 0 drives
-# the serial Builder::set path; >= 1 partitions into that many BuilderShards
-# over contiguous disjoint ranges (driven serially).
+# the serial cp::charvec::Builder; >= 1 drives cp::charvec::BuilderMT with that
+# many shards over contiguous disjoint ranges (driven serially).
 cp_builder_from_reader <- function(x, n_shards = 1L) {
   .Call(C_cp_builder_from_reader, x, as.integer(n_shards))
+}
+
+# Same rebuild via the zero-copy reserve() path (reserve a buffer per element,
+# memcpy the bytes in) instead of set(). n_shards = 0 uses Builder::reserve,
+# >= 1 uses BuilderMT::reserve. Input must carry emittable encodings.
+cp_builder_reserve <- function(x, n_shards = 1L) {
+  .Call(C_cp_builder_reserve, x, as.integer(n_shards))
 }
 
 # TRUE if the builder error contract holds (set throws on policy/bounds/NA

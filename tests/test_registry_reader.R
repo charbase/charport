@@ -65,7 +65,7 @@ stopifnot(info$n == length(mixed), isTRUE(info$reentrant), info$path == "direct"
 stopifnot(marks_identical(read_all(mixed), mixed))
 
 catn("reader equivalence: charvec is served by its backend")
-ref <- enc2utf8(c(w_utf8[1:20], NA, "", w_latin1[21:40], b))
+ref <- c(w_utf8[1:20], NA, "", w_latin1[21:40], b)   # latin1 kept as latin1
 x <- as_charvec(ref)
 info <- rinfo(x)
 stopifnot(info$n == length(ref), isTRUE(info$reentrant), info$path == "backend")

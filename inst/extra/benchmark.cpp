@@ -4,7 +4,7 @@
 // be optimized away. Timing happens in R around the .Call; one call per
 // run makes the .Call overhead negligible against millions of elements.
 
-#include "charport.hpp"
+#include "charport.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -78,7 +78,7 @@ extern "C" SEXP C_bench_read_lines_charvec(SEXP path_, SEXP na_every_) {
   }
 }
 
-// The status-quo consumer loop: STRING_ELT + R_CHAR + Rf_xlength per
+// The conventional consumer loop: STRING_ELT + R_CHAR + Rf_xlength per
 // element. On ALTREP input, STRING_ELT goes through the Elt method.
 extern "C" SEXP C_bench_string_elt(SEXP x) {
   const R_xlen_t n = Rf_xlength(x);
@@ -189,8 +189,8 @@ extern "C" SEXP C_bench_build_charvec(SEXP x, SEXP n_threads_) {
   const int k = Rf_asInteger(n_threads_);
   const R_xlen_t n = r.size();
   try {
-    cp::charvec::Builder b(n);
     if(k == 0) {
+      cp::charvec::Builder b(n);
       for(R_xlen_t i = 0; i < n; ++i) {
         cp::StrView v = r[i];
         if(v.is_na()) b.set_na(i); else b.set(i, v);
@@ -198,8 +198,7 @@ extern "C" SEXP C_bench_build_charvec(SEXP x, SEXP n_threads_) {
       return b.finish();
     }
     if(!r.reentrant()) Rf_error("reader is not reentrant");
-    std::vector<cp::charvec::BuilderShard> shards;
-    for(int t = 0; t < k; ++t) shards.push_back(b.shard());
+    cp::charvec::BuilderMT b(n, static_cast<size_t>(k));
     const charport_reader raw = r.raw();
     std::vector<std::thread> workers;
     std::vector<std::string> errors(static_cast<size_t>(k));
@@ -208,10 +207,10 @@ extern "C" SEXP C_bench_build_charvec(SEXP x, SEXP n_threads_) {
       workers.emplace_back([&, t, lo, hi]() {
         try {
           cp::Reader wr(raw);
-          const cp::charvec::BuilderShard & sh = shards[static_cast<size_t>(t)];
+          const size_t shard = static_cast<size_t>(t);
           for(R_xlen_t i = lo; i < hi; ++i) {
             cp::StrView v = wr[i];
-            if(v.is_na()) sh.set_na(i); else sh.set(i, v);
+            if(v.is_na()) b.set_na(shard, i); else b.set(shard, i, v);
           }
         } catch(const std::exception & e) {
           errors[static_cast<size_t>(t)] = e.what();

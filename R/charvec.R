@@ -1,8 +1,8 @@
 #' Construct a charvec
 #'
-#' Builds a `charvec` -- charport's reference ALTREP character vector class --
-#' from the given values. A `charvec` is an ordinary character vector to R
-#' code (`typeof(x)` is `"character"`); its strings live as UTF-8/ASCII byte
+#' Builds a `charvec` from the given values. This is charport's reference
+#' ALTREP character vector class and is an ordinary character vector to R code
+#' (`typeof(x)` is `"character"`). Its strings live as UTF-8/ASCII byte
 #' views in stable native memory blocks and are only converted to R's interned
 #' `CHARSXP` strings when something forces materialization.
 #'

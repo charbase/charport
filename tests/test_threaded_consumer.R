@@ -5,7 +5,7 @@
 # toolchain can't build it, skip -- the package's own build is untouched.
 #
 # Workers: each thread reads its range through a copy of the reader POD and
-# writes its own BuilderShard. 2 threads (CRAN core limit).
+# writes its own BuilderMT shard index. 2 threads (CRAN core limit).
 
 suppressPackageStartupMessages(library(charport))
 
@@ -84,9 +84,8 @@ out <- rebuild2(as_charvec(c("a", NA)))
 stopifnot(identical(as.character(out), c("a", NA)))
 
 catn("worker errors are caught, joined, and re-raised")
-latin1_word <- w_latin1[which(Encoding(w_latin1) == "latin1")[1L]]
-expect_error_matching(rebuild2(c("a", latin1_word)),   # direct path surfaces latin1
-                      "threaded_consumer.*encoding")
+worker_throws <- function() .Call("C_consumer_worker_throws")
+expect_error_matching(worker_throws(), "injected worker failure")
 
 catn("repeated threaded builds agree (merge determinism)")
 ref <- as.character(x)

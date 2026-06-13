@@ -7,7 +7,7 @@
 // as the whole-vector kernels: iterating the list elements in order visits
 // the corpus lines in order, so hashes are comparable across all paths.
 
-#include "charport.hpp"
+#include "charport.h"
 
 #include <cstdint>
 #include <vector>
@@ -27,10 +27,12 @@ static SEXP hash_to_sexp_(uint64_t h, R_xlen_t n_na) {
   return out;
 }
 
-// Split the source vector into ceil(n / chunk) charvecs of length <= chunk,
-// one cp::charvec::Builder per output vector. This is the shape a split-like
-// verb produces: many tiny independent charvecs, each paying full per-vector
-// cost (store allocation, ALTREP wrap, external pointer, finalizer).
+// Split the source vector into ceil(n / chunk) charvecs of length <= chunk.
+// This is the shape a split-like verb produces: many tiny independent charvecs,
+// each paying full per-vector cost (store allocation, ALTREP wrap, external
+// pointer, finalizer). One cp::charvec::Builder is reused across all outputs
+// via reset(), matching an as.list workload that reuses the build context
+// rather than reconstructing a Builder per vector.
 extern "C" SEXP C_benchl_build_charvec_list(SEXP x, SEXP chunk_) {
   cp::Reader r(x);
   const R_xlen_t n = r.size();
@@ -39,10 +41,11 @@ extern "C" SEXP C_benchl_build_charvec_list(SEXP x, SEXP chunk_) {
   const R_xlen_t n_out = (n + chunk - 1) / chunk;
   try {
     SEXP out = PROTECT(Rf_allocVector(VECSXP, n_out));
+    cp::charvec::Builder b(0);
     for(R_xlen_t j = 0; j < n_out; ++j) {
       const R_xlen_t lo = j * chunk;
       const R_xlen_t hi = lo + chunk < n ? lo + chunk : n;
-      cp::charvec::Builder b(hi - lo);
+      b.reset(hi - lo);
       for(R_xlen_t i = lo; i < hi; ++i) {
         cp::StrView v = r[i];
         if(v.is_na()) b.set_na(i - lo); else b.set(i - lo, v);

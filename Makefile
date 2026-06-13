@@ -48,10 +48,17 @@ bench:
 # test-compiled consumer DSO, via R_MAKEVARS_USER) is instrumented -- R
 # itself is not, so libasan must be preloaded and leak checking disabled
 # (the R interpreter intentionally leaks at exit).
+#
+# --no-test-load is required because R CMD INSTALL's post-install load test
+# runs without the libasan LD_PRELOAD. Loading the instrumented .so then
+# aborts with "ASan runtime does not come first", and INSTALL removes the
+# package. Without this flag, the empty temporary library can cause the suite
+# to load an uninstrumented user-library copy of charport. The test loop below
+# performs the preloaded load.
 test-san:
 	tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-san-XXXXXX); \
 	printf 'CXXFLAGS = -g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all\nSHLIB_CXXLDFLAGS = -fsanitize=address,undefined -shared\n' > $$tmp_lib/Makevars.san; \
-	R_MAKEVARS_USER=$$tmp_lib/Makevars.san R CMD INSTALL -l $$tmp_lib .; \
+	R_MAKEVARS_USER=$$tmp_lib/Makevars.san R CMD INSTALL --no-test-load -l $$tmp_lib .; \
 	for f in tests/test_*.R; do \
 	  echo "== $$f"; \
 	  LD_PRELOAD=$$(gcc -print-file-name=libasan.so) ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 \

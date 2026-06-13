@@ -41,7 +41,7 @@ std::vector<backend_entry> & backend_registry() {
 charport_strview charport_direct_get(void * state, R_xlen_t i) {
   const SEXP cs = static_cast<const SEXP *>(state)[i];
   if(cs == NA_STRING) {
-    return charport_strview{};  // {nullptr, 0, CE_NA}
+    return make_strview(nullptr, 0, charport_enc::CE_NA);
   }
   charport_strview out;
   out.ptr = CHAR(cs);

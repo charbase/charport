@@ -30,8 +30,8 @@ ALTREP-aware fork of stringi.
 `charport` provides:
 
 1.  **`charvec`** - the reference ALTREP string class, backed by stable
-    memory slices (strview-shaped records + bump-allocated slice
-    blocks), with cheap mutation, threshold compaction, and a sharded
+    memory slices (strview-shaped records + a chain of payload blocks),
+    with in-place mutation, manual compaction, and a sharded
     parallel-constructible builder.
 2.  **Runtime registration interface** - a C API a backend package calls
     at load time (via `R_GetCCallable`) to register its own ALTREP
@@ -66,8 +66,8 @@ One measurement note: the construction baseline is benchmarked cold.
 `Rf_mkCharLenCE` interns every string in R’s global string cache, and an
 already-interned string costs a hash lookup instead of an allocation, so
 a corpus that already exists as `CHARSXP`s (say, via `readLines`) would
-hand the baseline cache hits and flatter it considerably - and a `gc()`
-does not undo that, because the cache keeps its grown table afterwards.
+give the baseline cache hits and understate its fresh allocation cost. A
+`gc()` does not undo that because the cache keeps its grown table afterwards.
 The bench therefore ingests the corpus directly from the file in C (no
 `CHARSXP` is ever created) and runs every baseline repetition in its own
 fresh R session. (`charvec` does not use the string cache, so cache
@@ -115,13 +115,29 @@ charport_backend_of(charvec("a"))
 memory and only materialized to R `CHARSXP`s when something asks for
 them.
 
-Everything else happens in compiled code, through the single public
-header `charport.hpp`, which is C++11-compatible and does not require
+Everything else happens in compiled code, through the public umbrella
+header `charport.h`, which is C++11-compatible and does not require
 consumers to declare a `CXX_STD`. A consumer package adds
 `LinkingTo: charport` and `Imports: charport` to its DESCRIPTION,
 includes the header, and calls `cp::check_abi()` once at load time (from
 `.onLoad`) so a binary compiled against older charport headers fails
 with a clean “please reinstall” message instead of misbehaving.
+
+`charport.h` only aggregates the component headers:
+
+| Header | Provides | Language |
+|----|----|----|
+| `charport/strview.h` | the `charport_strview` element type | C and C++ |
+| `charport/base.h` | the reader / registration ABI; `cp::Reader`, `cp::resolve`, `cp::check_abi` | ABI is C and C++; `cp::` helpers are C++ |
+| `charport/builder_single_threaded.h` | `cp::charvec::Builder` (serial) | C++ |
+| `charport/builder_multi_threaded.h` | `cp::charvec::BuilderMT` (parallel) | C++ |
+
+A pure-C consumer can include `charport.h` to resolve a vector and loop
+over it, or to register a backend, using the raw ABI directly (the
+element type and `charport_reader` are plain C structs, the symbols are
+reached with `R_GetCCallable`); the C++-only `cp::` wrappers and the
+builders are skipped under a C compiler. The builders are C++ classes
+that compile into the consumer, so they have no C form.
 
 ## Reading any character vector
 
@@ -133,7 +149,7 @@ built-in accessor over the vector’s `CHARSXP`s, materializing once up
 front if needed - the same cost consumers pay today.
 
 ``` cpp
-#include "charport.hpp"
+#include "charport.h"
 
 extern "C" SEXP C_total_bytes(SEXP x) {
   cp::Reader r(x);            // one resolve; x must be a character vector
@@ -172,8 +188,12 @@ on the main thread; the borrow holds for as long as any copy is in use.
 
 ## Building a charvec
 
-`cp::charvec::Builder` constructs a `charvec` without ever creating
-`CHARSXP`s. Serially:
+Separate builders cover serial and parallel construction without
+creating `CHARSXP`s.
+
+**Serial** - `cp::charvec::Builder` (from
+`charport/builder_single_threaded.h`). No shards, no handles: you call
+`set()` directly on the builder.
 
 ``` cpp
 extern "C" SEXP C_repeat_word(SEXP word, SEXP n_) {
@@ -189,27 +209,46 @@ extern "C" SEXP C_repeat_word(SEXP word, SEXP n_) {
 }
 ```
 
-For parallel construction, request one `BuilderShard` per thread on the
-main thread, give each worker a disjoint index range, and `finish()`
-after the join - the merge moves slice blocks, it does not copy payload:
+**Parallel** - `cp::charvec::BuilderMT` (from
+`charport/builder_multi_threaded.h`). The shard count is fixed at
+construction; each shard owns a private slice chain, so distinct shards
+may be written from distinct threads with no synchronization. Give each
+worker a shard index and a disjoint element range, then `finish()` after
+the join - the merge moves slice blocks, it does not copy payload:
 
 ``` cpp
-cp::charvec::Builder b(n);
-std::vector<cp::charvec::BuilderShard> shards;
-for(int t = 0; t < n_threads; ++t) shards.push_back(b.shard());
+cp::charvec::BuilderMT b(n, n_threads);   // n elements, n_threads shards
 
 // on worker t, for i in its own range only:
-//   shards[t].set(i, ptr, len, charport_enc::CE_UTF8);
-// set() touches no R API; errors are thrown as std::runtime_error,
-// so catch in the worker (or let RcppParallel propagate to the join)
+//   b.set(/* shard = */ t, i, ptr, len, charport_enc::CE_UTF8);
+// distinct shard index per worker -> safe with no locking; set() touches no
+// R API and throws std::runtime_error on a policy violation, so catch in the
+// worker (or let RcppParallel propagate to the join)
 
-SEXP out = b.finish();  // main thread
+SEXP out = b.finish();  // main thread, after every worker has joined
 ```
 
-`set()` enforces the emission policy at the write: encodings must be
-`CE_ASCII`, `CE_UTF8`, `CE_ASCII_OR_UTF8`, or `CE_BYTES` (translate
-latin1/native text to UTF-8 first), and `NA` is exactly
-`{NULL, 0, CE_NA}` (or `set_na()`).
+Both builders’ `set()` enforces the emission policy at the write:
+encodings must be `CE_ASCII`, `CE_UTF8`, `CE_ASCII_OR_UTF8`, or
+`CE_BYTES` (translate latin1/native text to UTF-8 first), and `NA` is
+exactly `{NULL, 0, CE_NA}` (or `set_na()`).
+
+When the bytes don’t already exist contiguously - you’re formatting a
+number, concatenating, decoding - skip the intermediate buffer with
+`reserve()`, which hands back the store’s own memory to write into
+directly:
+
+``` cpp
+// serial:   char * dst = b.reserve(i, len, charport_enc::CE_UTF8);
+// sharded:  char * dst = b.reserve(/* shard = */ t, i, len, charport_enc::CE_UTF8);
+std::memcpy(dst, src, len);   // or snprintf/format straight into dst, exactly len bytes
+```
+
+`reserve()` takes a length and an (emittable) encoding, points the
+element at a fresh `len`-byte buffer, and returns it; you fill exactly
+`len` bytes. Use `set_na()` for `NA`. The pointer is valid until
+`finish()` (slice blocks never move). `set()` is just `reserve()`
+followed by a copy.
 
 ## Registering a backend
 
@@ -248,13 +287,13 @@ third-party path is exercised by charport’s own test suite.
 ## Status
 
 Implemented: the `charvec` class and its store; the backend registry,
-`charport_resolve`, and both fallback paths; the public `charport.hpp`
-consumer header (`cp::Reader`, `cp::charvec::Builder` /
-`cp::charvec::BuilderShard`); and real-thread test coverage via a mini
-consumer package compiled at test time, which doubles as a true
-external-DSO consumer of the installed headers. Still to come: example
-backend/consumer packages on GitHub, load-order tests, and integration
-with the companion stringi fork.
+`charport_resolve`, and both fallback paths; the public `charport.h`
+consumer headers (`cp::Reader`, the serial `cp::charvec::Builder` and
+the parallel `cp::charvec::BuilderMT`); and real-thread test coverage
+via a mini consumer package compiled at test time, which doubles as a
+true external-DSO consumer of the installed headers. Still to come:
+example backend/consumer packages on GitHub, load-order tests, and
+integration with the companion stringi fork.
 
 Writable interop (consumers mutating another package’s backend through a
 generic interface) is explicitly out of scope.

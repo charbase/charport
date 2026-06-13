@@ -17,37 +17,11 @@ SEXP charport_charvec_wrap(void * store_) {
   }
   std::unique_ptr<cpi::charvec_data> store(static_cast<cpi::charvec_data *>(store_));
 
-  // the trust boundary into R: a charvec must never hold records the ABI
-  // forbids (same policy unserialize enforces), wherever the store was built
-  const char * violation = nullptr;
-  for(const charport_strview & rec : store->records) {
-    if(rec.is_na()) {
-      if(rec.len != 0) {
-        violation = "NA record with non-zero length";
-        break;
-      }
-      continue;
-    }
-    switch(rec.enc) {
-    case charport_enc::CE_ASCII:
-    case charport_enc::CE_UTF8:
-    case charport_enc::CE_ASCII_OR_UTF8:
-    case charport_enc::CE_BYTES:
-      break;
-    default:
-      violation = "record encoding violates the emission policy "
-                  "(CE_ASCII / CE_UTF8 / CE_ASCII_OR_UTF8 / CE_BYTES)";
-      break;
-    }
-    if(violation != nullptr) {
-      break;
-    }
-  }
-  if(violation != nullptr) {
-    store.reset();  // free before the longjmp
-    Rf_error("charport charvec wrap: %s", violation);
-  }
-
+  // The store was built by the consumer's own compiled code (the cp::charvec
+  // builders), not parsed from untrusted input, so there is no policy to
+  // enforce here: the records are stored as the builder was given them
+  // (Unserialize, which DOES read untrusted bytes, validates there). Just take
+  // ownership and wrap.
   return charport_sexp_guard("charvec wrap", [&]() -> SEXP {
     return charvec_altrep::Make(store.release(), true);
   });

@@ -3,11 +3,9 @@
 # (allocation accounting, record addresses) so the test suite can pin down
 # slice-store semantics. Signatures may change at any time.
 
-# Allocate a charvec of length n with every element NA; initial_slice_size
-# preallocates the first slice (bytes, rounded up to 64; NULL or 0 = no
-# preallocation, first write uses the growth heuristic).
-charvec_alloc <- function(n, initial_slice_size = NULL) {
-  .Call(C_charvec_alloc, n, initial_slice_size)
+# Allocate a charvec of length n with every element NA.
+charvec_alloc <- function(n) {
+  .Call(C_charvec_alloc, n)
 }
 
 # Mutating single-element assignment (1-based i), bypassing R's
@@ -16,8 +14,8 @@ charvec_assign <- function(x, i, value) {
   invisible(.Call(C_charvec_assign, x, i, as.character(value)))
 }
 
-# Store accounting snapshot: length, allocated_bytes, dead_bytes, n_slices,
-# tail_used, tail_capacity, materialized.
+# Store snapshot: length, n_slices (payload-block count; NA once materialized),
+# materialized.
 charvec_stats <- function(x) {
   .Call(C_charvec_stats, x)
 }
@@ -28,7 +26,8 @@ charvec_element_addr <- function(x, i) {
   .Call(C_charvec_element_addr, x, i)
 }
 
-# Force compaction regardless of thresholds.
+# Rewrite live payload into fresh exact-fit blocks, reclaiming bytes left
+# unreferenced by grows/overwrites (and moving record pointers).
 charvec_compact <- function(x) {
   invisible(.Call(C_charvec_compact, x))
 }

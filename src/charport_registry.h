@@ -5,7 +5,7 @@
 // (consumers reach them via R_GetCCallable; only this package links them
 // directly) plus the R-visible .Call hooks they back.
 
-#include "../inst/include/charport.hpp"
+#include "../inst/include/charport.h"
 
 extern "C" {
 
@@ -31,6 +31,7 @@ SEXP C_charport_ccallable_check(void);
 // defined in charport_cp_test.cpp)
 SEXP C_cp_reader_roundtrip(SEXP x);
 SEXP C_cp_builder_from_reader(SEXP x, SEXP n_shards_);
+SEXP C_cp_builder_reserve(SEXP x, SEXP n_shards_);
 SEXP C_cp_builder_errors(void);
 
 // R_RegisterCCallable for the four ABI symbols + charvec's own backend

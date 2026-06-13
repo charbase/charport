@@ -1,8 +1,8 @@
 # charvec reference-class semantics: behave-like-character tests (subset,
 # serialize round-trip, identical(), coercions), in the style of R's own
 # ALTREP tests. A charvec must be indistinguishable from the equivalent plain
-# character vector in value terms; the equivalent plain vector is
-# enc2utf8(input) because construction normalizes latin1/native to UTF-8.
+# character vector in value AND encoding-mark terms: construction keeps the
+# input's encoding verbatim (ascii/utf8/latin1/native/bytes), never translating.
 
 suppressPackageStartupMessages(library(charport))
 
@@ -37,18 +37,18 @@ stopifnot(!is_charvec(letters), !is_charvec(1:3), !is_charvec(NULL))
 x <- as_charvec(c(a = "x", b = "y"))
 stopifnot(identical(names(x), c("a", "b")), identical(x[["a"]], "x"))
 
-catn("NA, empty strings, and encoding normalization")
+catn("NA, empty strings, and encoding preserved verbatim")
 mixed_in <- c("plain", NA, "", w_utf8[[1L]], w_latin1[[2L]])
 x <- as_charvec(mixed_in)
-stopifnot(marks_identical(x, enc2utf8(mixed_in)))
+stopifnot(marks_identical(x, mixed_in))  # encodings kept as-is, no translation
 stopifnot(identical(is.na(x), is.na(mixed_in)), anyNA(x), !anyNA(as_charvec("a")))
 enc <- charport:::charvec_encodings(x)
-stopifnot(identical(enc, c("ascii", NA, "ascii", "UTF-8", "UTF-8")))
+stopifnot(identical(enc, c("ascii", NA, "ascii", "UTF-8", "latin1")))
 
-catn("latin1 corpus normalizes to UTF-8")
+catn("latin1 corpus is kept as latin1 (not translated)")
 x <- as_charvec(w_latin1)
-stopifnot(marks_identical(x, enc2utf8(w_latin1)))
-stopifnot(all(charport:::charvec_encodings(x) %in% c("ascii", "UTF-8")))
+stopifnot(marks_identical(x, w_latin1))
+stopifnot(all(charport:::charvec_encodings(x) %in% c("ascii", "latin1")))
 
 catn("bytes encoding is preserved verbatim")
 b <- rawToChar(as.raw(0xE9))
@@ -77,11 +77,11 @@ stopifnot(identical(as.character(factor(as_charvec(c("b", "a")))), c("b", "a")))
 
 catn("identical() against the plain equivalent")
 x <- as_charvec(w_latin1)
-stopifnot(identical(x, enc2utf8(w_latin1)))
-stopifnot(identical(enc2utf8(w_latin1), x))
+stopifnot(identical(x, w_latin1))
+stopifnot(identical(w_latin1, x))
 
 catn("subsetting semantics")
-ref <- enc2utf8(c(w_utf8[1:5], NA, "", w_latin1[7:8]))
+ref <- c(w_utf8[1:5], NA, "", w_latin1[7:8])
 names(ref) <- letters[seq_along(ref)]
 x <- as_charvec(ref)
 stopifnot(is_charvec(x[2:4]))
@@ -205,10 +205,6 @@ expect_unserialize_error(mutate_serialized_state(charvec("abc"), state_abc, func
   state
 }))
 expect_unserialize_error(mutate_serialized_state(charvec("abc"), state_abc, function(state) {
-  state[[13L]] <- as.raw(0x00)  # CE_NATIVE: rejected by the emission policy
-  state
-}))
-expect_unserialize_error(mutate_serialized_state(charvec("abc"), state_abc, function(state) {
   state[9:12] <- encode_native_uint(5L, 4L)  # length runs past the payload
   state
 }))
@@ -219,14 +215,13 @@ expect_unserialize_error(mutate_serialized_state(charvec("abc"), state_abc, func
 
 catn("whole-corpus stress")
 big_in <- sample(c(w_utf8, w_latin1, NA, ""), size = 20000L, replace = TRUE)
-big_ref <- enc2utf8(big_in)
 x <- as_charvec(big_in)
-stopifnot(marks_identical(x, big_ref))
+stopifnot(marks_identical(x, big_in))   # latin1/utf8/ascii/NA all verbatim
 y <- unserialize(serialize(x, NULL))
-stopifnot(is_charvec(y), marks_identical(y, big_ref))
+stopifnot(is_charvec(y), marks_identical(y, big_in))
 for (i in 1:10) {
-  idx <- sample(c(seq_along(big_ref), NA, 1e6L), size = 500L, replace = TRUE)
-  stopifnot(marks_identical(x[idx], big_ref[idx]))
+  idx <- sample(c(seq_along(big_in), NA, 1e6L), size = 500L, replace = TRUE)
+  stopifnot(marks_identical(x[idx], big_in[idx]))
 }
 
 catn("semantics tests passed")

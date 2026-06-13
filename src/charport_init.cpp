@@ -58,43 +58,19 @@ SEXP C_charvec_from_character(SEXP x) {
       throw std::runtime_error("x must be a character vector");
     }
     const R_xlen_t n = Rf_xlength(x);
-
-    // size the first slice from the input's byte total (a hint: latin1/native
-    // translation can change lengths, and growth handles any overshoot)
-    const size_t max_initial =
-      static_cast<size_t>(std::numeric_limits<uint32_t>::max()) - (cpi::slice_alignment() - 1);
-    size_t total = 0;
-    for(R_xlen_t i = 0; i < n; ++i) {
-      SEXP e = STRING_ELT(x, i);
-      if(e == NA_STRING) {
-        continue;
+    auto store = cpi::build_charvec(static_cast<size_t>(n), [&](cpi::charvec_shard & ctx) {
+      for(R_xlen_t i = 0; i < n; ++i) {
+        cpi::assign_charsxp(ctx, static_cast<size_t>(i), STRING_ELT(x, i));
       }
-      const size_t len = static_cast<size_t>(Rf_xlength(e));
-      if(total > max_initial - len) {
-        total = max_initial;
-        break;
-      }
-      total += len;
-    }
-
-    auto store = total > 0
-      ? cpi::make_unique<cpi::charvec_data>(static_cast<size_t>(n), total)
-      : cpi::make_unique<cpi::charvec_data>(static_cast<size_t>(n));
-    for(R_xlen_t i = 0; i < n; ++i) {
-      cpi::assign_charsxp(*store, static_cast<size_t>(i), STRING_ELT(x, i));
-    }
+    });
     return charvec_altrep::Make(store.release(), true);
   });
 }
 
-SEXP C_charvec_alloc(SEXP n_, SEXP initial_slice_size_) {
+SEXP C_charvec_alloc(SEXP n_) {
   return charport_sexp_guard("charvec_alloc", [&]() -> SEXP {
     const size_t n = checked_len_arg(n_);
-    if(initial_slice_size_ == R_NilValue) {
-      return charvec_altrep::Make(new cpi::charvec_data(n), true);
-    }
-    const size_t initial = checked_len_arg(initial_slice_size_);
-    return charvec_altrep::Make(new cpi::charvec_data(n, initial), true);
+    return charvec_altrep::Make(new cpi::charvec_data(n), true);
   });
 }
 
@@ -122,24 +98,19 @@ SEXP C_charvec_stats(SEXP x) {
     }
     const bool materialized = R_altrep_data2(x) != R_NilValue;
 
-    const char * names[] = {"length", "allocated_bytes", "dead_bytes", "n_slices",
-                            "tail_used", "tail_capacity", "materialized", ""};
+    // The store keeps no byte/cursor accounting; n_slices (a chain walk) is the
+    // only structural diagnostic left, NA once materialized (store released).
+    const char * names[] = {"length", "n_slices", "materialized", ""};
     SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
     if(materialized) {
       SET_VECTOR_ELT(out, 0, Rf_ScalarReal(static_cast<double>(Rf_xlength(R_altrep_data2(x)))));
-      for(int i = 1; i <= 5; ++i) {
-        SET_VECTOR_ELT(out, i, Rf_ScalarReal(NA_REAL));
-      }
+      SET_VECTOR_ELT(out, 1, Rf_ScalarReal(NA_REAL));
     } else {
       auto & store = checked_store(x);
       SET_VECTOR_ELT(out, 0, Rf_ScalarReal(static_cast<double>(store.records.size())));
-      SET_VECTOR_ELT(out, 1, Rf_ScalarReal(static_cast<double>(store.allocated_bytes)));
-      SET_VECTOR_ELT(out, 2, Rf_ScalarReal(static_cast<double>(store.dead_bytes)));
-      SET_VECTOR_ELT(out, 3, Rf_ScalarReal(static_cast<double>(store.slice_count())));
-      SET_VECTOR_ELT(out, 4, Rf_ScalarReal(static_cast<double>(store.current_slice_used)));
-      SET_VECTOR_ELT(out, 5, Rf_ScalarReal(static_cast<double>(store.current_slice_capacity)));
+      SET_VECTOR_ELT(out, 1, Rf_ScalarReal(static_cast<double>(store.slice_count())));
     }
-    SET_VECTOR_ELT(out, 6, Rf_ScalarLogical(materialized ? TRUE : FALSE));
+    SET_VECTOR_ELT(out, 2, Rf_ScalarLogical(materialized ? TRUE : FALSE));
     UNPROTECT(1);
     return out;
   });
@@ -250,7 +221,7 @@ SEXP C_charvec_build_sharded(SEXP chunks) {
 
 static const R_CallMethodDef call_entries[] = {
   {"C_charvec_from_character", (DL_FUNC) &C_charvec_from_character, 1},
-  {"C_charvec_alloc",          (DL_FUNC) &C_charvec_alloc,          2},
+  {"C_charvec_alloc",          (DL_FUNC) &C_charvec_alloc,          1},
   {"C_is_charvec",             (DL_FUNC) &C_is_charvec,             1},
   {"C_charport_materialize",   (DL_FUNC) &C_charport_materialize,   1},
   {"C_charvec_stats",          (DL_FUNC) &C_charvec_stats,          1},
@@ -268,6 +239,7 @@ static const R_CallMethodDef call_entries[] = {
   {"C_charport_ccallable_check",         (DL_FUNC) &C_charport_ccallable_check,         0},
   {"C_cp_reader_roundtrip",              (DL_FUNC) &C_cp_reader_roundtrip,              1},
   {"C_cp_builder_from_reader",           (DL_FUNC) &C_cp_builder_from_reader,           2},
+  {"C_cp_builder_reserve",               (DL_FUNC) &C_cp_builder_reserve,               2},
   {"C_cp_builder_errors",                (DL_FUNC) &C_cp_builder_errors,                0},
   {NULL, NULL, 0}
 };
