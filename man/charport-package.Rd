@@ -6,13 +6,15 @@
 \alias{charport-package}
 \title{charport: Interconnect for ALTREP Character Vector Backends}
 \description{
+\if{html}{\figure{logo.svg}{options: style='float: right' alt='logo' width='120'}}
+
 Infrastructure for ALTREP character vectors: a reference ALTREP string class ('charvec') backed by stable memory slices with a parallel-constructible builder, a runtime registration interface for third-party ALTREP string backends, and a common zero-copy read path so consumer packages can iterate over any character vector with a single code path. Writable interop (mutating another package's backend through a generic interface) is out of scope.
 }
 \seealso{
 Useful links:
 \itemize{
-  \item \url{https://github.com/traversc/charport}
-  \item Report bugs at \url{https://github.com/traversc/charport/issues}
+  \item \url{https://github.com/charport/charport}
+  \item Report bugs at \url{https://github.com/charport/charport/issues}
 }
 
 }

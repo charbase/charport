@@ -6,6 +6,7 @@
 ^local$
 ^.*\.tar\.gz$
 ^charport\.Rcheck$
+^vignettes/.*\.html$
 ^benchmark_results$
 ^LICENSE\.md$
 ^Makefile$

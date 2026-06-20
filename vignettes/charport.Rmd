@@ -1,0 +1,143 @@
+---
+title: "charport"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{charport}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+`charport` is a small interoperability layer for ALTREP character vectors. It
+lets backend packages keep strings in their own storage while consumer packages
+read those strings through one common byte-view interface.
+
+The package has three pieces:
+
+1. A C ABI for resolving any character vector into a `charport_reader`.
+2. C++ convenience wrappers in `charport.h`, especially `charport::Reader`.
+3. `charvec`, a reference ALTREP string class with serial and sharded builders.
+
+The ABI is pre-release. Downstream packages should call `charport::check_abi()` at
+load time and expect recompilation when the ABI version changes.
+
+## Performance snapshot
+
+The current benchmark uses the enwik8 corpus split into 1.13 million strings
+(94 MB of string data). It compares the ordinary `STRING_ELT` / `SET_STRING_ELT`
+paths with `charport::Reader` and the `charvec` builders. The read benchmark
+explicitly registers `charvec` as a reference backend; normal package load
+leaves the backend registry empty until backend packages opt in.
+
+```{r, echo = FALSE, out.width = "100%"}
+knitr::include_graphics("bench.png")
+```
+
+## R helpers
+
+The R API is small:
+
+```{r}
+library(charport)
+
+x <- charvec("alpha", "beta", NA)
+typeof(x)
+is_charvec(x)
+as.character(x)
+```
+
+Diagnostics expose the currently registered backends and the backend serving a
+specific vector:
+
+```{r}
+charport_backends()
+charport_backend_of(x)
+```
+
+`charvec` is a storage class. It preserves the bytes and encoding marks it is
+given; it does not translate strings to UTF-8 or reject non-UTF-8 input.
+It is not registered with the broker on package load; backend packages register
+their own ALTREP classes explicitly.
+
+## Reading in C++
+
+Consumer packages add `LinkingTo: charport` and `Imports: charport`, include
+`charport.h`, and resolve a reader on the main R thread:
+
+```cpp
+#include "charport.h"
+
+extern "C" SEXP C_total_bytes(SEXP x) {
+  charport::Reader r(x);
+  double total = 0;
+  for(charport::StrView s : r) {
+    if(!s.is_na()) total += s.len;
+  }
+  return Rf_ScalarReal(total);
+}
+```
+
+`charport::StrView` is a borrowed view: `ptr`, byte `len`, and `enc`. `ptr == NULL`
+means `NA`. The bytes are not NUL-terminated by contract.
+
+A reader borrows the vector. While the reader or any view is in use, keep the
+vector protected and do not access or mutate it through the R API, including
+through aliases. The ALTREP class controls materialization and mutation, which
+may invalidate backend storage.
+
+For threaded consumers, resolve on the main R thread and only copy the raw
+reader to workers when `reader.reentrant()` is true.
+
+## Building a `charvec`
+
+The serial builder is for single-threaded construction:
+
+```cpp
+charport::charvec::Builder b(n);
+for(R_xlen_t i = 0; i < n; ++i) {
+  b.set(i, bytes, len, charport_enc::CE_UTF8);
+}
+SEXP out = b.to_charvec();
+```
+
+When output bytes are produced directly, `reserve()` avoids an intermediate
+buffer:
+
+```cpp
+char * dst = b.reserve(i, len, charport_enc::CE_UTF8);
+std::memcpy(dst, src, len);
+```
+
+For parallel construction, use `charport::charvec::BuilderMT`. Each worker gets a
+distinct shard index and a disjoint element range. Workers fill their shards
+without calling the R API; `to_charvec()` runs on the main thread after all
+workers join.
+
+## Backend registration
+
+A backend package registers an ALTREP class at load time:
+
+```cpp
+static void * my_init(SEXP x) {
+  return R_ExternalPtrAddr(R_altrep_data1(x));
+}
+
+static charport_strview my_get(void * state, R_xlen_t i) {
+  const my_store * s = static_cast<const my_store *>(state);
+  return make_strview(s->ptr(i), s->len(i), charport_enc::CE_UTF8);
+}
+
+charport::register_backend(my_class, my_init, my_get, true);
+```
+
+`my_init()` runs once per resolved vector on the main R thread. `my_get()` runs
+per element and must not call the R API or throw C++ exceptions across the ABI.
+If `reentrant = true`, `my_get()` must also be safe to call concurrently.
+
+See `vignette("developer-guide", package = "charport")` for the full contract.

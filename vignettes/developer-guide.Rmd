@@ -1,0 +1,294 @@
+---
+title: "Package developer guide"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Package Developer Guide}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+This guide is for packages that consume ALTREP character vectors through
+`charport`, packages that provide a registered ALTREP string backend, and
+packages that build `charport::charvec` output.
+
+`charport` exposes low-level byte views and lifetime contracts. It does not
+impose string normalization, locale policy, vectorized R semantics, or a
+threading framework.
+
+## Header map
+
+Use the umbrella header:
+
+```cpp
+#include "charport.h"
+```
+
+The installed headers are organized by concept. Downstream packages should
+still include only `charport.h`; the nested files group related declarations.
+
+| Header | Role |
+|---|---|
+| `charport/interop/types.h` | R-free `charport_enc` and `charport_strview` element types. |
+| `charport/interop/reader.h` | Reader and backend-registration ABI; C++ `charport::Reader` helpers. |
+| `charport/charvec/detail.h` | R-free helper routines used by the charvec store and builders. |
+| `charport/charvec/store.h` | Native charvec payload storage: records plus owned slices. |
+| `charport/charvec/builder.h` | C++ `charport::charvec::Builder` and `BuilderMT`. |
+
+The ABI structs and function-pointer typedefs are C-compatible. The `charport::`
+wrappers and builders are C++.
+
+## ABI model
+
+Consumers compile against the headers installed by `charport` and resolve the
+runtime entry points with `R_GetCCallable()`.
+
+The current ABI version is `CHARPORT_ABI_VERSION`. Any layout or contract break
+bumps this value. C++ consumers should call:
+
+```cpp
+charport::check_abi();
+```
+
+from `R_init_<pkg>()` or `.onLoad`. Builder consumers need this check because
+`charport::charvec::Builder::to_charvec()` hands a header-allocated native store
+to the loaded `charport` package. The per-call path does not repeat the ABI
+check; the convention is one load-time check per consumer DSO.
+
+The `R_GetCCallable` symbol set is intended to be append-only after the first
+CRAN release. During the pre-release period, the ABI may still change.
+
+## Reading contract
+
+The raw reader is:
+
+```cpp
+typedef struct charport_reader {
+    R_xlen_t n;
+    void * state;
+    charport_get_strview_fn get;
+    bool reentrant;
+} charport_reader;
+```
+
+`charport::Reader` is a thin C++ wrapper around this struct:
+
+```cpp
+charport::Reader r(x);
+for(charport::StrView s : r) {
+  if(!s.is_na()) {
+    /* s.ptr, s.len, s.enc */
+  }
+}
+```
+
+`charport_resolve()` accepts `STRSXP` only. For a registered, unmaterialized
+ALTREP backend, it calls the backend's `init` once and stores the returned
+state plus the backend's accessor in the reader. For a plain vector, a
+materialized ALTREP vector, an unregistered ALTREP vector, or a backend whose
+`init` returns `NULL`, it uses the direct fallback over ordinary `CHARSXP`s.
+The direct fallback may force materialization once, and it is always
+`reentrant = false`.
+
+The reader copies the resolved function pointer and flags instead of pointing
+back into the registry. That keeps the reader a small, self-contained POD that
+can be copied to workers when reentrant. It also means active readers assume the
+backend DSO remains loaded for the duration of the borrow.
+
+## Borrow and invalidation
+
+A reader is a borrow of the source vector. While any copy of the reader, or any
+`charport_strview` returned from it, is still in use:
+
+1. Keep the source `SEXP` protected.
+2. Do not mutate the vector.
+3. Do not call R accessors on the vector or its aliases, including
+   `STRING_ELT()`, `STRING_PTR_RO()`, or `DATAPTR()`.
+
+`charport` cannot control other ALTREP implementations, and the ALTREP API
+allows classes to materialize or release native storage when R asks for
+ordinary vector access. The convention is therefore a strict borrow: use the
+reader as the only view of the vector until the borrow ends, then resolve a
+fresh reader if needed.
+
+For `charvec`, materialization releases the native store after building the
+ordinary `CHARSXP` data. Manual compaction also moves payload pointers. Both are
+valid implementation choices and both invalidate old byte views.
+
+## Reentrancy
+
+`reentrant = true` is a backend promise about `get(state, i)`:
+
+1. It calls no R API and cannot allocate or trigger GC.
+2. It mutates no shared backend state.
+3. It may be called concurrently from multiple threads.
+4. Returned pointers remain valid for the active borrow.
+
+When `reentrant = false`, call `get()` only serially on the main R thread and
+consume or copy each view before the next call on the same vector.
+
+The fallback reader over `CHARSXP`s is not reentrant. It uses R's string
+objects and accessors and is main-thread-only.
+
+## Error and unwind rules
+
+No C++ exception may cross the `charport` C ABI or an R `.Call` boundary.
+
+Backend `init(SEXP)` runs on the main R thread and may report failure with
+`Rf_error()`. Backend `get(state, i)` should be total for valid `i`; it must not
+call the R API and must not throw. If a C++ implementation can fail, translate
+that failure before crossing the ABI boundary or make it impossible by
+construction.
+
+Consumer-side C++ code that catches exceptions and reports R errors should let
+the C++ exception unwind before calling `Rf_error()`. Calling `Rf_error()` from
+inside a catch block can bypass C++ cleanup in that catch scope.
+
+Long-running materialization loops in `charport` do not check user interrupts.
+Interrupting midway through native store release or ALTREP materialization would
+be harder to reason about than completing the operation.
+
+## Encoding policy
+
+`charport_strview` carries bytes plus a mark:
+
+```cpp
+typedef struct charport_strview {
+    const char * ptr;
+    uint32_t len;
+    charport_enc enc;
+} charport_strview;
+```
+
+`ptr == NULL` means `NA`. Non-`NA` strings are byte sequences; there is no
+NUL-termination guarantee.
+
+`charvec` stores bytes and marks verbatim. The direct fallback reports the
+existing `CHARSXP` mark. Builders copy the bytes and mark they are given.
+Translation to UTF-8, validation, replacement, or locale-specific treatment
+belongs one layer above `charport`.
+
+## Backend registration
+
+A backend registers its ALTREP class after creating it:
+
+```cpp
+charport::register_backend(my_class, my_init, my_get, true);
+```
+
+and unregisters before its DSO unloads:
+
+```cpp
+charport::unregister_backend(my_class);
+```
+
+`my_init(SEXP x)` returns the per-vector state that `my_get()` needs. The state
+is borrowed; `charport` never frees it. A backend that needs a lazy index or
+cache should build it in `init` on the main R thread and attach it to the ALTREP
+object so R owns the lifetime. Returning `NULL` means this vector cannot be
+served zero-copy, so `charport` falls back to the direct path.
+
+`my_get(void * state, R_xlen_t i)` returns the view for element `i`. It receives
+only backend state and the index; it must not need the original `SEXP`.
+
+## Building `charvec`
+
+Use `charport::charvec::Builder` for serial construction:
+
+```cpp
+charport::charvec::Builder b(n);
+b.set(i, ptr, len, charport_enc::CE_UTF8);
+SEXP out = b.to_charvec();
+```
+
+Use `reserve()` when the output bytes can be written directly into the store:
+
+```cpp
+char * dst = b.reserve(i, len, charport_enc::CE_UTF8);
+std::memcpy(dst, src, len);
+```
+
+Use `charport::charvec::BuilderMT` for parallel construction. The builder owns a
+fixed set of shards. Each worker must use a distinct shard index and write a
+disjoint element range. Worker calls to `set()` and `reserve()` do not touch the
+R API. `to_charvec()` runs on the main R thread after all workers have joined.
+
+Both builders are single-shot after `to_charvec()` or `release_store()`. Call
+`reset()` before reuse. Unwritten elements remain `NA`.
+
+The builders throw C++ exceptions for programming errors such as out-of-range
+indices, invalid shard indices, negative lengths, and strings larger than R's
+single-string size limit. Catch those exceptions before returning to R.
+
+## `charvec` store notes
+
+`charvec` stores one fixed record array plus a chain of owned payload blocks.
+Each record is exactly the ABI view type, so the registered backend accessor can
+return `records[i]`.
+
+The reference backend for `charvec` is not registered automatically on package
+load. The public registry is for backend packages that explicitly opt in; the
+package's tests and benchmarks register `charvec` only when they need to
+exercise that path.
+
+During construction, each writer owns a private shard with a bump-allocated
+slice chain. Finishing a builder splices shard chains into the store without
+copying payload. This is the reason sharded construction can avoid locking when
+element ranges are disjoint.
+
+Post-construction mutation may reuse an element's current bytes when the new
+string fits; a grow allocates a fresh slice and leaves old bytes unreferenced
+until manual compaction. Compaction rewrites live payload into fresh slices and
+moves pointers, so it must not happen during an active reader borrow.
+
+## Serialization
+
+`charvec` serialized state currently uses:
+
+1. A magic/version prefix.
+2. A one-byte endian flag.
+3. Native-endian integer fields.
+4. Encoding bytes and payload bytes.
+
+On read, `charport` checks the flag and byte-swaps integer fields only when the
+serialized state came from a machine with the opposite endianness. This keeps
+the common path simple. Big-endian hardware is not available in the normal test
+matrix, so tests include a synthetic opposite-endian serialized state; real
+big-endian coverage should be added if a runner becomes available.
+
+The serialized format is not frozen until the first CRAN release.
+
+## Consumer checklist
+
+1. Add `Imports: charport` and `LinkingTo: charport`.
+2. Include `charport.h`.
+3. Call `charport::check_abi()` at load time.
+4. Resolve readers on the main R thread.
+5. Respect the borrow rule: no R access to the source vector or aliases during
+   active reads.
+6. Use worker threads only when `reader.reentrant()` is true.
+7. Catch C++ exceptions before returning to R.
+
+## Backend checklist
+
+1. Register in `R_init_<pkg>()` or `.onLoad` after ALTREP class creation.
+2. Unregister in `.onUnload`.
+3. Keep backend state alive through R-owned ALTREP data.
+4. Return `NULL` from `init` when a vector can no longer be served zero-copy.
+5. Make `get` R-free, exception-free, and total for valid indices.
+6. Register `reentrant = true` only when concurrent calls are actually safe.
+
+## Testing pattern
+
+`charport` tests downstream-style consumers by compiling small DSOs under
+`tests/` against the installed headers. One consumer exercises `charport::Reader` and
+the builders through `R_GetCCallable`; another uses real `std::thread` workers
+without requiring thread flags in the `charport` package itself. Packages that
+integrate with `charport` should use the same pattern for their own compiled
+interop tests.

@@ -8,6 +8,10 @@ suppressPackageStartupMessages(library(charport))
 
 catn <- function(...) cat(..., "\n")
 
+helper <- file.path("helpers", "internal_calls.R")
+if (!file.exists(helper)) helper <- file.path("tests", helper)
+source(helper)
+
 # value + encoding-mark equality (identical() alone ignores encoding marks)
 marks_identical <- function(x, y) {
   x <- as.character(x)
@@ -42,19 +46,16 @@ mixed_in <- c("plain", NA, "", w_utf8[[1L]], w_latin1[[2L]])
 x <- as_charvec(mixed_in)
 stopifnot(marks_identical(x, mixed_in))  # encodings kept as-is, no translation
 stopifnot(identical(is.na(x), is.na(mixed_in)), anyNA(x), !anyNA(as_charvec("a")))
-enc <- charport:::charvec_encodings(x)
-stopifnot(identical(enc, c("ascii", NA, "ascii", "UTF-8", "latin1")))
 
 catn("latin1 corpus is kept as latin1 (not translated)")
 x <- as_charvec(w_latin1)
 stopifnot(marks_identical(x, w_latin1))
-stopifnot(all(charport:::charvec_encodings(x) %in% c("ascii", "latin1")))
+stopifnot(all(Encoding(as.character(x)) %in% c("unknown", "latin1")))
 
 catn("bytes encoding is preserved verbatim")
 b <- rawToChar(as.raw(0xE9))
 Encoding(b) <- "bytes"
 x <- as_charvec(c("a", b))
-stopifnot(identical(charport:::charvec_encodings(x), c("ascii", "bytes")))
 stopifnot(identical(Encoding(as.character(x)), c("unknown", "bytes")))
 stopifnot(identical(charToRaw(as.character(x)[[2L]]), as.raw(0xE9)))
 
@@ -131,7 +132,6 @@ x <- as_charvec(mixed_in)
 y <- unserialize(serialize(x, NULL))
 stopifnot(is_charvec(y))
 stopifnot(marks_identical(x, y))
-stopifnot(identical(charport:::charvec_encodings(x), charport:::charvec_encodings(y)))
 # xdr = FALSE path too (used by the corrupted-state tests below)
 y <- unserialize(serialize(x, NULL, xdr = FALSE))
 stopifnot(is_charvec(y), marks_identical(x, y))

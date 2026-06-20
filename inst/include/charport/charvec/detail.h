@@ -1,10 +1,9 @@
-#ifndef CHARPORT_CALC_H
-#define CHARPORT_CALC_H
+#ifndef CHARPORT_CHARVEC_DETAIL_H
+#define CHARPORT_CHARVEC_DETAIL_H
 
-// R-free foundation for the charvec store: byte/size helpers on top of the
-// public ABI element types (charport_enc, charport_strview, which live in
-// charport/strview.h). Nothing in this header may include R headers; R
-// interop lives in r_interop.h.
+// R-free helpers used by charvec storage and builders.
+
+#include "../interop/types.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -17,17 +16,14 @@
 #include <type_traits>
 #include <utility>
 
-#include "strview.h"
-
-namespace charport {
-namespace internal {
-
-#if defined (__AVX2__)
-} // namespace internal
-} // namespace charport
+#if defined(__AVX2__)
 #include <immintrin.h>
+#endif
+
 namespace charport {
 namespace internal {
+
+#if defined(__AVX2__)
 inline bool check_ascii(const void * ptr, size_t len) noexcept {
   const uint8_t * p8 = reinterpret_cast<const uint8_t*>(ptr);
   size_t i = 0;
@@ -37,43 +33,32 @@ inline bool check_ascii(const void * ptr, size_t len) noexcept {
       __m256i load = _mm256_lddqu_si256(reinterpret_cast<const __m256i*>(p8 + i));
       sum = _mm256_or_si256(sum, load);
     }
-    int msb = _mm256_movemask_epi8(sum);
-    if(msb != 0) return false;
+    if(_mm256_movemask_epi8(sum) != 0) return false;
   }
   if(len >= i + 16) {
     __m128i load = _mm_lddqu_si128(reinterpret_cast<const __m128i*>(p8 + i));
-    int msb = _mm_movemask_epi8(load);
-    if(msb != 0) return false;
+    if(_mm_movemask_epi8(load) != 0) return false;
     i += 16;
   }
   for(; i < len; ++i) {
-    if(p8[i] > 127) {
-      return false;
-    }
+    if(p8[i] > 127) return false;
   }
   return true;
 }
 #else
 inline bool check_ascii(const void * ptr, size_t len) noexcept {
   const uint8_t * p8 = reinterpret_cast<const uint8_t*>(ptr);
-  for(size_t j = 0; j < len; j++) {
-    if(p8[j] > 127) {
-      return false;
-    }
+  for(size_t i = 0; i < len; ++i) {
+    if(p8[i] > 127) return false;
   }
   return true;
 }
 #endif
 
-// CHARSXP byte length is capped at INT_MAX -- a base-R bound.
 constexpr uint32_t r_string_size_max() noexcept {
   return static_cast<uint32_t>(std::numeric_limits<int>::max());
 }
 
-// Forward to std::make_unique when the standard provides it (C++14+); fall
-// back to the equivalent hand-rolled version on the C++11 floor. Both wrap the
-// new inside a function, so both give the same exception-safety as
-// std::make_unique -- the forward is a conformance nicety, not a safety change.
 #if defined(__cpp_lib_make_unique) || (defined(__cplusplus) && __cplusplus >= 201402L)
 using std::make_unique;
 #else
@@ -123,8 +108,8 @@ inline size_t round_up(size_t value, size_t multiple) noexcept {
   if(value == 0 || multiple == 0) {
     return value;
   }
-  size_t rem = value % multiple;
-  return rem == 0 ? value : (value + (multiple - rem));
+  const size_t rem = value % multiple;
+  return rem == 0 ? value : value + (multiple - rem);
 }
 
 inline size_t next_power_of_two(size_t value) noexcept {

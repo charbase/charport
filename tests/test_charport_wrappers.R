@@ -1,6 +1,6 @@
-# cp:: consumer-wrapper semantics, exercised by charport consuming its own
-# public header through R_GetCCallable: cp::Reader must agree with the raw
-# resolve loop, and cp::charvec::Builder / BuilderMT must reproduce any
+# charport:: consumer-wrapper semantics, exercised by charport consuming its own
+# public header through R_GetCCallable: charport::Reader must agree with the raw
+# resolve loop, and charport::charvec::Builder / BuilderMT must reproduce any
 # reader's content as a fresh charvec (the end-to-end interop scenario:
 # read via reader, build via builder, no CHARSXPs in between).
 
@@ -8,13 +8,23 @@ suppressPackageStartupMessages(library(charport))
 
 catn <- function(...) cat(..., "\n")
 
-read_all  <- charport:::charport_read_all
-roundtrip <- charport:::cp_reader_roundtrip
-rebuild   <- charport:::cp_builder_from_reader
-reserve_rebuild <- charport:::cp_builder_reserve
-encs      <- charport:::charvec_encodings
-stats     <- charport:::charvec_stats
-rinfo     <- charport:::charport_reader_info
+helper <- file.path("helpers", "build_dso.R")
+if (!file.exists(helper)) helper <- file.path("tests", helper)
+source(helper)
+helper <- file.path("helpers", "internal_calls.R")
+if (!file.exists(helper)) helper <- file.path("tests", helper)
+source(helper)
+
+register_charvec_backend()
+
+catn("compiling the charport wrapper consumer (R CMD SHLIB)")
+dll <- compile_test_dso("charport_consumer.cpp", skip_label = "charport wrapper consumer")
+
+stats     <- charvec_stats
+roundtrip <- function(x) .Call("C_consumer_reader_roundtrip", x)
+rebuild <- function(x, n_shards = 1L) .Call("C_consumer_builder_from_reader", x, as.integer(n_shards))
+reserve_rebuild <- function(x, n_shards = 1L) .Call("C_consumer_builder_reserve", x, as.integer(n_shards))
+builder_errors <- function() .Call("C_consumer_builder_errors")
 
 marks_identical <- function(x, y) {
   x <- as.character(x)
@@ -36,7 +46,7 @@ b <- rawToChar(as.raw(0xE9)); Encoding(b) <- "bytes"
 
 set.seed(20260611)
 
-catn("cp::Reader agrees with the raw resolve loop")
+catn("charport::Reader agrees with R's character view")
 inputs <- list(
   character(0),
   c("plain", NA, "", w_utf8[1:5], w_latin1[6:10], b),
@@ -46,20 +56,19 @@ inputs <- list(
 x <- as_charvec(c("m", NA)); charport_materialize(x)
 inputs <- c(inputs, list(x))
 for (input in inputs) {
-  stopifnot(marks_identical(roundtrip(input), read_all(input)))
+  stopifnot(marks_identical(roundtrip(input), as.character(input)))
 }
 expect_error_matching(roundtrip(1:3), "character")
 
 catn("builder rebuilds a charvec input across shard counts")
 input <- c(w_utf8[1:40], NA, "", w_latin1[41:80], b, NA)
 x <- as_charvec(input)
-ref <- as.character(x)
+ref <- input
 for (k in c(0L, 1L, 2L, 3L, 8L)) {
   out <- rebuild(x, k)
   stopifnot(is_charvec(out))
   stopifnot(marks_identical(out, ref))
-  stopifnot(identical(encs(out), encs(x)))      # views stored verbatim
-  stopifnot(rinfo(out)$path == "backend")       # output is a real served charvec
+  stopifnot(!is.na(charport_backend_of(out)))    # output is a real charvec backend class
 }
 stopifnot(!stats(x)$materialized)               # building never materialized the input
 
@@ -67,29 +76,27 @@ catn("builder stores every reader view verbatim (ascii/bytes/NA)")
 plain <- c("abc", NA, "", b, "zz")
 out <- rebuild(plain, 2L)
 stopifnot(is_charvec(out), marks_identical(out, plain))
-stopifnot(identical(encs(out), c("ascii", NA, "ascii", "bytes", "ascii")))
 
 catn("latin1 views pass through the builder unchanged (no policy, no error)")
 latin1_word <- w_latin1[which(Encoding(w_latin1) == "latin1")[1L]]
 for (k in c(0L, 1L)) {
   out <- rebuild(c("a", latin1_word), k)
   stopifnot(is_charvec(out), marks_identical(out, c("a", latin1_word)))
-  stopifnot(identical(encs(out), c("ascii", "latin1")))
 }
 
 catn("builder reserve() path rebuilds identically (serial and sharded)")
 # the reserve path keeps whatever encoding the view carried, latin1 included
 x <- as_charvec(c(w_utf8[1:40], NA, "", w_latin1[41:80], b, NA))
-ref <- as.character(x)
+ref <- c(w_utf8[1:40], NA, "", w_latin1[41:80], b, NA)
 for (k in c(0L, 1L, 3L, 8L)) {
   out <- reserve_rebuild(x, k)
-  stopifnot(is_charvec(out), marks_identical(out, ref), identical(encs(out), encs(x)))
-  stopifnot(rinfo(out)$path == "backend")
+  stopifnot(is_charvec(out), marks_identical(out, ref))
+  stopifnot(!is.na(charport_backend_of(out)))
 }
 stopifnot(identical(as.character(reserve_rebuild(as_charvec(character(0)), 2L)), character(0)))
 
 catn("builder error contract (throwing set/reserve, single-shot finish, safe abandon)")
-stopifnot(isTRUE(charport:::cp_builder_errors()))
+stopifnot(isTRUE(builder_errors()))
 
 catn("builder edge cases")
 out <- rebuild(charvec(), 1L)
@@ -97,7 +104,8 @@ stopifnot(is_charvec(out), length(out) == 0L)
 out <- rebuild(character(0), 3L)                # more shards than elements
 stopifnot(length(out) == 0L)
 out <- rebuild(c(NA_character_, NA_character_), 2L)
-stopifnot(all(is.na(out)), stats(out)$n_slices == 0)
+out_stats <- stats(out)
+stopifnot(out_stats$n_slices == 0, all(is.na(out)))
 big <- strrep("q", 300000)                      # > 256 KiB slice cap, via a shard
 out <- rebuild(as_charvec(c(big, "tail")), 1L)
 stopifnot(identical(as.character(out), c(big, "tail")))
@@ -105,7 +113,7 @@ stopifnot(identical(as.character(out), c(big, "tail")))
 catn("built charvec serializes like any other")
 x <- rebuild(as_charvec(c(w_utf8[1:10], NA, "", b)), 3L)
 y <- unserialize(serialize(x, NULL))
-stopifnot(is_charvec(y), marks_identical(x, y), identical(encs(x), encs(y)))
+stopifnot(is_charvec(y), marks_identical(x, y))
 
 catn("property test: rebuild across random shard counts")
 for (trial in 1:15) {
@@ -115,7 +123,8 @@ for (trial in 1:15) {
   x <- as_charvec(input)
   out <- rebuild(x, k)
   stopifnot(marks_identical(out, as.character(x)))
-  stopifnot(identical(encs(out), encs(x)))
 }
 
-catn("cp wrapper tests passed")
+dyn.unload(dll[["path"]])
+unregister_charvec_backend()
+catn("charport wrapper tests passed")

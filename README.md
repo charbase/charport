@@ -1,312 +1,128 @@
-charport
-================
 
-[![R-CMD-check](https://github.com/traversc/charport/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/traversc/charport/actions)
+# charport
 
-ALTREP lets an R package store character vectors outside R’s usual
-per-element `CHARSXP` representation: in files, in lazily decoded data,
-or in compact byte storage. This optimization is normally local to the
-package that defines the ALTREP class. Code that does not recognize the
-class accesses the vector through standard R interfaces, which may
-materialize ordinary `CHARSXP`s and remove the storage advantage. For
-example, `arrow` can defer string materialization while reading a
-parquet file, only for a downstream operation such as a `dplyr` join to
-incur the cost. Benchmarks in
-[stringfish](https://github.com/traversc/stringfish) report 10-40x
-speedups over base R for string operations that avoid materialization.
+<img src="man/figures/logo.svg" align="right" width="160" alt="charport logo" />
 
-`charport` provides a shared read interface across package boundaries.
-Packages keep their own ALTREP string backends and register them at load
-time. Consumers resolve plain, registered, and unregistered character
-vectors into the same reader interface. Registered backends can expose
-their existing storage without materializing `CHARSXP`s.
+[![R-CMD-check](https://github.com/charport/charport/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/charport/charport/actions)
 
-`charport` is the infrastructure half of a two-package project supported
-by a grant from the [R
-Consortium](https://r-consortium.org/all-projects/call-for-proposals.html)
-Infrastructure Steering Committee; the companion package is an
-ALTREP-aware fork of stringi.
+`charport` is an interconnect for ALTREP character vector backends. It
+gives compiled R packages one way to read character vectors, whether the
+input is a plain `STRSXP`, a `charport::charvec`, or another package’s
+registered ALTREP string class.
 
-`charport` provides:
+The interface has three parts:
 
-1.  **`charvec`** - the reference ALTREP string class, backed by stable
-    memory slices (strview-shaped records + a chain of payload blocks),
-    with in-place mutation, manual compaction, and a sharded
-    parallel-constructible builder.
-2.  **Runtime registration interface** - a C API a backend package calls
-    at load time (via `R_GetCCallable`) to register its own ALTREP
-    string class: a per-vector state lookup plus a per-element accessor.
-3.  **Common read path** - `charport_resolve()` turns any character
-    vector into a `charport_reader`: one resolve per vector, then a
-    uniform `get(state, i)` per element.
+1.  Backend packages register an ALTREP class with a per-vector state
+    lookup and a per-element byte-view accessor.
+2.  Consumer packages call `charport_resolve()` or the C++ wrapper
+    `charport::Reader`.
+3.  Registered, unmaterialized backends are read zero-copy; everything
+    else uses a direct fallback over ordinary `CHARSXP`s.
 
-The ABI in the public header (the `R_GetCCallable` symbol set and the
-`charport_strview`/`charport_reader` layouts) is **not frozen** until
-the first CRAN release.
+`charport` also ships `charvec`, a reference ALTREP character vector
+backed by native byte slices, plus serial and sharded builders for
+constructing `charvec` objects without first creating `CHARSXP`s.
 
-## The numbers
+The ABI is still pre-release. A layout or contract change will bump
+`CHARPORT_ABI_VERSION`; downstream packages should call
+`charport::check_abi()` in their load hook.
 
-The benchmark tests the cost of one function-pointer indirection per
-element and measures a registered backend that requires no per-element R
-API calls. `make bench` hashes every byte of 1.1 million strings (94 MB,
-taken from the enwik8 Wikipedia corpus split into lines) with FNV-1a.
+## Performance snapshot
 
-<img src="vignettes/bench.png" title="charport benchmark" width="700" />
+The benchmark below uses the enwik8 corpus split into 1.13 million
+strings (94 MB of string data). It compares the ordinary `STRING_ELT` /
+`SET_STRING_ELT` paths with `charport::Reader` and the `charvec`
+builders. The read benchmark explicitly registers `charvec` as a
+reference backend; normal package load leaves the backend registry empty
+until backend packages opt in.
 
-The first two bars compare a conventional `STRING_ELT` loop with the
-same loop through `cp::Reader`. In this run, the additional indirection
-had no measurable cost on plain vectors, and reading the registered
-`charvec` backend was slightly faster. Readers are plain structs that
-workers can copy, so the same loop can also run in parallel.
-Construction through the builder, which never creates a `CHARSXP`, was
-about 15x faster than the `Rf_mkCharLenCE` + `SET_STRING_ELT` baseline
-on this corpus and 40x faster with four shards.
+<img src="vignettes/bench.png" alt="" width="100%" />
 
-One measurement note: the construction baseline is benchmarked cold.
-`Rf_mkCharLenCE` interns every string in R’s global string cache, and an
-already-interned string costs a hash lookup instead of an allocation, so
-a corpus that already exists as `CHARSXP`s (say, via `readLines`) would
-give the baseline cache hits and understate its fresh allocation cost. A
-`gc()` does not undo that because the cache keeps its grown table afterwards.
-The bench therefore ingests the corpus directly from the file in C (no
-`CHARSXP` is ever created) and runs every baseline repetition in its own
-fresh R session. (`charvec` does not use the string cache, so cache
-state does not affect the builder timings.) All paths are verified to
-produce identical results, and `inst/extra/benchmark.R` reproduces the
-plot on any machine.
+## Installation
 
-## R surface
+``` r
+pak::pak("charport/charport")
+```
 
-The R-level API is small and mainly diagnostic:
+## R interface
+
+The R API is small and mainly diagnostic:
 
 ``` r
 library(charport)
+
 x <- charvec("hello", "world", NA)
+typeof(x)
+#> [1] "character"
 is_charvec(x)
-```
+#> [1] TRUE
+as.character(x)
+#> [1] "hello" "world" NA
 
-    ## [1] TRUE
-
-``` r
-as_charvec(letters[1:3])
-```
-
-    ## [1] "a" "b" "c"
-
-``` r
-charport_materialize(x)
 charport_backends()
+#> $n
+#> [1] 0
+#>
+#> $reentrant
+#> logical(0)
+charport_backend_of(x)
+#> [1] NA
 ```
 
-    ## $n
-    ## [1] 1
-    ## 
-    ## $reentrant
-    ## [1] TRUE
+`charvec` preserves bytes and encoding marks as supplied. It is not an
+encoding normalization layer; translation belongs in the package that
+understands the operation being performed.
 
-``` r
-charport_backend_of(charvec("a"))
-```
+`charvec` itself is not registered with the broker on package load. It is
+a reference storage class and builder target; backend packages that want
+to serve their own ALTREP classes register those classes explicitly.
 
-    ## [1] "charport::charvec"
+## Consumer example
 
-`charvec` objects are ordinary character vectors to R code (`typeof` is
-`"character"`); strings are kept as byte views in native memory, with
-their existing encoding marks preserved, and only materialized to R
-`CHARSXP`s when something asks for them.
-
-Everything else happens in compiled code, through the public umbrella
-header `charport.h`, which is C++11-compatible and does not require
-consumers to declare a `CXX_STD`. A consumer package adds
-`LinkingTo: charport` and `Imports: charport` to its DESCRIPTION,
-includes the header, and calls `cp::check_abi()` once at load time (from
-`.onLoad`) so a binary compiled against older charport headers fails
-with a clean “please reinstall” message instead of misbehaving.
-
-`charport.h` only aggregates the component headers:
-
-| Header | Provides | Language |
-|----|----|----|
-| `charport/strview.h` | the `charport_strview` element type | C and C++ |
-| `charport/base.h` | the reader / registration ABI; `cp::Reader`, `cp::resolve`, `cp::check_abi` | ABI is C and C++; `cp::` helpers are C++ |
-| `charport/builder_single_threaded.h` | `cp::charvec::Builder` (serial) | C++ |
-| `charport/builder_multi_threaded.h` | `cp::charvec::BuilderMT` (parallel) | C++ |
-
-A pure-C consumer can include `charport.h` to resolve a vector and loop
-over it, or to register a backend, using the raw ABI directly (the
-element type and `charport_reader` are plain C structs, the symbols are
-reached with `R_GetCCallable`); the C++-only `cp::` wrappers and the
-builders are skipped under a C compiler. The builders are C++ classes
-that compile into the consumer, so they have no C form.
-
-## Reading any character vector
-
-`cp::Reader` is the consumer-side wrapper around `charport_resolve()`.
-It works uniformly on every character vector: a registered ALTREP
-backend is served zero-copy from its own storage; everything else (plain
-vectors, unregistered or already-materialized ALTREP) is served by a
-built-in accessor over the vector’s `CHARSXP`s, materializing once up
-front if needed - the same cost consumers pay today.
+A C++ consumer includes `charport.h`, constructs a reader on the main R
+thread, and then loops over `charport::StrView` values:
 
 ``` cpp
 #include "charport.h"
 
 extern "C" SEXP C_total_bytes(SEXP x) {
-  cp::Reader r(x);            // one resolve; x must be a character vector
+  charport::Reader r(x);
   double total = 0;
-  for(cp::StrView v : r) {    // v.ptr / v.len / v.enc; v.is_na()
+  for(charport::StrView v : r) {
     if(!v.is_na()) total += v.len;
   }
   return Rf_ScalarReal(total);
 }
 ```
 
-`cp::StrView` (= `charport_strview`) is
-`{const char * ptr; uint32_t len; charport_enc enc}`. `ptr == NULL`
-means `NA`. Views carry their own encoding mark; `charvec` preserves
-what it was given, and the fallback path over plain vectors reports the
-CHARSXP mark exactly as `Rf_getCharCE()` would.
+The reader borrows `x`. Keep `x` protected and do not touch it or any
+alias through the R API while the reader or a returned view is in use.
+ALTREP classes control their own materialization and storage lifetime,
+so R access may invalidate the borrowed pointers.
 
-**A reader is a borrow, in Rust terms.** Its views point into memory
-owned by the vector’s backend; nothing is copied. Between resolving the
-reader and the last use of any view, keep `x` protected and ensure
-neither `x` nor any alias is touched through the R API at all - no
-writes, no `DATAPTR()` or `STRING_PTR_RO()`, and no element access
-either: nothing in the ALTREP contract stops a class from materializing
-eagerly on `STRING_ELT()`, and mutation and materialization can both
-move or free the storage the views point into. While the borrow lasts,
-the reader is the only safe way to look at `x`. When R-level access is
-needed, finish with the reader (and every copy of it) first, then resolve
-a fresh one afterwards. A reader has no close operation. The borrow ends
-after the reader and all derived views are no longer used; C++ does not
-enforce this lifetime.
+## Builder example
 
-For threaded reads, check `r.reentrant()` (true only for registered
-backends that make the reentrant promise; the fallback path over
-CHARSXPs is main-thread-only): the underlying `charport_reader` is an
-SEXP-free plain struct, so hand each worker a copy of `r.raw()` and
-adopt it with `cp::Reader(raw)` only when the flag is true. Resolve on
-the main thread; the borrow holds for as long as any copy is in use.
-
-## Building a charvec
-
-Separate builders cover serial and parallel construction without
-creating `CHARSXP`s.
-
-**Serial** - `cp::charvec::Builder` (from
-`charport/builder_single_threaded.h`). No shards, no handles: you call
-`set()` directly on the builder.
+The serial builder copies supplied bytes into a new `charvec`:
 
 ``` cpp
-extern "C" SEXP C_repeat_word(SEXP word, SEXP n_) {
-  cp::Reader in(word);
-  cp::StrView w = in[0];
-  const R_xlen_t n = Rf_asInteger(n_);
-
-  cp::charvec::Builder b(n);     // all elements start NA
-  for(R_xlen_t i = 0; i < n; ++i) {
-    b.set(i, w);                 // copies the bytes into the store
-  }
-  return b.to_charvec();             // wraps the store in a charvec ALTREP
+charport::charvec::Builder b(n);
+for(R_xlen_t i = 0; i < n; ++i) {
+  b.set(i, ptr, len, charport_enc::CE_UTF8);
 }
+SEXP out = b.to_charvec();
 ```
 
-**Parallel** - `cp::charvec::BuilderMT` (from
-`charport/builder_multi_threaded.h`). The shard count is fixed at
-construction; each shard owns a private slice chain, so distinct shards
-may be written from distinct threads with no synchronization. Give each
-worker a shard index and a disjoint element range, then `to_charvec()`
-after the join - the merge moves slice blocks, it does not copy payload:
+For parallel construction, `charport::charvec::BuilderMT` gives each
+worker a shard. Workers may call `set()` or `reserve()` concurrently
+when shard indices and element ranges are disjoint; `to_charvec()` runs
+on the main R thread after the join.
 
-``` cpp
-cp::charvec::BuilderMT b(n, n_threads);   // n elements, n_threads shards
+## Documentation
 
-// on worker t, for i in its own range only:
-//   b.set(/* shard = */ t, i, ptr, len, charport_enc::CE_UTF8);
-// distinct shard index per worker -> safe with no locking; set() touches no
-// R API and throws std::runtime_error on bounds/size errors, so catch in the
-// worker (or let RcppParallel propagate to the join)
-
-SEXP out = b.to_charvec();  // main thread, after every worker has joined
-```
-
-The builders do not impose an encoding policy. They copy the bytes and
-encoding they are given, and `NA` is exactly `{NULL, 0, CE_NA}` (or
-`set_na()`). Translation policy belongs in the consumer layer above
-charport.
-
-When the bytes don’t already exist contiguously - you’re formatting a
-number, concatenating, decoding - skip the intermediate buffer with
-`reserve()`, which hands back the store’s own memory to write into
-directly:
-
-``` cpp
-// serial:   char * dst = b.reserve(i, len, charport_enc::CE_UTF8);
-// sharded:  char * dst = b.reserve(/* shard = */ t, i, len, charport_enc::CE_UTF8);
-std::memcpy(dst, src, len);   // or snprintf/format straight into dst, exactly len bytes
-```
-
-`reserve()` takes a length and encoding, points the element at a fresh
-`len`-byte buffer, and returns it; you fill exactly `len` bytes. Use
-`set_na()` for `NA`. The pointer is valid until `to_charvec()` (slice
-blocks never move). `set()` is just `reserve()` followed by a copy.
-
-## Registering a backend
-
-A package that defines its own ALTREP string class can register it so
-every charport consumer reads it zero-copy. Two functions, registered
-once at load time:
-
-``` cpp
-// called once per vector by charport_resolve, on the main R thread;
-// return the per-vector state, or NULL for "cannot serve this vector"
-static void * my_init(SEXP x) {
-  return R_ExternalPtrAddr(R_altrep_data1(x));
-}
-
-// called per element, with the state my_init returned; no R API and no
-// C++ exceptions crossing the ABI here
-static charport_strview my_get(void * state, R_xlen_t i) {
-  const my_store * s = static_cast<const my_store *>(state);
-  return { s->ptr(i), s->len(i), charport_enc::CE_UTF8 };
-}
-
-// in R_init_mypkg / .onLoad, after creating the ALTREP class:
-cp::register_backend(my_class, my_init, my_get, /* reentrant = */ true);
-// and in .onUnload: cp::unregister_backend(my_class)
-```
-
-`reentrant = true` is a promise about `my_get`: no R allocation, no GC
-trigger, no mutation of backend state, callable concurrently from any
-thread, and the returned pointer stays valid while the vector is alive,
-unwritten, and unmaterialized. If your accessor can’t promise that,
-register with `false`: consumers then call it serially on the main R
-thread and copy each view before the next call.
-
-`charvec` itself registers through this exact interface, so the
-third-party path is exercised by charport’s own test suite.
-
-## Status
-
-Implemented: the `charvec` class and its store; the backend registry,
-`charport_resolve`, and both fallback paths; the public `charport.h`
-consumer headers (`cp::Reader`, the serial `cp::charvec::Builder` and
-the parallel `cp::charvec::BuilderMT`); and real-thread test coverage
-via a mini consumer package compiled at test time, which doubles as a
-true external-DSO consumer of the installed headers. Still to come:
-example backend/consumer packages on GitHub, load-order tests, and
-integration with the companion stringi fork.
-
-Writable interop (consumers mutating another package’s backend through a
-generic interface) is explicitly out of scope.
-
-## Lineage
-
-`charvec` reuses ideas from the `slice_store` design in
-[stringfish](https://github.com/traversc/stringfish). It does not
-promise value, layout, or serialization compatibility with stringfish.
-
-## Acknowledgments
+- `vignette("charport", package = "charport")` is the quick package
+  tour.
+- `vignette("developer-guide", package = "charport")` is the interface
+  contract for backend and consumer package authors.
 
 Development of `charport` is funded by the R Consortium through an
 Infrastructure Steering Committee grant.

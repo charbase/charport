@@ -13,6 +13,7 @@ src/**/*.a
 charport*.tar.gz
 *.Rcheck
 ..Rcheck
+vignettes/*.html
 local
 .DS_Store
 .vscode

@@ -15,8 +15,8 @@ A list with elements `n` (integer: number of registered
 Reports on the broker's backend registry. Backends are ALTREP character
 vector classes whose authors registered a reader with charport (via the
 `charport_register_backend` C entry point, fetched with
-`R_GetCCallable`); charport's own `charvec` class registers itself on
-load, so the count is at least 1.
+`R_GetCCallable`). The reference `charvec` class is not registered by
+default, so a freshly loaded session may report zero backends.
 }
 \details{
 Backend *names* require an instance to query (R's

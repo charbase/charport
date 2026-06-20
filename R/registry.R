@@ -3,8 +3,8 @@
 #' Reports on the broker's backend registry. Backends are ALTREP character
 #' vector classes whose authors registered a reader with charport (via the
 #' `charport_register_backend` C entry point, fetched with
-#' `R_GetCCallable`); charport's own `charvec` class registers itself on
-#' load, so the count is at least 1.
+#' `R_GetCCallable`). The reference `charvec` class is not registered by
+#' default, so a freshly loaded session may report zero backends.
 #'
 #' Backend *names* require an instance to query (R's
 #' `R_altrep_class_name` takes a vector, not a class descriptor), so this
@@ -34,7 +34,7 @@ charport_backends <- function() {
 #'   where class names cannot be queried, a placeholder string); otherwise
 #'   `NA_character_` (plain vectors and unregistered ALTREP classes).
 #' @examples
-#' charport_backend_of(charvec("a"))
+#' is.na(charport_backend_of(charvec("a")))
 #' charport_backend_of(letters)
 #' @export
 charport_backend_of <- function(x) {

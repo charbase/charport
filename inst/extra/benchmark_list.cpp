@@ -28,26 +28,26 @@ static SEXP hash_to_sexp_(uint64_t h, R_xlen_t n_na) {
 }
 
 // Split the source vector into ceil(n / chunk) charvecs of length <= chunk.
-// This is the shape a split-like verb produces: many tiny independent charvecs,
+// This is the shape a split-like verb produces: many small independent charvecs,
 // each paying full per-vector cost (store allocation, ALTREP wrap, external
-// pointer, finalizer). One cp::charvec::Builder is reused across all outputs
-// via reset(), matching an as.list workload that reuses the build context
-// rather than reconstructing a Builder per vector.
+// pointer, finalizer). One charport::charvec::Builder is reused across all
+// outputs via reset(), matching an as.list workload that reuses the build
+// context rather than reconstructing a Builder per vector.
 extern "C" SEXP C_benchl_build_charvec_list(SEXP x, SEXP chunk_) {
-  cp::Reader r(x);
+  charport::Reader r(x);
   const R_xlen_t n = r.size();
   const R_xlen_t chunk = Rf_asInteger(chunk_);
   if(chunk < 1) Rf_error("chunk must be >= 1");
   const R_xlen_t n_out = (n + chunk - 1) / chunk;
   try {
     SEXP out = PROTECT(Rf_allocVector(VECSXP, n_out));
-    cp::charvec::Builder b(0);
+    charport::charvec::Builder b(0);
     for(R_xlen_t j = 0; j < n_out; ++j) {
       const R_xlen_t lo = j * chunk;
       const R_xlen_t hi = lo + chunk < n ? lo + chunk : n;
       b.reset(hi - lo);
       for(R_xlen_t i = lo; i < hi; ++i) {
-        cp::StrView v = r[i];
+        charport::StrView v = r[i];
         if(v.is_na()) b.set_na(i - lo); else b.set(i - lo, v);
       }
       SET_VECTOR_ELT(out, j, b.to_charvec());
@@ -65,7 +65,7 @@ extern "C" SEXP C_benchl_build_charvec_list(SEXP x, SEXP chunk_) {
 // the cache reduces memory use by interning repeated strings once, while a
 // charvec stores every occurrence.
 extern "C" SEXP C_benchl_build_strsxp_list(SEXP x, SEXP chunk_) {
-  cp::Reader r(x);
+  charport::Reader r(x);
   const R_xlen_t n = r.size();
   const R_xlen_t chunk = Rf_asInteger(chunk_);
   if(chunk < 1) Rf_error("chunk must be >= 1");
@@ -77,7 +77,7 @@ extern "C" SEXP C_benchl_build_strsxp_list(SEXP x, SEXP chunk_) {
     SEXP el = Rf_allocVector(STRSXP, hi - lo);
     SET_VECTOR_ELT(out, j, el);  // protects el via out
     for(R_xlen_t i = lo; i < hi; ++i) {
-      cp::StrView v = r[i];
+      charport::StrView v = r[i];
       if(v.is_na()) { SET_STRING_ELT(el, i - lo, NA_STRING); continue; }
       const cetype_t ce = v.enc == charport_enc::CE_BYTES ? CE_BYTES : CE_UTF8;
       SET_STRING_ELT(el, i - lo, Rf_mkCharLenCE(v.ptr, static_cast<int>(v.len), ce));
@@ -87,15 +87,15 @@ extern "C" SEXP C_benchl_build_strsxp_list(SEXP x, SEXP chunk_) {
   return out;
 }
 
-// Read every string of every list element through cp::Reader. One resolve per
-// vector is the per-vector read cost this benchmark isolates.
+// Read every string of every list element through charport::Reader. One resolve
+// per vector is the read cost this benchmark isolates.
 extern "C" SEXP C_benchl_hash_reader(SEXP lst) {
   const R_xlen_t n_out = Rf_xlength(lst);
   uint64_t h = 14695981039346656037ULL;
   R_xlen_t n_na = 0;
   for(R_xlen_t j = 0; j < n_out; ++j) {
-    cp::Reader r(VECTOR_ELT(lst, j));
-    for(cp::StrView v : r) {
+    charport::Reader r(VECTOR_ELT(lst, j));
+    for(charport::StrView v : r) {
       if(v.is_na()) { ++n_na; continue; }
       h = fnv1a_(v.ptr, v.len, h);
     }
@@ -126,8 +126,8 @@ extern "C" SEXP C_benchl_sumlen_reader(SEXP lst) {
   const R_xlen_t n_out = Rf_xlength(lst);
   double total = 0;
   for(R_xlen_t j = 0; j < n_out; ++j) {
-    cp::Reader r(VECTOR_ELT(lst, j));
-    for(cp::StrView v : r) {
+    charport::Reader r(VECTOR_ELT(lst, j));
+    for(charport::StrView v : r) {
       if(!v.is_na()) total += v.len;
     }
   }

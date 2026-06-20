@@ -28,12 +28,11 @@ static SEXP hash_to_sexp(uint64_t h, R_xlen_t n_na) {
 }
 
 // Ingest a text file straight into a charvec: file bytes -> line views ->
-// Builder. No CHARSXP is ever created, which is the point: Rf_mkCharLenCE
-// interns every string in R's global string cache, and a string that is
-// already interned costs a hash lookup instead of an allocation. Reading
-// the corpus with readLines() first would therefore hand the construction
-// baseline cache hits and flatter it considerably. Ingesting in C keeps
-// the cache cold so the baseline pays the true fresh-string cost.
+// Builder. This path creates no CHARSXP. Rf_mkCharLenCE interns every string
+// in R's global string cache, and an interned string costs a hash lookup
+// instead of an allocation. Reading the corpus with readLines() first would
+// give the construction baseline cache hits and understate fresh allocation
+// cost. Ingesting in C keeps the cache cold.
 // Every na_every-th line is stored as NA to exercise the NA paths.
 extern "C" SEXP C_bench_read_lines_charvec(SEXP path_, SEXP na_every_) {
   try {
@@ -56,7 +55,7 @@ extern "C" SEXP C_bench_read_lines_charvec(SEXP path_, SEXP na_every_) {
     }
     if(got > 0 && buf[got - 1] != '\n') { ++n; }
 
-    cp::charvec::Builder b(n);
+    charport::charvec::Builder b(n);
     size_t start = 0;
     for(R_xlen_t line = 0; line < n; ++line) {
       size_t end = start;
@@ -94,10 +93,10 @@ extern "C" SEXP C_bench_string_elt(SEXP x) {
 
 // The charport loop: one resolve, then get(state, i) per element.
 extern "C" SEXP C_bench_reader(SEXP x) {
-  cp::Reader r(x);
+  charport::Reader r(x);
   uint64_t h = 14695981039346656037ULL;
   R_xlen_t n_na = 0;
-  for(cp::StrView v : r) {
+  for(charport::StrView v : r) {
     if(v.is_na()) { ++n_na; continue; }
     h = fnv1a(v.ptr, v.len, h);
   }
@@ -108,7 +107,7 @@ extern "C" SEXP C_bench_reader(SEXP x) {
 // reader and hashes its own contiguous range; hashes combine by XOR so the
 // result is order-independent (not comparable to the serial hash).
 extern "C" SEXP C_bench_reader_threaded(SEXP x, SEXP n_threads_) {
-  cp::Reader r(x);
+  charport::Reader r(x);
   if(!r.reentrant()) Rf_error("reader is not reentrant");
   const int k = Rf_asInteger(n_threads_);
   const R_xlen_t n = r.size();
@@ -119,11 +118,11 @@ extern "C" SEXP C_bench_reader_threaded(SEXP x, SEXP n_threads_) {
   for(int t = 0; t < k; ++t) {
     const R_xlen_t lo = n * t / k, hi = n * (t + 1) / k;
     workers.emplace_back([&, t, lo, hi]() {
-      cp::Reader wr(raw);
+      charport::Reader wr(raw);
       uint64_t h = 14695981039346656037ULL;
       R_xlen_t n_na = 0;
       for(R_xlen_t i = lo; i < hi; ++i) {
-        cp::StrView v = wr[i];
+        charport::StrView v = wr[i];
         if(v.is_na()) { ++n_na; continue; }
         h = fnv1a(v.ptr, v.len, h);
       }
@@ -141,8 +140,8 @@ extern "C" SEXP C_bench_reader_threaded(SEXP x, SEXP n_threads_) {
   return hash_to_sexp(h, n_na);
 }
 
-// Length-sum kernels: nearly free per element, so they expose the cost of
-// the access path itself rather than the work done on the bytes.
+// Length-sum kernels do very little per element, exposing the cost of the
+// access path rather than work done on the bytes.
 extern "C" SEXP C_bench_sumlen_elt(SEXP x) {
   const R_xlen_t n = Rf_xlength(x);
   double total = 0;
@@ -154,9 +153,9 @@ extern "C" SEXP C_bench_sumlen_elt(SEXP x) {
 }
 
 extern "C" SEXP C_bench_sumlen_reader(SEXP x) {
-  cp::Reader r(x);
+  charport::Reader r(x);
   double total = 0;
-  for(cp::StrView v : r) {
+  for(charport::StrView v : r) {
     if(!v.is_na()) total += v.len;
   }
   return Rf_ScalarReal(total);
@@ -165,13 +164,13 @@ extern "C" SEXP C_bench_sumlen_reader(SEXP x) {
 // Construction baseline: mkCharLenCE + SET_STRING_ELT into a fresh STRSXP.
 // Input comes through a reader so all construction benches read identically.
 // This timing is comparable only while the strings are not already interned
-// in R's string cache; benchmark.R runs each repetition in a fresh R session
+// in R's string cache. benchmark.R runs each repetition in a fresh R session
 // (gc alone is not enough: the cache keeps its grown table afterwards).
 extern "C" SEXP C_bench_build_strsxp(SEXP x) {
-  cp::Reader r(x);
+  charport::Reader r(x);
   SEXP out = PROTECT(Rf_allocVector(STRSXP, r.size()));
   for(R_xlen_t i = 0; i < r.size(); ++i) {
-    cp::StrView v = r[i];
+    charport::StrView v = r[i];
     if(v.is_na()) { SET_STRING_ELT(out, i, NA_STRING); continue; }
     const cetype_t ce = v.enc == charport_enc::CE_BYTES ? CE_BYTES : CE_UTF8;
     SET_STRING_ELT(out, i, Rf_mkCharLenCE(v.ptr, static_cast<int>(v.len), ce));
@@ -185,20 +184,20 @@ extern "C" SEXP C_bench_build_strsxp(SEXP x) {
 // The builder never touches the string cache (no CHARSXPs), so cache state
 // is irrelevant to these timings.
 extern "C" SEXP C_bench_build_charvec(SEXP x, SEXP n_threads_) {
-  cp::Reader r(x);
+  charport::Reader r(x);
   const int k = Rf_asInteger(n_threads_);
   const R_xlen_t n = r.size();
   try {
     if(k == 0) {
-      cp::charvec::Builder b(n);
+      charport::charvec::Builder b(n);
       for(R_xlen_t i = 0; i < n; ++i) {
-        cp::StrView v = r[i];
+        charport::StrView v = r[i];
         if(v.is_na()) b.set_na(i); else b.set(i, v);
       }
       return b.to_charvec();
     }
     if(!r.reentrant()) Rf_error("reader is not reentrant");
-    cp::charvec::BuilderMT b(n, static_cast<size_t>(k));
+    charport::charvec::BuilderMT b(n, static_cast<size_t>(k));
     const charport_reader raw = r.raw();
     std::vector<std::thread> workers;
     std::vector<std::string> errors(static_cast<size_t>(k));
@@ -206,10 +205,10 @@ extern "C" SEXP C_bench_build_charvec(SEXP x, SEXP n_threads_) {
       const R_xlen_t lo = n * t / k, hi = n * (t + 1) / k;
       workers.emplace_back([&, t, lo, hi]() {
         try {
-          cp::Reader wr(raw);
+          charport::Reader wr(raw);
           const size_t shard = static_cast<size_t>(t);
           for(R_xlen_t i = lo; i < hi; ++i) {
-            cp::StrView v = wr[i];
+            charport::StrView v = wr[i];
             if(v.is_na()) b.set_na(shard, i); else b.set(shard, i, v);
           }
         } catch(const std::exception & e) {

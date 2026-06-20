@@ -1,12 +1,12 @@
 // A minimal external charport consumer, compiled at test time with
-// R CMD SHLIB (see test_threaded_consumer.R) -- a separate DSO that knows
+// R CMD SHLIB (see test_threaded_consumer.R). It is a separate DSO that knows
 // charport only through the installed public header and R_GetCCallable,
 // exactly like a downstream package. Thread flags live in the test-local
 // Makevars, so charport itself carries none.
 //
 // The parallel-consumer pattern: worker threads read x through copies of
 // the reader POD and write disjoint ranges through their own BuilderMT shard
-// index -- no R API off the main thread on either side. Worker exceptions are
+// index, with no R API off the main thread on either side. Worker exceptions are
 // caught in the worker and re-raised after the join.
 
 #include "charport.h"
@@ -34,13 +34,13 @@ SEXP guarded(const char * op, Fun fun) {
 extern "C" {
 
 SEXP C_consumer_abi_ok(void) {
-  cp::check_abi();
+  charport::check_abi();
   return Rf_ScalarLogical(TRUE);
 }
 
 SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
   return guarded("threaded_rebuild", [&]() -> SEXP {
-    cp::Reader r(x);
+    charport::Reader r(x);
     const R_xlen_t n = r.size();
     const int k = Rf_asInteger(n_threads_);
     if(k == NA_INTEGER || k < 1 || k > 16) {
@@ -50,7 +50,7 @@ SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
       throw std::runtime_error("input reader is not reentrant");
     }
 
-    cp::charvec::BuilderMT b(n, static_cast<size_t>(k));
+    charport::charvec::BuilderMT b(n, static_cast<size_t>(k));
 
     const charport_reader raw = r.raw();
     std::vector<std::string> worker_errors(static_cast<size_t>(k));
@@ -63,7 +63,7 @@ SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
       std::string * err = &worker_errors[static_cast<size_t>(j)];
       threads.emplace_back([&b, raw, shard, lo, hi, err]() {
         try {
-          const cp::Reader worker_reader(raw);  // adopt the POD on the worker
+          const charport::Reader worker_reader(raw);  // adopt the POD on the worker
           for(R_xlen_t i = lo; i < hi; ++i) {
             b.set(shard, i, worker_reader[i]);  // distinct shard per worker -> no sync
           }
@@ -92,7 +92,7 @@ SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
 // and be re-raised as an R error on the main thread.
 SEXP C_consumer_worker_throws(void) {
   return guarded("worker_throws", [&]() -> SEXP {
-    cp::charvec::BuilderMT b(2, 2);
+    charport::charvec::BuilderMT b(2, 2);
     std::vector<std::string> worker_errors(2);
     std::vector<std::thread> threads;
     for(int j = 0; j < 2; ++j) {

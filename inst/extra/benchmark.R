@@ -12,9 +12,10 @@
 # string cache, and an already-interned string costs a hash lookup instead
 # of an allocation. So if the corpus were read with readLines() first, the
 # construction baseline would get cache hits and look much faster than real
-# fresh-string ingest. gc() between repetitions is NOT enough to undo that:
+# fresh-string ingest. gc() between repetitions is not enough to undo that:
 # collected CHARSXPs leave the cache, but the cache's grown table stays, so
-# the session no longer looks like a fresh user session. To keep it honest:
+# the session no longer looks like a fresh user session. The benchmark avoids
+# this in two ways:
 # (1) the corpus is ingested in C, file -> charvec, so no CHARSXP is created
 # in the parent session; (2) every repetition of the mkCharLenCE baseline
 # runs in its own fresh R session (a worker script that ingests in C and
@@ -26,6 +27,10 @@ reps <- if (length(args) >= 1) as.integer(args[1]) else 5L
 n_threads <- 4L
 
 suppressMessages(library(charport))
+charport_native_symbol <- function(name) {
+  get(name, envir = asNamespace("charport"), inherits = FALSE)
+}
+invisible(.Call(charport_native_symbol("C_register_charvec_backend")))
 
 # --- corpus file ------------------------------------------------------------
 
@@ -108,6 +113,8 @@ worker_script <- file.path(build_dir, "worker_build_strsxp.R")
 writeLines(c(
   'args <- commandArgs(trailingOnly = TRUE)',
   'suppressMessages(library(charport))',
+  'charport_native_symbol <- function(name) get(name, envir = asNamespace("charport"), inherits = FALSE)',
+  'invisible(.Call(charport_native_symbol("C_register_charvec_backend")))',
   'dyn.load(args[1])',
   'cvec <- .Call("C_bench_read_lines_charvec", args[2], 1000L)',
   't <- system.time(.Call("C_bench_build_strsxp", cvec))[["elapsed"]]',
@@ -122,27 +129,28 @@ ms_fresh <- function() {
   median(t) * 1000
 }
 rows <- list()
-row <- function(name, t_ms, baseline = FALSE) {
+row <- function(name, t_ms, baseline = FALSE, label = name, color = NULL) {
   cat(sprintf("  %-46s %9.1f ms   %6.2f GB/s\n", name, t_ms,
               total_bytes / (t_ms / 1000) / 2^30))
   list(name = name, ms = t_ms,
-       gbps = total_bytes / (t_ms / 1000) / 2^30, baseline = baseline)
+       gbps = total_bytes / (t_ms / 1000) / 2^30, baseline = baseline,
+       label = label, color = color)
 }
 
-# Builder timings are cold-memory: each rep's slices land on freshly mapped
-# OS pages, so they include the page faults and the kernel's mandatory
-# zeroing of new pages (there is no way to opt out of that; it is a security
-# guarantee, not an allocator choice). In a session whose allocator already
-# holds warm freed pages from earlier R work, the serial builder runs about
-# 2x faster than shown. Cold-vs-cold matches the fresh-session baseline, so
-# the comparison stays apples to apples.
-cat("construction (input read through cp::Reader on charvec):\n")
+# Builder timings use freshly mapped pages and therefore include page faults
+# and zeroing by the kernel. A session with warm pages available from earlier
+# allocations may produce lower builder timings. Both construction paths here
+# start from a cold allocation state.
+cat("construction (input read through charport::Reader on charvec):\n")
 build_rows <- list(
-  row("mkCharLenCE + SET_STRING_ELT (baseline)", ms_fresh(), baseline = TRUE),
-  row("cp::charvec::Builder, serial",
-      ms(function() .Call("C_bench_build_charvec", cvec, 0L))),
-  row(sprintf("cp::charvec::Builder, %d threads", n_threads),
-      ms(function() .Call("C_bench_build_charvec", cvec, n_threads)))
+  row("SET_STRING_ELT (baseline)", ms_fresh(), baseline = TRUE,
+      label = "SET_STRING_ELT\n(baseline)"),
+  row("charport::charvec::Builder, serial",
+      ms(function() .Call("C_bench_build_charvec", cvec, 0L)),
+      label = "charvec::Builder\n(1 thread)"),
+  row(sprintf("charport::charvec::Builder, %d threads", n_threads),
+      ms(function() .Call("C_bench_build_charvec", cvec, n_threads)),
+      label = sprintf("charvec::Builder\n(%d threads)", n_threads))
 )
 
 # Construction correctness: the rebuilt charvec hashes identically.
@@ -157,14 +165,18 @@ plain <- .Call("C_bench_build_strsxp", cvec)
 cat("\nread path (FNV-1a over every element):\n")
 h1 <- .Call("C_bench_string_elt", plain)
 read_rows <- list(
-  row("STRING_ELT loop, plain vector (baseline)",
-      ms(function() .Call("C_bench_string_elt", plain)), baseline = TRUE),
-  row("cp::Reader, plain vector (direct path)",
-      ms(function() .Call("C_bench_reader", plain))),
-  row("cp::Reader, charvec (registered backend)",
-      ms(function() .Call("C_bench_reader", cvec))),
-  row(sprintf("cp::Reader, charvec, %d threads", n_threads),
-      ms(function() .Call("C_bench_reader_threaded", cvec, n_threads)))
+  row("STRING_ELT direct (baseline)",
+      ms(function() .Call("C_bench_string_elt", plain)), baseline = TRUE,
+      label = "STRING_ELT direct\n(baseline)"),
+  row("charport::Reader direct",
+      ms(function() .Call("C_bench_reader", plain)),
+      label = "charport::Reader\ndirect"),
+  row("charport::Reader charvec, 1 thread",
+      ms(function() .Call("C_bench_reader", cvec)),
+      label = "charport::Reader\ncharvec, 1 thread"),
+  row(sprintf("charport::Reader, charvec, %d threads", n_threads),
+      ms(function() .Call("C_bench_reader_threaded", cvec, n_threads)),
+      label = sprintf("charport::Reader\ncharvec, %d threads", n_threads))
 )
 # STRING_ELT over an unmaterialized charvec is deliberately not a timed row:
 # element access on an ALTREP can materialize (a write), so it is not a read
@@ -177,9 +189,9 @@ cat("\naccess path only (sum of lengths, no byte work):\n")
 s1 <- .Call("C_bench_sumlen_elt", plain)
 invisible(row("STRING_ELT loop, plain vector (baseline)",
               ms(function() .Call("C_bench_sumlen_elt", plain))))
-invisible(row("cp::Reader, plain vector (direct path)",
+invisible(row("charport::Reader, plain vector (direct path)",
               ms(function() .Call("C_bench_sumlen_reader", plain))))
-invisible(row("cp::Reader, charvec (registered backend)",
+invisible(row("charport::Reader, charvec (registered backend)",
               ms(function() .Call("C_bench_sumlen_reader", cvec))))
 stopifnot(identical(s1, .Call("C_bench_sumlen_reader", plain)),
           identical(s1, .Call("C_bench_sumlen_reader", cvec)))
@@ -189,15 +201,28 @@ cat("\nall hashes verified equal across paths\n")
 # --- plot -------------------------------------------------------------------
 
 plot_panel <- function(rows, title) {
+  theme_bg <- "#26323d"
+  theme_panel <- "#2f4147"
+  theme_text <- "#f2ead9"
+  theme_muted <- "#9aa5aa"
+  theme_accent <- "#80cbc4"
   gbps <- rev(vapply(rows, `[[`, numeric(1), "gbps"))
-  labels <- rev(vapply(rows, `[[`, character(1), "name"))
-  labels <- sub(" \\(", "\n(", labels)
+  labels <- rev(vapply(rows, `[[`, character(1), "label"))
   cols <- rev(vapply(rows, function(r)
-    if (isTRUE(r$baseline)) "grey65" else "#2c7fb8", character(1)))
+                       if (isTRUE(r$baseline)) theme_muted else theme_accent,
+                     character(1)))
+  par(bg = theme_bg)
+  plot.new()
+  usr <- par("usr")
+  rect(usr[1], usr[3], usr[2], usr[4], col = theme_panel, border = NA)
+  par(new = TRUE)
   bp <- barplot(gbps, horiz = TRUE, names.arg = labels, col = cols,
                 border = NA, xlab = "GB/s", main = title,
-                xlim = c(0, max(gbps) * 1.22), cex.names = 0.72, cex.main = 0.95)
-  text(gbps, bp, sprintf("%.2f", gbps), pos = 4, cex = 0.7, xpd = NA)
+                xlim = c(0, max(gbps) * 1.20), cex.names = 0.82,
+                cex.main = 1.05, font.main = 2, col.axis = theme_text,
+                col.lab = theme_text, col.main = theme_text, axes = TRUE)
+  text(gbps, bp, sprintf("%.2f", gbps), pos = 4, cex = 0.78,
+       xpd = NA, col = theme_text)
 }
 
 png_path <- if (dir.exists("vignettes")) {
@@ -206,8 +231,9 @@ png_path <- if (dir.exists("vignettes")) {
   file.path("local", "bench.png")
 }
 png(png_path, width = 2200, height = 850, res = 200)
-par(mfrow = c(1, 2), mar = c(4, 10.5, 2.5, 1.5), mgp = c(2.2, 0.6, 0), las = 1)
-plot_panel(read_rows, "read path (hash every element)")
-plot_panel(build_rows, "construction (string cache cold)")
+par(mfrow = c(1, 2), mar = c(4, 9.7, 2.6, 1.8), mgp = c(2.2, 0.6, 0),
+    las = 1, bg = "#26323d", fg = "#f2ead9")
+plot_panel(read_rows, "read path (hash data)")
+plot_panel(build_rows, "write path")
 dev.off()
 cat(sprintf("plot written to %s\n", png_path))

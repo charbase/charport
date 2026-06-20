@@ -1,0 +1,30 @@
+url: https://charport.github.io/charport/
+
+template:
+  bootstrap: 5
+
+navbar:
+  structure:
+    left: [intro, reference, articles]
+    right: [github]
+
+articles:
+- title: Start Here
+  navbar: ~
+  contents:
+  - charport
+- title: Developer Documentation
+  contents:
+  - developer-guide
+
+reference:
+- title: Construct And Inspect `charvec`
+  contents:
+  - charvec
+  - is_charvec
+  - as_charvec
+  - charport_materialize
+- title: Backend Diagnostics
+  contents:
+  - charport_backends
+  - charport_backend_of

@@ -41,7 +41,7 @@ as_charvec <- function(x) {
   if (!is.character(x)) {
     x <- as.character(x)
   }
-  ret <- .Call(C_charvec_from_character, x)
+  ret <- .Call(C_as_charvec, x)
   nm <- names(x)
   if (!is.null(nm)) {
     names(ret) <- nm

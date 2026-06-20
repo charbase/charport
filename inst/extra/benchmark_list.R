@@ -23,6 +23,10 @@ chunk <- if (length(args) >= 2) as.integer(args[2]) else 1L
 max_lines <- if (length(args) >= 3) as.integer(args[3]) else 0L
 
 suppressMessages(library(charport))
+charport_native_symbol <- function(name) {
+  get(name, envir = asNamespace("charport"), inherits = FALSE)
+}
+invisible(.Call(charport_native_symbol("C_register_charvec_backend")))
 
 # --- corpus file (same corpus and cache as benchmark.R) ----------------------
 
@@ -111,6 +115,8 @@ worker_build <- file.path(build_dir, "worker_build_strsxp_list.R")
 writeLines(c(
   'args <- commandArgs(trailingOnly = TRUE)',
   'suppressMessages(library(charport))',
+  'charport_native_symbol <- function(name) get(name, envir = asNamespace("charport"), inherits = FALSE)',
+  'invisible(.Call(charport_native_symbol("C_register_charvec_backend")))',
   'dyn.load(args[1])',
   'cvec <- .Call("C_bench_read_lines_charvec", args[2], 1000L)',
   't <- system.time(.Call("C_benchl_build_strsxp_list", cvec, as.integer(args[3])))[["elapsed"]]',
@@ -127,9 +133,9 @@ ms_fresh <- function() {
 
 # --- construction -------------------------------------------------------------
 
-cat("construction (source read through cp::Reader on charvec):\n")
+cat("construction (source read through charport::Reader on charvec):\n")
 row("mkCharLenCE STRSXP list (baseline)", ms_fresh(), baseline = TRUE)
-row("cp::charvec::Builder list",
+row("charport::charvec::Builder list",
     ms(function() .Call("C_benchl_build_charvec_list", cvec, chunk)))
 
 # --- read ---------------------------------------------------------------------
@@ -141,9 +147,9 @@ cat("\nread path (FNV-1a over every element of every vector):\n")
 h_elt <- .Call("C_benchl_hash_string_elt", lst_pl)
 row("STRING_ELT loops, STRSXP list (baseline)",
     ms(function() .Call("C_benchl_hash_string_elt", lst_pl)), baseline = TRUE)
-row("cp::Reader per vector, STRSXP list",
+row("charport::Reader per vector, STRSXP list",
     ms(function() .Call("C_benchl_hash_reader", lst_pl)))
-row("cp::Reader per vector, charvec list",
+row("charport::Reader per vector, charvec list",
     ms(function() .Call("C_benchl_hash_reader", lst_cv)))
 stopifnot(identical(h_elt, ref),
           identical(.Call("C_benchl_hash_reader", lst_pl), ref),
@@ -153,9 +159,9 @@ cat("\naccess path only (sum of lengths, mostly per-vector overhead):\n")
 s1 <- .Call("C_benchl_sumlen_elt", lst_pl)
 row("STRING_ELT loops, STRSXP list (baseline)",
     ms(function() .Call("C_benchl_sumlen_elt", lst_pl)), baseline = TRUE)
-row("cp::Reader per vector, STRSXP list",
+row("charport::Reader per vector, STRSXP list",
     ms(function() .Call("C_benchl_sumlen_reader", lst_pl)))
-row("cp::Reader per vector, charvec list",
+row("charport::Reader per vector, charvec list",
     ms(function() .Call("C_benchl_sumlen_reader", lst_cv)))
 stopifnot(identical(s1, .Call("C_benchl_sumlen_reader", lst_pl)),
           identical(s1, .Call("C_benchl_sumlen_reader", lst_cv)))
@@ -168,6 +174,8 @@ if (file.exists("/proc/self/status")) {
   writeLines(c(
     'args <- commandArgs(trailingOnly = TRUE)',
     'suppressMessages(library(charport))',
+    'charport_native_symbol <- function(name) get(name, envir = asNamespace("charport"), inherits = FALSE)',
+    'invisible(.Call(charport_native_symbol("C_register_charvec_backend")))',
     'dyn.load(args[1])',
     'vmrss_kb <- function() {',
     '  as.numeric(sub("VmRSS:\\\\s*(\\\\d+) kB", "\\\\1",',

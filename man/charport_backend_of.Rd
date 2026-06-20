@@ -22,6 +22,6 @@ would decline to serve this particular instance (for example, a
 materialized `charvec`).
 }
 \examples{
-charport_backend_of(charvec("a"))
+is.na(charport_backend_of(charvec("a")))
 charport_backend_of(letters)
 }

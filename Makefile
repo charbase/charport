@@ -45,7 +45,7 @@ bench:
 	Rscript inst/extra/benchmark.R 5
 
 # ASan + UBSan over the full test suite. Only the package (and the
-# test-compiled consumer DSO, via R_MAKEVARS_USER) is instrumented -- R
+# test-compiled consumer DSO, via R_MAKEVARS_USER) is instrumented. R
 # itself is not, so libasan must be preloaded and leak checking disabled
 # (the R interpreter intentionally leaks at exit).
 #
@@ -77,12 +77,14 @@ test-valgrind:
 	rm -rf $$tmp_lib
 
 vignette:
-	Rscript -e "rmarkdown::render(input='vignettes/vignette.rmd', output_format='html_vignette')"
-	IS_GITHUB=Yes Rscript -e "rmarkdown::render(input='vignettes/vignette.rmd', output_file='../README.md', output_format=rmarkdown::github_document(html_preview=FALSE))"
+	Rscript -e "rmarkdown::render(input='README.Rmd', output_format=rmarkdown::github_document(html_preview=FALSE))"
+	Rscript -e "rmarkdown::render(input='vignettes/charport.Rmd', output_format='html_vignette')"
+	Rscript -e "rmarkdown::render(input='vignettes/developer-guide.Rmd', output_format='html_vignette')"
 
 clean:
 	find . -iname "*.o" -exec rm {} \;
 	find . -iname "*.so" -exec rm {} \;
 	find . -iname "*.dll" -exec rm {} \;
+	rm -f vignettes/*.html
 	rm -f $(PACKAGE)_*.tar.gz
 	rm -rf $(PACKAGE).Rcheck

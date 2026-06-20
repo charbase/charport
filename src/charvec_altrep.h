@@ -5,32 +5,91 @@
 #include <Rinternals.h>
 #include <R_ext/Altrep.h>
 #include <R_ext/Rdynload.h>
+#include <Rversion.h>
 
-#include "../inst/include/charport/r_interop.h"
-#include "../inst/include/charport/builder_single_threaded.h"
+#include "../inst/include/charport.h"
+
+#include <cstdio>
+#include <exception>
 
 namespace cpi = charport::internal;
 
-// Convert C++ exceptions to R errors at the ALTREP/.Call boundary. The
-// Rf_error longjmp leaks the in-flight exception object; everything else is
-// owned by R or by the external-pointer finalizer.
-template <typename Fun>
-inline SEXP charport_sexp_guard(const char * op, Fun fun) {
-  try {
-    return fun();
-  } catch(const std::exception & e) {
-    Rf_error("charport %s: %s", op, e.what());
-  } catch(...) {
-    Rf_error("charport %s: unknown C++ exception", op);
+namespace charport {
+namespace internal {
+
+inline bool charsxp_is_ascii(SEXP x) {
+#if (R_VERSION >= R_Version(4, 5, 0))
+  return Rf_charIsASCII(x) == TRUE;
+#else
+  return check_ascii(CHAR(x), static_cast<size_t>(Rf_xlength(x)));
+#endif
+}
+
+inline cetype_t to_base_encoding(charport_enc enc) noexcept {
+  switch(enc) {
+  case charport_enc::CE_ASCII:
+    return CE_NATIVE;
+  case charport_enc::CE_UTF8:
+  case charport_enc::CE_ASCII_OR_UTF8:
+    return CE_UTF8;
+  case charport_enc::CE_LATIN1:
+    return CE_LATIN1;
+  case charport_enc::CE_BYTES:
+    return CE_BYTES;
+  default:
+    return CE_NATIVE;
   }
 }
 
-// serialized_state layout:
-//   magic "CPV1" | u8 endian flag | u64 element count | u32 byte lengths |
-//   u8 encodings | concatenated payload bytes (the pointer->offset conversion).
-// Integer fields are written in the writer's native endian order; the endian
-// flag lets readers swap only when necessary. Not frozen until first CRAN
-// release.
+inline SEXP make_charsxp(const charport_strview & view) {
+  if(view.is_na()) {
+    return NA_STRING;
+  }
+  if(!check_r_string_len(view.len)) {
+    throw std::runtime_error("string size exceeds R string size");
+  }
+  return Rf_mkCharLenCE(view.ptr, static_cast<int>(view.len), to_base_encoding(view.enc));
+}
+
+inline charport_enc classify_charsxp(SEXP x) {
+  switch(Rf_getCharCE(x)) {
+  case CE_UTF8:
+    return charport_enc::CE_UTF8;
+  case CE_LATIN1:
+    return charport_enc::CE_LATIN1;
+  case CE_BYTES:
+    return charport_enc::CE_BYTES;
+  default:
+    return charsxp_is_ascii(x) ? charport_enc::CE_ASCII
+                               : charport_enc::CE_NATIVE;
+  }
+}
+
+inline charport_strview charsxp_to_view(SEXP x) {
+  if(x == NA_STRING) {
+    return make_strview(nullptr, 0, charport_enc::CE_NA);
+  }
+  return make_strview(CHAR(x), static_cast<uint32_t>(Rf_xlength(x)), classify_charsxp(x));
+}
+
+} // namespace internal
+} // namespace charport
+
+template <typename Fun>
+inline SEXP charport_sexp_guard(const char * op, Fun fun) {
+  char msg[512];
+  try {
+    return fun();
+  } catch(const std::exception & e) {
+    std::snprintf(msg, sizeof(msg), "%s", e.what());
+  } catch(...) {
+    std::snprintf(msg, sizeof(msg), "unknown C++ exception");
+  }
+  Rf_error("charport %s: %s", op, msg);
+  return R_NilValue;
+}
+
+// Native-endian serialized_state with a magic/version prefix and endian flag.
 struct charvec_serialized_layout {
   size_t n = 0;
   bool swap = false;
@@ -244,7 +303,7 @@ struct charvec_altrep {
       SEXP data2 = R_altrep_data2(vec);
       if(data2 != R_NilValue) {
         const R_xlen_t n = Rf_xlength(data2);
-        auto out = cp::charvec::Builder::build_store(static_cast<size_t>(n),
+        auto out = charport::charvec::Builder::build_store(static_cast<size_t>(n),
           [&](cpi::charvec_shard & sh, charport_strview * rec, size_t nn) {
             for(R_xlen_t i = 0; i < n; ++i) {
               cpi::copy_record(sh, rec, nn, static_cast<size_t>(i),
@@ -365,7 +424,7 @@ struct charvec_altrep {
           }
         }
 
-        auto out = cp::charvec::Builder::build_store(static_cast<size_t>(out_len),
+        auto out = charport::charvec::Builder::build_store(static_cast<size_t>(out_len),
           [&](cpi::charvec_shard & sh, charport_strview * rec, size_t nn) {
             R_xlen_t out_i = 0;
             for(R_xlen_t i = 0; i < xlen; ++i) {
@@ -384,7 +443,7 @@ struct charvec_altrep {
         throw std::runtime_error("invalid indx type in Extract_subset method");
       }
       const R_xlen_t len = Rf_xlength(indx);
-      auto out = cp::charvec::Builder::build_store(static_cast<size_t>(len),
+      auto out = charport::charvec::Builder::build_store(static_cast<size_t>(len),
         [&](cpi::charvec_shard & sh, charport_strview * rec, size_t nn) {
           if(TYPEOF(indx) == INTSXP) {
             const int * idx = INTEGER(indx);
@@ -468,7 +527,7 @@ struct charvec_altrep {
       const unsigned char * enc_offset = layout.enc_offset;
       const unsigned char * data_offset = layout.data_offset;
 
-      auto ret = cp::charvec::Builder::build_store(static_cast<R_xlen_t>(layout.n),
+      auto ret = charport::charvec::Builder::build_store(static_cast<R_xlen_t>(layout.n),
         [&](cpi::charvec_shard & sh, charport_strview * rec, size_t nn) {
           for(size_t i = 0; i < layout.n; ++i) {
             const uint32_t size = charvec_read_u32_advance(size_offset, layout.swap);
@@ -509,11 +568,10 @@ struct charvec_altrep {
     });
   }
 
-  // Broker hooks: charvec registers with the broker exactly like a
-  // third-party backend would, so the registration path is exercised from
-  // day one. init borrows the store pointer that already hangs off data1;
-  // a materialized charvec has released its store, so init returns NULL and
-  // the broker serves it via the direct path over the cached data2.
+  // Broker hooks used when the reference backend is explicitly registered.
+  // init borrows the store pointer that already hangs off data1; a materialized
+  // charvec has released its store, so init returns NULL and the broker serves
+  // it via the direct path over the cached data2.
   static void * reader_init(SEXP x) {
     if(R_altrep_data2(x) != R_NilValue) {
       return nullptr;
@@ -521,7 +579,7 @@ struct charvec_altrep {
     return Ptr(x);
   }
 
-  // Pure state read -- no R, no allocation, no mutation: reentrant.
+  // Pure state read with no R calls, allocation, or mutation: reentrant.
   static charport_strview reader_get(void * state, R_xlen_t i) {
     return static_cast<cpi::charvec_data *>(state)->records[static_cast<size_t>(i)];
   }
