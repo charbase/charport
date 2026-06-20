@@ -48,8 +48,11 @@ setwd(old_wd)
 
 so_path <- file.path(build_dir, paste0("threaded_consumer", .Platform$dynlib.ext))
 if (status != 0L || !file.exists(so_path)) {
+  catn("SKIP: threaded consumer build failed; std::thread coverage was not run")
+  catn("R CMD SHLIB status:", status)
+  catn("build directory:", build_dir)
+  catn("compiler output follows:")
   cat(readLines(file.path(build_dir, "shlib_out.txt"), warn = FALSE), sep = "\n")
-  catn("SKIP: toolchain could not build the threaded test consumer")
   quit(save = "no", status = 0L)
 }
 

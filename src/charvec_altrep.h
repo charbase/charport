@@ -6,7 +6,8 @@
 #include <R_ext/Altrep.h>
 #include <R_ext/Rdynload.h>
 
-#include "../inst/include/charport_internal.h"
+#include "../inst/include/charport/r_interop.h"
+#include "../inst/include/charport/builder_single_threaded.h"
 
 namespace cpi = charport::internal;
 
@@ -24,22 +25,74 @@ inline SEXP charport_sexp_guard(const char * op, Fun fun) {
   }
 }
 
-// serialized_state layout: u64 element count | u32 byte lengths | u8
-// encodings | concatenated payload bytes (the pointer->offset conversion).
-// Not frozen until first CRAN release.
+// serialized_state layout:
+//   magic "CPV1" | u8 endian flag | u64 element count | u32 byte lengths |
+//   u8 encodings | concatenated payload bytes (the pointer->offset conversion).
+// Integer fields are written in the writer's native endian order; the endian
+// flag lets readers swap only when necessary. Not frozen until first CRAN
+// release.
 struct charvec_serialized_layout {
   size_t n = 0;
+  bool swap = false;
   const unsigned char * size_offset = nullptr;
   const unsigned char * enc_offset = nullptr;
   const unsigned char * data_offset = nullptr;
   const unsigned char * data_end = nullptr;
 };
 
+inline bool charvec_host_is_little_endian() noexcept {
+  const uint16_t one = 1;
+  return *reinterpret_cast<const unsigned char *>(&one) == 1;
+}
+
+inline unsigned char charvec_native_endian_flag() noexcept {
+  return charvec_host_is_little_endian() ? static_cast<unsigned char>(1)
+                                         : static_cast<unsigned char>(2);
+}
+
+inline uint32_t charvec_bswap32(uint32_t x) noexcept {
+  return ((x & 0x000000ffU) << 24) |
+         ((x & 0x0000ff00U) << 8) |
+         ((x & 0x00ff0000U) >> 8) |
+         ((x & 0xff000000U) >> 24);
+}
+
+inline uint64_t charvec_bswap64(uint64_t x) noexcept {
+  return ((x & 0x00000000000000ffULL) << 56) |
+         ((x & 0x000000000000ff00ULL) << 40) |
+         ((x & 0x0000000000ff0000ULL) << 24) |
+         ((x & 0x00000000ff000000ULL) << 8) |
+         ((x & 0x000000ff00000000ULL) >> 8) |
+         ((x & 0x0000ff0000000000ULL) >> 24) |
+         ((x & 0x00ff000000000000ULL) >> 40) |
+         ((x & 0xff00000000000000ULL) >> 56);
+}
+
+inline uint64_t charvec_read_u64(const unsigned char * ptr, bool swap) noexcept {
+  uint64_t out = 0;
+  std::memcpy(&out, ptr, sizeof(uint64_t));
+  return swap ? charvec_bswap64(out) : out;
+}
+
+inline uint32_t charvec_read_u32_advance(const unsigned char *& ptr, bool swap) noexcept {
+  uint32_t out = 0;
+  std::memcpy(&out, ptr, sizeof(uint32_t));
+  ptr += sizeof(uint32_t);
+  return swap ? charvec_bswap32(out) : out;
+}
+
+inline size_t charvec_serialized_prefix_bytes() noexcept {
+  return 5;  // "CPV1" + endian flag
+}
+
 inline size_t charvec_serialized_length(size_t n, size_t payload_bytes) {
   const size_t sizes_bytes = cpi::checked_mul_size(n, sizeof(uint32_t), "serialized_state");
   const size_t enc_bytes = cpi::checked_mul_size(n, sizeof(uint8_t), "serialized_state");
   const size_t header_bytes = cpi::checked_add_size(
-    cpi::checked_add_size(sizeof(uint64_t), sizes_bytes, "serialized_state"),
+    cpi::checked_add_size(
+      cpi::checked_add_size(charvec_serialized_prefix_bytes(), sizeof(uint64_t), "serialized_state"),
+      sizes_bytes,
+      "serialized_state"),
     enc_bytes,
     "serialized_state"
   );
@@ -56,13 +109,23 @@ inline charvec_serialized_layout charvec_parse_serialized(SEXP serialized_state)
   }
 
   const size_t raw_len = static_cast<size_t>(Rf_xlength(serialized_state));
-  if(raw_len < sizeof(uint64_t)) {
+  const size_t prefix_bytes = charvec_serialized_prefix_bytes();
+  if(raw_len < prefix_bytes + sizeof(uint64_t)) {
     throw std::runtime_error("serialized_state is truncated");
   }
 
   const unsigned char * serialized_ptr = RAW(serialized_state);
-  uint64_t n64 = 0;
-  std::memcpy(&n64, serialized_ptr, sizeof(uint64_t));
+  if(serialized_ptr[0] != 'C' || serialized_ptr[1] != 'P' ||
+     serialized_ptr[2] != 'V' || serialized_ptr[3] != '1') {
+    throw std::runtime_error("invalid serialized_state format");
+  }
+  const unsigned char source_endian = serialized_ptr[4];
+  if(source_endian != 1 && source_endian != 2) {
+    throw std::runtime_error("invalid serialized_state endian flag");
+  }
+  const bool swap = source_endian != charvec_native_endian_flag();
+
+  const uint64_t n64 = charvec_read_u64(serialized_ptr + prefix_bytes, swap);
   if(n64 > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
      n64 > static_cast<uint64_t>(std::numeric_limits<R_xlen_t>::max())) {
     throw std::runtime_error("serialized_state length exceeds R_xlen_t");
@@ -72,7 +135,10 @@ inline charvec_serialized_layout charvec_parse_serialized(SEXP serialized_state)
   const size_t sizes_bytes = cpi::checked_mul_size(n, sizeof(uint32_t), "serialized_state header");
   const size_t enc_bytes = cpi::checked_mul_size(n, sizeof(uint8_t), "serialized_state header");
   const size_t header_bytes = cpi::checked_add_size(
-    cpi::checked_add_size(sizeof(uint64_t), sizes_bytes, "serialized_state header"),
+    cpi::checked_add_size(
+      cpi::checked_add_size(prefix_bytes, sizeof(uint64_t), "serialized_state header"),
+      sizes_bytes,
+      "serialized_state header"),
     enc_bytes,
     "serialized_state header"
   );
@@ -83,7 +149,8 @@ inline charvec_serialized_layout charvec_parse_serialized(SEXP serialized_state)
 
   charvec_serialized_layout layout;
   layout.n = n;
-  layout.size_offset = serialized_ptr + sizeof(uint64_t);
+  layout.swap = swap;
+  layout.size_offset = serialized_ptr + prefix_bytes + sizeof(uint64_t);
   layout.enc_offset = layout.size_offset + sizes_bytes;
   layout.data_offset = layout.enc_offset + enc_bytes;
   layout.data_end = serialized_ptr + raw_len;
@@ -152,12 +219,9 @@ struct charvec_altrep {
 
   // Full materialization, cached in data2. The store is freed afterwards
   // (records would be a redundant copy of the payload), so record pointers
-  // handed out before materialization dangle once anything triggers Dataptr.
-  // Tension with the reader contract ("pointers stay valid while x is alive
-  // and unmutated"): materialization invalidates pointers but is triggered
-  // by *reads*. Unresolved -- the alternatives (keep the store alive at a
-  // memory cost, or define materialization as mutation) must be decided
-  // before the ABI freezes at the first CRAN release.
+  // handed out before materialization are invalidated. This is the concrete
+  // reason the reader contract is a borrow: while a reader/view is live, the
+  // consumer must ensure the vector is not touched through R or aliases.
   static SEXP Materialize(SEXP vec) {
     SEXP data2 = R_altrep_data2(vec);
     if(data2 != R_NilValue) {
@@ -180,11 +244,13 @@ struct charvec_altrep {
       SEXP data2 = R_altrep_data2(vec);
       if(data2 != R_NilValue) {
         const R_xlen_t n = Rf_xlength(data2);
-        auto out = cpi::build_charvec(static_cast<size_t>(n), [&](cpi::charvec_shard & ctx) {
-          for(R_xlen_t i = 0; i < n; ++i) {
-            cpi::assign_charsxp(ctx, static_cast<size_t>(i), STRING_ELT(data2, i));
-          }
-        });
+        auto out = cp::charvec::Builder::build_store(static_cast<size_t>(n),
+          [&](cpi::charvec_shard & sh, charport_strview * rec, size_t nn) {
+            for(R_xlen_t i = 0; i < n; ++i) {
+              cpi::copy_record(sh, rec, nn, static_cast<size_t>(i),
+                               cpi::charsxp_to_view(STRING_ELT(data2, i)));
+            }
+          });
         return Make(out.release(), true);
       }
       auto * out = new cpi::charvec_data(Get(vec));
@@ -231,7 +297,7 @@ struct charvec_altrep {
       return;
     }
     charport_sexp_guard("charvec Set_elt", [&]() -> SEXP {
-      cpi::assign_charsxp(Get(vec), static_cast<size_t>(i), new_val);
+      Get(vec).assign(static_cast<size_t>(i), cpi::charsxp_to_view(new_val));
       return R_NilValue;
     });
   }
@@ -269,17 +335,18 @@ struct charvec_altrep {
       // out-of-range and NA subscripts produce NA elements; out records start
       // NA, so only valid subscripts need a write. Builds go through a transient
       // shard context (one bump-packed chain) rather than the store directly.
-      auto copy_element = [&](cpi::charvec_shard & out, size_t out_i, R_xlen_t zero_based) {
+      auto copy_element = [&](cpi::charvec_shard & sh, charport_strview * recs, size_t n,
+                              size_t out_i, R_xlen_t zero_based) {
         if(zero_based < 0 || zero_based >= xlen) {
           return;
         }
         if(data2 != R_NilValue) {
-          cpi::assign_charsxp(out, out_i, STRING_ELT(data2, zero_based));
+          cpi::copy_record(sh, recs, n, out_i, cpi::charsxp_to_view(STRING_ELT(data2, zero_based)));
           return;
         }
         const charport_strview & rec = Get(x).view(static_cast<size_t>(zero_based));
         if(!rec.is_na()) {
-          out.assign(out_i, rec);
+          cpi::copy_record(sh, recs, n, out_i, rec);
         }
       };
 
@@ -298,17 +365,18 @@ struct charvec_altrep {
           }
         }
 
-        auto out = cpi::build_charvec(static_cast<size_t>(out_len), [&](cpi::charvec_shard & ctx) {
-          R_xlen_t out_i = 0;
-          for(R_xlen_t i = 0; i < xlen; ++i) {
-            const int idx_i = idx[i % idx_len];
-            if(idx_i == TRUE) {
-              copy_element(ctx, static_cast<size_t>(out_i++), i);
-            } else if(idx_i == NA_LOGICAL) {
-              ++out_i;  // stays NA
+        auto out = cp::charvec::Builder::build_store(static_cast<size_t>(out_len),
+          [&](cpi::charvec_shard & sh, charport_strview * rec, size_t nn) {
+            R_xlen_t out_i = 0;
+            for(R_xlen_t i = 0; i < xlen; ++i) {
+              const int idx_i = idx[i % idx_len];
+              if(idx_i == TRUE) {
+                copy_element(sh, rec, nn, static_cast<size_t>(out_i++), i);
+              } else if(idx_i == NA_LOGICAL) {
+                ++out_i;  // stays NA
+              }
             }
-          }
-        });
+          });
         return Make(out.release(), true);
       }
 
@@ -316,23 +384,24 @@ struct charvec_altrep {
         throw std::runtime_error("invalid indx type in Extract_subset method");
       }
       const R_xlen_t len = Rf_xlength(indx);
-      auto out = cpi::build_charvec(static_cast<size_t>(len), [&](cpi::charvec_shard & ctx) {
-        if(TYPEOF(indx) == INTSXP) {
-          const int * idx = INTEGER(indx);
-          for(R_xlen_t i = 0; i < len; ++i) {
-            if(idx[i] != NA_INTEGER) {
-              copy_element(ctx, static_cast<size_t>(i), static_cast<R_xlen_t>(idx[i]) - 1);
+      auto out = cp::charvec::Builder::build_store(static_cast<size_t>(len),
+        [&](cpi::charvec_shard & sh, charport_strview * rec, size_t nn) {
+          if(TYPEOF(indx) == INTSXP) {
+            const int * idx = INTEGER(indx);
+            for(R_xlen_t i = 0; i < len; ++i) {
+              if(idx[i] != NA_INTEGER) {
+                copy_element(sh, rec, nn, static_cast<size_t>(i), static_cast<R_xlen_t>(idx[i]) - 1);
+              }
+            }
+          } else {
+            const double * idx = REAL(indx);
+            for(R_xlen_t i = 0; i < len; ++i) {
+              if(!ISNAN(idx[i])) {
+                copy_element(sh, rec, nn, static_cast<size_t>(i), static_cast<R_xlen_t>(idx[i]) - 1);
+              }
             }
           }
-        } else {
-          const double * idx = REAL(indx);
-          for(R_xlen_t i = 0; i < len; ++i) {
-            if(!ISNAN(idx[i])) {
-              copy_element(ctx, static_cast<size_t>(i), static_cast<R_xlen_t>(idx[i]) - 1);
-            }
-          }
-        }
-      });
+        });
       return Make(out.release(), true);
     });
   }
@@ -354,9 +423,15 @@ struct charvec_altrep {
       const size_t total_bytes = charvec_serialized_length(n, total_size);
       SEXP serialized_state = Rf_allocVector(RAWSXP, static_cast<R_xlen_t>(total_bytes));
       unsigned char * serialized_ptr = RAW(serialized_state);
+      serialized_ptr[0] = 'C';
+      serialized_ptr[1] = 'P';
+      serialized_ptr[2] = 'V';
+      serialized_ptr[3] = '1';
+      serialized_ptr[4] = charvec_native_endian_flag();
       const uint64_t n64 = static_cast<uint64_t>(n);
-      std::memcpy(serialized_ptr, &n64, sizeof(uint64_t));
-      unsigned char * current_offset = serialized_ptr + sizeof(uint64_t);
+      std::memcpy(serialized_ptr + charvec_serialized_prefix_bytes(), &n64, sizeof(uint64_t));
+      unsigned char * current_offset =
+        serialized_ptr + charvec_serialized_prefix_bytes() + sizeof(uint64_t);
 
       for(size_t i = 0; i < n; ++i) {
         const uint32_t size = data1.records[i].len;
@@ -393,40 +468,39 @@ struct charvec_altrep {
       const unsigned char * enc_offset = layout.enc_offset;
       const unsigned char * data_offset = layout.data_offset;
 
-      auto ret = cpi::build_charvec(layout.n, [&](cpi::charvec_shard & ctx) {
-        for(size_t i = 0; i < layout.n; ++i) {
-          uint32_t size = 0;
-          std::memcpy(&size, size_offset, sizeof(uint32_t));
-          size_offset += sizeof(uint32_t);
-          if(!cpi::check_r_string_len(size)) {
-            throw std::runtime_error("serialized string size exceeds R string size");
-          }
-          const charport_enc encoding = static_cast<charport_enc>(*enc_offset++);
-          const size_t stored_len = static_cast<size_t>(size);
-          const char * payload = charvec_serialized_payload(data_offset, layout.data_end, stored_len);
-          // Untrusted input: accept every encoding a record can legitimately
-          // hold (the store keeps encodings verbatim, so any of these can have
-          // been serialized) and reject only an out-of-range encoding byte.
-          switch(encoding) {
-          case charport_enc::CE_ASCII:
-          case charport_enc::CE_UTF8:
-          case charport_enc::CE_ASCII_OR_UTF8:
-          case charport_enc::CE_LATIN1:
-          case charport_enc::CE_NATIVE:
-          case charport_enc::CE_BYTES:
-            ctx.assign(i, payload, stored_len, encoding);
-            break;
-          case charport_enc::CE_NA:
-            if(stored_len != 0) {
-              throw std::runtime_error("serialized NA string must have zero length");
+      auto ret = cp::charvec::Builder::build_store(static_cast<R_xlen_t>(layout.n),
+        [&](cpi::charvec_shard & sh, charport_strview * rec, size_t nn) {
+          for(size_t i = 0; i < layout.n; ++i) {
+            const uint32_t size = charvec_read_u32_advance(size_offset, layout.swap);
+            if(!cpi::check_r_string_len(size)) {
+              throw std::runtime_error("serialized string size exceeds R string size");
             }
-            ctx.assign(i, nullptr, 0, charport_enc::CE_NA);
-            break;
-          default:
-            throw std::runtime_error("invalid string encoding in serialized_state");
+            const charport_enc encoding = static_cast<charport_enc>(*enc_offset++);
+            const size_t stored_len = static_cast<size_t>(size);
+            const char * payload = charvec_serialized_payload(data_offset, layout.data_end, stored_len);
+            // Untrusted input: accept every encoding a record can legitimately
+            // hold (the store keeps encodings verbatim, so any of these can have
+            // been serialized) and reject only an out-of-range encoding byte.
+            switch(encoding) {
+            case charport_enc::CE_ASCII:
+            case charport_enc::CE_UTF8:
+            case charport_enc::CE_ASCII_OR_UTF8:
+            case charport_enc::CE_LATIN1:
+            case charport_enc::CE_NATIVE:
+            case charport_enc::CE_BYTES:
+              cpi::copy_record(sh, rec, nn, i, payload, stored_len, encoding);
+              break;
+            case charport_enc::CE_NA:
+              if(stored_len != 0) {
+                throw std::runtime_error("serialized NA string must have zero length");
+              }
+              cpi::copy_record(sh, rec, nn, i, nullptr, 0, charport_enc::CE_NA);
+              break;
+            default:
+              throw std::runtime_error("invalid string encoding in serialized_state");
+            }
           }
-        }
-      });
+        });
 
       if(data_offset != layout.data_end) {
         throw std::runtime_error("serialized_state has trailing bytes");

@@ -47,7 +47,7 @@ cp_builder_from_reader <- function(x, n_shards = 1L) {
 
 # Same rebuild via the zero-copy reserve() path (reserve a buffer per element,
 # memcpy the bytes in) instead of set(). n_shards = 0 uses Builder::reserve,
-# >= 1 uses BuilderMT::reserve. Input must carry emittable encodings.
+# >= 1 uses BuilderMT::reserve.
 cp_builder_reserve <- function(x, n_shards = 1L) {
   .Call(C_cp_builder_reserve, x, as.integer(n_shards))
 }

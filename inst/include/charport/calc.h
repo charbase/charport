@@ -1,5 +1,5 @@
-#ifndef CHARPORT_INTERNAL_BASE_H
-#define CHARPORT_INTERNAL_BASE_H
+#ifndef CHARPORT_CALC_H
+#define CHARPORT_CALC_H
 
 // R-free foundation for the charvec store: byte/size helpers on top of the
 // public ABI element types (charport_enc, charport_strview, which live in
@@ -17,7 +17,7 @@
 #include <type_traits>
 #include <utility>
 
-#include "../charport/strview.h"
+#include "strview.h"
 
 namespace charport {
 namespace internal {
@@ -33,7 +33,7 @@ inline bool check_ascii(const void * ptr, size_t len) noexcept {
   size_t i = 0;
   if(len >= 32) {
     __m256i sum = _mm256_setzero_si256();
-    for(; i + 32 < len; i += 32) {
+    for(; i + 32 <= len; i += 32) {
       __m256i load = _mm256_lddqu_si256(reinterpret_cast<const __m256i*>(p8 + i));
       sum = _mm256_or_si256(sum, load);
     }
@@ -70,10 +70,18 @@ constexpr uint32_t r_string_size_max() noexcept {
   return static_cast<uint32_t>(std::numeric_limits<int>::max());
 }
 
+// Forward to std::make_unique when the standard provides it (C++14+); fall
+// back to the equivalent hand-rolled version on the C++11 floor. Both wrap the
+// new inside a function, so both give the same exception-safety as
+// std::make_unique -- the forward is a conformance nicety, not a safety change.
+#if defined(__cpp_lib_make_unique) || (defined(__cplusplus) && __cplusplus >= 201402L)
+using std::make_unique;
+#else
 template<typename T, typename... Args>
 inline std::unique_ptr<T> make_unique(Args&&... args) {
   return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
 }
+#endif
 
 template<typename POD>
 inline bool check_r_string_len_impl(const POD value, std::true_type) noexcept {

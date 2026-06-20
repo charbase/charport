@@ -50,7 +50,7 @@ extern "C" SEXP C_benchl_build_charvec_list(SEXP x, SEXP chunk_) {
         cp::StrView v = r[i];
         if(v.is_na()) b.set_na(i - lo); else b.set(i - lo, v);
       }
-      SET_VECTOR_ELT(out, j, b.finish());
+      SET_VECTOR_ELT(out, j, b.to_charvec());
     }
     UNPROTECT(1);
     return out;

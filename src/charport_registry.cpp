@@ -33,11 +33,10 @@ std::vector<backend_entry> & backend_registry() {
 }
 
 // The broker's accessor for CHARSXP-backed storage: state is the
-// STRING_PTR_RO array. Plain reads of immutable materialized CHARSXPs
-// (R_CHAR / getCharCE / charIsASCII flag bits), so the direct path is
-// always reentrant. Unlike registered backends, it can surface CE_NATIVE /
-// CE_LATIN1 marks from old CHARSXPs; consumers that require UTF-8
-// translate those elements themselves.
+// STRING_PTR_RO array. It uses R's CHARSXP accessors and is therefore
+// main-thread-only even though the pointers themselves are stable. Unlike
+// registered backends, it can surface CE_NATIVE / CE_LATIN1 marks from old
+// CHARSXPs; consumers that require UTF-8 translate those elements themselves.
 charport_strview charport_direct_get(void * state, R_xlen_t i) {
   const SEXP cs = static_cast<const SEXP *>(state)[i];
   if(cs == NA_STRING) {
@@ -48,6 +47,15 @@ charport_strview charport_direct_get(void * state, R_xlen_t i) {
   out.len = static_cast<uint32_t>(Rf_xlength(cs));  // CHARSXP length <= INT_MAX
   out.enc = cpi::classify_charsxp(cs);
   return out;
+}
+
+charport_reader charport_direct_reader(SEXP x, const void * direct) {
+  charport_reader r;
+  r.n = Rf_xlength(x);
+  r.state = const_cast<void *>(direct);
+  r.get = charport_direct_get;
+  r.reentrant = false;
+  return r;
 }
 
 void register_charvec_backend() {
@@ -97,6 +105,14 @@ charport_reader charport_resolve(SEXP x) {
   if(TYPEOF(x) != STRSXP) {
     Rf_error("charport_resolve: x must be a character vector");
   }
+
+  // Plain vectors, and ALTREP vectors that already have a data pointer, are
+  // already CHARSXP storage. DATAPTR_OR_NULL does not force materialization;
+  // if it returns NULL, only then is a backend lookup useful.
+  if(const void * direct = DATAPTR_OR_NULL(x)) {
+    return charport_direct_reader(x, direct);
+  }
+
   charport_reader r;
   r.n = Rf_xlength(x);
   for(const backend_entry & e : backend_registry()) {
@@ -110,12 +126,9 @@ charport_reader charport_resolve(SEXP x) {
       break;  // class matched but cannot serve this instance: go direct
     }
   }
-  // plain vectors are already CHARSXP storage; unregistered ALTREP pays a
-  // one-time materialization here (the status-quo cost, once, at resolve)
-  r.state = const_cast<void *>(static_cast<const void *>(STRING_PTR_RO(x)));
-  r.get = charport_direct_get;
-  r.reentrant = true;
-  return r;
+  // Unregistered, unmaterialized ALTREP pays a one-time materialization here
+  // (the status-quo cost, once, at resolve).
+  return charport_direct_reader(x, STRING_PTR_RO(x));
 }
 
 int charport_abi_version(void) {

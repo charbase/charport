@@ -72,7 +72,7 @@ extern "C" SEXP C_bench_read_lines_charvec(SEXP path_, SEXP na_every_) {
       }
       start = end + 1;
     }
-    return b.finish();
+    return b.to_charvec();
   } catch(const std::exception & e) {
     Rf_error("read_lines_charvec: %s", e.what());
   }
@@ -195,7 +195,7 @@ extern "C" SEXP C_bench_build_charvec(SEXP x, SEXP n_threads_) {
         cp::StrView v = r[i];
         if(v.is_na()) b.set_na(i); else b.set(i, v);
       }
-      return b.finish();
+      return b.to_charvec();
     }
     if(!r.reentrant()) Rf_error("reader is not reentrant");
     cp::charvec::BuilderMT b(n, static_cast<size_t>(k));
@@ -221,7 +221,7 @@ extern "C" SEXP C_bench_build_charvec(SEXP x, SEXP n_threads_) {
     for(const std::string & e : errors) {
       if(!e.empty()) Rf_error("worker: %s", e.c_str());
     }
-    return b.finish();
+    return b.to_charvec();
   } catch(const std::exception & e) {
     Rf_error("build_charvec: %s", e.what());
   }

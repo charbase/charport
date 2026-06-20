@@ -1,5 +1,5 @@
-#ifndef CHARPORT_INTERNAL_R_INTEROP_H
-#define CHARPORT_INTERNAL_R_INTEROP_H
+#ifndef CHARPORT_R_INTEROP_H
+#define CHARPORT_R_INTEROP_H
 
 // The R-facing edge of the charvec store: CHARSXP -> record classification
 // and record -> CHARSXP materialization. Everything here runs on the main R
@@ -20,7 +20,7 @@
 #include <Rinternals.h>
 #include <Rversion.h>
 
-#include "base.h"
+#include "calc.h"
 #include "charvec_store.h"
 
 namespace charport {
@@ -81,16 +81,16 @@ inline charport_enc classify_charsxp(SEXP x) {
   }
 }
 
-// Store a CHARSXP into Store (charvec_data or charvec_shard) at idx, verbatim:
-// the classified encoding is kept as-is, the bytes are borrowed from the
-// CHARSXP (no translation, no allocation, no R error path).
-template <typename Store>
-inline void assign_charsxp(Store & store, size_t idx, SEXP x) {
+// Classify a CHARSXP into a borrowed strview the store keeps verbatim:
+// NA_STRING -> {NULL, 0, CE_NA}; otherwise the CHARSXP's bytes (borrowed, valid
+// while x is) with the classified encoding -- no translation, no allocation, no
+// R error path. The caller writes it into a builder (Builder::set) or the
+// persistent store (charvec_data::assign).
+inline charport_strview charsxp_to_view(SEXP x) {
   if(x == NA_STRING) {
-    store.assign(idx, nullptr, 0, charport_enc::CE_NA);
-    return;
+    return make_strview(nullptr, 0, charport_enc::CE_NA);
   }
-  store.assign(idx, CHAR(x), static_cast<size_t>(Rf_xlength(x)), classify_charsxp(x));
+  return make_strview(CHAR(x), static_cast<uint32_t>(Rf_xlength(x)), classify_charsxp(x));
 }
 
 } // namespace internal

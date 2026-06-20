@@ -58,11 +58,13 @@ SEXP C_charvec_from_character(SEXP x) {
       throw std::runtime_error("x must be a character vector");
     }
     const R_xlen_t n = Rf_xlength(x);
-    auto store = cpi::build_charvec(static_cast<size_t>(n), [&](cpi::charvec_shard & ctx) {
-      for(R_xlen_t i = 0; i < n; ++i) {
-        cpi::assign_charsxp(ctx, static_cast<size_t>(i), STRING_ELT(x, i));
-      }
-    });
+    auto store = cp::charvec::Builder::build_store(n,
+      [&](cpi::charvec_shard & sh, charport_strview * rec, size_t nn) {
+        for(R_xlen_t i = 0; i < n; ++i) {
+          cpi::copy_record(sh, rec, nn, static_cast<size_t>(i),
+                           cpi::charsxp_to_view(STRING_ELT(x, i)));
+        }
+      });
     return charvec_altrep::Make(store.release(), true);
   });
 }
@@ -196,25 +198,22 @@ SEXP C_charvec_build_sharded(SEXP chunks) {
       throw std::runtime_error("sharded length exceeds R_xlen_t");
     }
 
-    cpi::strview_array records(total);
-    std::vector<cpi::charvec_shard> shards;
-    shards.reserve(static_cast<size_t>(n_chunks));
-    for(R_xlen_t j = 0; j < n_chunks; ++j) {
-      shards.emplace_back(records.data(), records.size());
+    if(n_chunks == 0) {
+      return charvec_altrep::Make(new cpi::charvec_data(), true);  // empty list -> empty charvec
     }
 
-    size_t offset = 0;
+    // one shard per chunk, each writing its chunk's contiguous output range
+    cp::charvec::BuilderMT b(static_cast<R_xlen_t>(total), static_cast<size_t>(n_chunks));
+    R_xlen_t offset = 0;
     for(R_xlen_t j = 0; j < n_chunks; ++j) {
       SEXP ch = VECTOR_ELT(chunks, j);
       const R_xlen_t ch_len = Rf_xlength(ch);
       for(R_xlen_t i = 0; i < ch_len; ++i) {
-        cpi::assign_charsxp(shards[static_cast<size_t>(j)], offset + static_cast<size_t>(i),
-                            STRING_ELT(ch, i));
+        b.set(static_cast<size_t>(j), offset + i, cpi::charsxp_to_view(STRING_ELT(ch, i)));
       }
-      offset += static_cast<size_t>(ch_len);
+      offset += ch_len;
     }
-
-    auto store = cpi::make_unique<cpi::charvec_data>(std::move(records), shards);
+    auto store = b.release_store();
     return charvec_altrep::Make(store.release(), true);
   });
 }

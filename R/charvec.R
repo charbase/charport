@@ -2,13 +2,13 @@
 #'
 #' Builds a `charvec` from the given values. This is charport's reference
 #' ALTREP character vector class and is an ordinary character vector to R code
-#' (`typeof(x)` is `"character"`). Its strings live as UTF-8/ASCII byte
-#' views in stable native memory blocks and are only converted to R's interned
-#' `CHARSXP` strings when something forces materialization.
+#' (`typeof(x)` is `"character"`). Its strings live as byte views in
+#' stable native memory blocks and are only converted to R's interned `CHARSXP`
+#' strings when something forces materialization.
 #'
-#' Element encodings are normalized at construction: ASCII and UTF-8 bytes are
-#' stored as-is, latin1 and native-encoded strings are translated to UTF-8,
-#' and `bytes`-encoded strings are stored verbatim. `NA_character_` is
+#' Element bytes and encoding marks are preserved verbatim. `charvec` is a
+#' storage/reference class, not an encoding-normalization layer; translation
+#' policy belongs in consumers built above charport. `NA_character_` is
 #' preserved.
 #'
 #' @param ... values to combine, as in [c()]; non-character values are coerced

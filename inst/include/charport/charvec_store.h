@@ -1,7 +1,7 @@
-#ifndef CHARPORT_INTERNAL_CHARVEC_STORE_H
-#define CHARPORT_INTERNAL_CHARVEC_STORE_H
+#ifndef CHARPORT_CHARVEC_STORE_H
+#define CHARPORT_CHARVEC_STORE_H
 
-#include "base.h"
+#include "calc.h"
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -27,10 +27,10 @@
 //
 // The store carries NO build/mutate bookkeeping (no allocated/dead byte counts,
 // no current-slice cursor). All bump-allocation state lives in charvec_shard,
-// the transient build context: every construction-by-index path (the Builder,
-// subset, deserialize, the bulk C build) fills a shard and the store adopts the
-// shard's chain by splice (charvec_data(strview_array&&, Shards&)), copying no
-// payload. build_charvec() packages that pattern.
+// the transient build context: every construction-by-index path fills one (or,
+// for parallel builds, several) charvec_shard and the store adopts each writer's
+// chain by splice (adopt_chain), copying no payload. The single-threaded
+// Builder, the parallel BuilderMT, and Builder::build_store all sit on this.
 //
 // Mutation (post-construction Set_elt):
 //   char * reserve(size_t idx, size_t len, charport_enc enc)
@@ -159,134 +159,122 @@ struct strview_array {
   const charport_strview * end() const noexcept { return data_.get() + n_; }
 };
 
-// Transient build context: owns a private slice chain and bump-allocates into
-// it, pointing at a shared records array it does not own. Construction by index
-// goes through one (serial) or several (parallel, disjoint ranges) of these,
-// and charvec_data adopts the chains by splice. Each record index must be
-// written by exactly one shard, exactly once.
+// Thread-local build accumulator: a private intrusive slice chain plus the bump
+// cursor over its head block. That is ALL it owns -- nothing shared. It carries
+// no records pointer and no construction logic: the records array is owned by
+// the builder and passed to the free helpers below (fill_record / copy_record),
+// which is what lets the single-threaded Builder and the per-thread shards of
+// BuilderMT drive the same write path without sharing state through the shard.
+// RAII: the chain is freed on destruction; move-only, and a move nulls the
+// source head so the chain is freed exactly once. adopt_chain (charvec_data)
+// hands the chain to the finished store.
 struct charvec_shard {
-  char * slice_head;                 // intrusive chain head == current bump block
-  charport_strview * records;        // non-owning, shared across shards
-  size_t n_records;
-  size_t allocated_bytes;
-  uint32_t current_slice_used;
-  uint32_t current_slice_capacity;
+  char * slice_head = nullptr;          // intrusive chain head == current bump block
+  size_t allocated_bytes = 0;
+  uint32_t current_slice_used = 0;
+  uint32_t current_slice_capacity = 0;
 
-  charvec_shard() noexcept :
-    slice_head(nullptr),
-    records(nullptr),
-    n_records(0),
-    allocated_bytes(0),
-    current_slice_used(0),
-    current_slice_capacity(0) {}
-
-  charvec_shard(charport_strview * records, size_t n) noexcept :
-    slice_head(nullptr),
-    records(records),
-    n_records(n),
-    allocated_bytes(0),
-    current_slice_used(0),
-    current_slice_capacity(0) {}
-
+  charvec_shard() noexcept = default;
   charvec_shard(const charvec_shard &) = delete;
   charvec_shard & operator=(const charvec_shard &) = delete;
 
-  charvec_shard(charvec_shard && other) noexcept :
-    slice_head(other.slice_head),
-    records(other.records),
-    n_records(other.n_records),
-    allocated_bytes(other.allocated_bytes),
-    current_slice_used(other.current_slice_used),
-    current_slice_capacity(other.current_slice_capacity) {
-    other.slice_head = nullptr;
+  charvec_shard(charvec_shard && o) noexcept :
+    slice_head(o.slice_head),
+    allocated_bytes(o.allocated_bytes),
+    current_slice_used(o.current_slice_used),
+    current_slice_capacity(o.current_slice_capacity) {
+    o.slice_head = nullptr;
   }
-
-  charvec_shard & operator=(charvec_shard && other) noexcept {
-    if(this != &other) {
+  charvec_shard & operator=(charvec_shard && o) noexcept {
+    if(this != &o) {
       free_slice_chain(slice_head);
-      slice_head = other.slice_head;
-      records = other.records;
-      n_records = other.n_records;
-      allocated_bytes = other.allocated_bytes;
-      current_slice_used = other.current_slice_used;
-      current_slice_capacity = other.current_slice_capacity;
-      other.slice_head = nullptr;
+      slice_head = o.slice_head;
+      allocated_bytes = o.allocated_bytes;
+      current_slice_used = o.current_slice_used;
+      current_slice_capacity = o.current_slice_capacity;
+      o.slice_head = nullptr;
     }
     return *this;
   }
-
   ~charvec_shard() { free_slice_chain(slice_head); }
-
-  // Tail slices grow using allocated_bytes / 2 as a conservative hint, rounded
-  // up to slice_alignment and capped at max_slice_bytes; a string larger than
-  // the growth target gets a slice at least as large as itself. The first slice
-  // is sized from the element count (initial_slice_heuristic).
-  size_t next_regular_slice_size() const noexcept {
-    const size_t initial = initial_slice_heuristic(n_records);
-    const size_t grown = round_up(std::max(initial, allocated_bytes / 2), slice_alignment());
-    return std::min(grown, max_slice_bytes());
-  }
-
-  void allocate_slice(uint32_t capacity) {
-    char * block = new char[slice_header_bytes() + capacity];
-    slice_set_next(block, slice_head);  // prepend; head == current bump block
-    slice_head = block;
-    current_slice_used = 0;
-    current_slice_capacity = capacity;
-  }
-
-  char * allocate_bytes(uint32_t len) {
-    if(len == 0) {
-      return const_cast<char*>(empty_data());
-    }
-    if(slice_head == nullptr || current_slice_capacity - current_slice_used < len) {
-      const size_t next_size = round_up(std::max(next_regular_slice_size(), static_cast<size_t>(len)), slice_alignment());
-      allocate_slice(checked_u32(next_size, "slice size"));
-    }
-    char * dest = slice_payload(slice_head) + current_slice_used;
-    current_slice_used += len;
-    allocated_bytes += static_cast<size_t>(len);
-    return dest;
-  }
-
-  char * reserve(size_t idx, size_t len, charport_enc enc) {
-    if(records == nullptr) {
-      throw std::runtime_error("charvec_shard has no records");
-    }
-    if(idx >= n_records) {
-      throw std::runtime_error("charvec_shard assignment out of bounds");
-    }
-    if(!check_r_string_len(len)) {
-      throw std::runtime_error("stored string length exceeds R string size");
-    }
-    const uint32_t stored_len = static_cast<uint32_t>(len);
-    if(enc == charport_enc::CE_NA) {
-      records[idx] = na_record();
-      return nullptr;
-    }
-    if(stored_len == 0) {
-      records[idx] = empty_record(enc);
-      return const_cast<char*>(empty_data());
-    }
-    char * dest = allocate_bytes(stored_len);
-    records[idx] = make_strview(dest, stored_len, enc);
-    return dest;
-  }
-
-  void assign(size_t idx, const char * ptr, size_t len, charport_enc enc) {
-    if(enc != charport_enc::CE_NA && ptr == nullptr && len > 0) {
-      throw std::runtime_error("cannot assign non-NA null bytes");
-    }
-    char * dest = reserve(idx, len, enc);
-    if(dest != nullptr && len > 0) {
-      std::memcpy(dest, ptr, len);
-    }
-  }
-
-  void assign(size_t idx, const charport_strview & value) {
-    assign(idx, value.ptr, static_cast<size_t>(value.len), value.enc);
-  }
 };
+
+// ---- shared construction helpers (the logic the shard no longer carries) ----
+// Each takes the shard (thread-local) plus the builder's records array + count
+// (shared, passed by the caller, never stored in the shard). n_hint is the
+// element count and only sizes the first slice.
+
+// Bump-allocate len > 0 bytes into the shard's chain, growing it when the tail
+// is full. Tail slices grow from allocated_bytes/2 (rounded, capped), and a
+// string larger than the growth target gets a slice at least its own size; the
+// first slice is sized from n_hint (initial_slice_heuristic).
+inline char * shard_allocate_bytes(charvec_shard & sh, uint32_t len, size_t n_hint) {
+  if(len == 0) {
+    return const_cast<char*>(empty_data());
+  }
+  if(sh.slice_head == nullptr || sh.current_slice_capacity - sh.current_slice_used < len) {
+    const size_t initial = initial_slice_heuristic(n_hint);
+    const size_t regular = std::min(round_up(std::max(initial, sh.allocated_bytes / 2), slice_alignment()),
+                                    max_slice_bytes());
+    const size_t next_size = round_up(std::max(regular, static_cast<size_t>(len)), slice_alignment());
+    const uint32_t cap = checked_u32(next_size, "slice size");
+    char * block = new char[slice_header_bytes() + cap];
+    slice_set_next(block, sh.slice_head);  // prepend; head == current bump block
+    sh.slice_head = block;
+    sh.current_slice_used = 0;
+    sh.current_slice_capacity = cap;
+  }
+  char * dest = slice_payload(sh.slice_head) + sh.current_slice_used;
+  sh.current_slice_used += len;
+  sh.allocated_bytes += static_cast<size_t>(len);
+  return dest;
+}
+
+// Reserve len bytes for records[idx] with encoding enc and point the record at
+// them; returns the buffer (caller fills it). NA / empty go to the shared
+// sentinels and allocate nothing. Throws on a null records target, out-of-range
+// idx, or len > INT_MAX.
+inline char * fill_record(charvec_shard & sh, charport_strview * records, size_t n,
+                          size_t idx, size_t len, charport_enc enc) {
+  if(records == nullptr) {
+    throw std::runtime_error("charvec builder: no records");
+  }
+  if(idx >= n) {
+    throw std::runtime_error("charvec builder: assignment out of bounds");
+  }
+  if(!check_r_string_len(len)) {
+    throw std::runtime_error("stored string length exceeds R string size");
+  }
+  const uint32_t stored_len = static_cast<uint32_t>(len);
+  if(enc == charport_enc::CE_NA) {
+    records[idx] = na_record();
+    return nullptr;
+  }
+  if(stored_len == 0) {
+    records[idx] = empty_record(enc);
+    return const_cast<char*>(empty_data());
+  }
+  char * dest = shard_allocate_bytes(sh, stored_len, n);
+  records[idx] = make_strview(dest, stored_len, enc);
+  return dest;
+}
+
+// fill_record, then copy the bytes in.
+inline void copy_record(charvec_shard & sh, charport_strview * records, size_t n,
+                        size_t idx, const char * ptr, size_t len, charport_enc enc) {
+  if(enc != charport_enc::CE_NA && ptr == nullptr && len > 0) {
+    throw std::runtime_error("cannot assign non-NA null bytes");
+  }
+  char * dest = fill_record(sh, records, n, idx, len, enc);
+  if(dest != nullptr && len > 0) {
+    std::memcpy(dest, ptr, len);
+  }
+}
+
+inline void copy_record(charvec_shard & sh, charport_strview * records, size_t n,
+                        size_t idx, const charport_strview & v) {
+  copy_record(sh, records, n, idx, v.ptr, static_cast<size_t>(v.len), v.enc);
+}
 
 struct charvec_data {
   char * slice_head;                 // intrusive chain head (owned; freed in dtor)
@@ -381,38 +369,34 @@ struct charvec_data {
 
   explicit charvec_data(size_t len) : slice_head(nullptr), records(len) {}
 
+  // Adopt an already-filled records array (the writers' shared target); the
+  // payload chain is then spliced in by adopt_chain. Empty chain until then.
+  explicit charvec_data(strview_array && recs) noexcept
+    : slice_head(nullptr), records(std::move(recs)) {}
+
   // Copy is an exact-fit rebuild of the other store's live payload.
   charvec_data(const charvec_data & other) : slice_head(nullptr), records() {
     rebuild_from(other.records);
   }
 
-  // Merge build-context output: adopt every shard's slice chain without copying
-  // payload. Order is irrelevant -- records already point into the blocks, and
-  // the finished store does no further bump allocation -- so the chains are
-  // simply spliced and the shards emptied (their destructors must not free what
-  // we now own).
-  template<typename Shards>
-  charvec_data(strview_array && source_records, Shards & shards) :
-    slice_head(nullptr),
-    records(std::move(source_records)) {
-    char * tail = nullptr;
-    for(charvec_shard & shard : shards) {
-      char * head = shard.slice_head;
-      if(head == nullptr) {
-        continue;
-      }
-      shard.slice_head = nullptr;  // donated
-      if(slice_head == nullptr) {
-        slice_head = head;
-      } else {
-        slice_set_next(tail, head);
-      }
-      char * block = head;
-      while(slice_next(block) != nullptr) {
-        block = slice_next(block);
-      }
-      tail = block;
+  // Splice a writer's slice chain into this store (prepend it) and clear the
+  // writer's head, so the writer no longer owns those blocks -- no payload is
+  // copied. Call once per writer after adopting their shared records array.
+  // Order across writers is irrelevant: a finished store does no further bump
+  // allocation and records already point into the blocks. This is how every
+  // build path (Builder, BuilderMT, build_store) hands its chain to the store.
+  void adopt_chain(charvec_shard & w) noexcept {
+    char * head = w.slice_head;
+    if(head == nullptr) {
+      return;
     }
+    w.slice_head = nullptr;  // donated; the writer's dtor must not free it
+    char * tail = head;
+    while(slice_next(tail) != nullptr) {
+      tail = slice_next(tail);
+    }
+    slice_set_next(tail, slice_head);
+    slice_head = head;
   }
 
   charvec_data(charvec_data && other) noexcept :
@@ -506,22 +490,6 @@ struct charvec_data {
     assign(idx, value.ptr, static_cast<size_t>(value.len), value.enc);
   }
 };
-
-// Build a charvec_data of length n through a transient single shard (bump-packed
-// slice chain), then merge -- so every fill-by-index construction path funnels
-// through a shard rather than allocating into the store one dedicated slice per
-// element. `fill` receives the shard and writes each index (via assign /
-// assign_charsxp). Out-of-range or never-written indices stay NA.
-template<typename Fill>
-inline std::unique_ptr<charvec_data> build_charvec(size_t n, Fill && fill) {
-  strview_array records(n);
-  charvec_shard ctx(records.data(), records.size());
-  fill(ctx);
-  std::array<charvec_shard, 1> shards{{std::move(ctx)}};
-  // qualified: an unqualified call would pull std::make_unique in by ADL on the
-  // std::array argument and clash with this namespace's make_unique
-  return charport::internal::make_unique<charvec_data>(std::move(records), shards);
-}
 
 } // namespace internal
 } // namespace charport

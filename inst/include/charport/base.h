@@ -41,8 +41,9 @@ extern "C" {
 // ========================================================================
 
 // Per-element accessor: a pure function of backend state + index, valid for
-// i in [0, n). No SEXP, no R API -- when registered reentrant = true it may
-// be called concurrently from any thread (see the reentrant contract below).
+// i in [0, n). No SEXP, no R API, no C++ exceptions crossing this ABI -- when
+// registered reentrant = true it may be called concurrently from any thread
+// (see the reentrant contract below).
 typedef charport_strview (*charport_get_strview_fn)(void * state, R_xlen_t i);
 
 // Per-vector state lookup: called once by charport_resolve, on the main R
@@ -50,25 +51,26 @@ typedef charport_strview (*charport_get_strview_fn)(void * state, R_xlen_t i);
 // what already hangs off R_altrep_data1(x); the broker never frees it. A
 // backend that must build state lazily (an index, a cache) builds it here,
 // on the main thread, and stashes it in R_altrep_data1/data2 so GC owns the
-// lifetime. May Rf_error. Returning NULL means "cannot serve this vector"
-// (e.g. the backend's store has been released after materialization): the
-// broker then falls back to materialize + direct, same as an unregistered
-// class.
+// lifetime. May Rf_error, but must not throw C++ exceptions across this ABI.
+// Returning NULL means "cannot serve this vector" (e.g. the backend's store
+// has been released after materialization): the broker then falls back to
+// materialize + direct, same as an unregistered class.
 typedef void * (*charport_init_fn)(SEXP x);
 
 // The per-vector handle: an SEXP-free by-value POD -- nothing to close,
 // nothing to free, safe to hand to worker threads when reentrant. The
 // reader is a borrow of x: while any copy of it (or any returned strview)
-// is in use, the consumer keeps x protected and does not touch x through
-// the R API -- no writes, no DATAPTR/STRING_PTR_RO, and no element access
-// either (an ALTREP class may materialize eagerly on STRING_ELT, and
-// mutation or materialization may move or free the viewed storage). state
-// and every returned strview ptr are valid exactly that long.
+// is in use, the consumer keeps x protected and ensures x is not touched
+// through the R API, including through aliases -- no writes, no
+// DATAPTR/STRING_PTR_RO, and no element access either (an ALTREP class may
+// materialize eagerly on STRING_ELT, and mutation or materialization may move
+// or free the viewed storage). state and every returned strview ptr are valid
+// exactly that long.
 typedef struct charport_reader {
     R_xlen_t n;                    // Rf_xlength(x), cached at resolve
     void * state;                  // opaque; meaningful only to get
     charport_get_strview_fn get;   // always non-null after resolve
-    bool reentrant;                // see contract; direct path is always true
+    bool reentrant;                // see contract; direct fallback is false
 } charport_reader;
 
 // ------------------------------------------------------------------------
@@ -91,20 +93,21 @@ typedef struct charport_reader {
 // concurrently from any thread, and the returned ptr remains valid for as
 // long as x is alive and unmutated. false means: main R thread only,
 // serial, and the consumer must consume/copy the bytes before the next
-// get_strview call on the same vector.
+// get_strview call on the same vector. Backend callbacks must not throw C++
+// exceptions across the C ABI; translate failures to Rf_error in init and make
+// get_strview total for valid indices.
 //
 // charport_resolve accepts STRSXP only (errors otherwise) and performs the
 // single per-vector lookup: a registered, serveable backend yields its
 // {state, get, reentrant}; everything else (plain vectors, materialized or
 // unregistered ALTREP, init returned NULL) is served by the broker's own
-// CHARSXP accessor over STRING_PTR_RO(x) -- forcing one-time
-// materialization for unregistered ALTREP, the status-quo cost consumers
-// pay today. After resolve, reading never touches R: the direct accessor's
-// CHARSXP derivation (R_CHAR / getCharCE / charIsASCII) is plain reads of
-// immutable materialized storage. A strview carries its own encoding
-// (CE_ASCII / CE_UTF8 / CE_LATIN1 / CE_NATIVE / CE_BYTES / NA); the store
-// keeps whatever it was given and the direct path reports the CHARSXP's mark
-// as-is. Any encoding policy a consumer wants is the consumer's to apply.
+// CHARSXP accessor over STRING_PTR_RO(x) -- forcing one-time materialization
+// for unregistered ALTREP, the status-quo cost consumers pay today. The direct
+// fallback uses R's CHARSXP accessors and is therefore reentrant = false. A
+// strview carries its own encoding (CE_ASCII / CE_UTF8 / CE_LATIN1 /
+// CE_NATIVE / CE_BYTES / NA); the store keeps whatever it was given and the
+// direct path reports the CHARSXP's mark as-is. Any encoding policy a consumer
+// wants is the consumer's to apply.
 //
 // charport_charvec_wrap takes ownership of a finished
 // charport::internal::charvec_data (allocated with new, headers matching
@@ -112,8 +115,8 @@ typedef struct charport_reader {
 // platform share one toolchain and heap, so cross-package new/delete is
 // sound) and returns it wrapped as a charvec SEXP, verbatim -- the store was
 // built by the consumer's own code, so there is no policy to enforce (records
-// are kept as given). Main R thread only; cp::charvec::Builder::finish (single
-// threaded) or cp::charvec::BuilderMT::finish is the intended caller.
+// are kept as given). Main R thread only; the builders' to_charvec() crosses
+// here (cp::charvec::Builder serial, cp::charvec::BuilderMT parallel).
 
 typedef void (*charport_register_backend_t)(R_altrep_class_t cls,
                                             charport_init_fn init,
@@ -194,8 +197,8 @@ inline void check_abi() {
 // One loop over any character vector. Construct on the main R thread (the
 // resolve); copies of the underlying POD (raw()) may be handed to worker
 // threads when reentrant(). The reader is a borrow: keep x protected and
-// do not touch it through the R API while any copy is in use (see the
-// charport_reader contract above).
+// ensure it is not touched through the R API, including through aliases, while
+// any copy is in use (see the charport_reader contract above).
 class Reader {
 public:
   explicit Reader(SEXP x) : r_(resolve(x)) {}

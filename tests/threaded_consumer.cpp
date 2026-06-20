@@ -82,7 +82,7 @@ SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
         throw std::runtime_error(err);
       }
     }
-    return b.finish();
+    return b.to_charvec();
   });
 }
 
@@ -116,7 +116,7 @@ SEXP C_consumer_worker_throws(void) {
         throw std::runtime_error(err);
       }
     }
-    return b.finish();
+    return b.to_charvec();
   });
 }
 

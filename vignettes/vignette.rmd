@@ -109,8 +109,9 @@ charport_backend_of(charvec("a"))
 ```
 
 `charvec` objects are ordinary character vectors to R code (`typeof` is
-`"character"`); strings are kept as UTF-8/ASCII byte views in native memory
-and only materialized to R `CHARSXP`s when something asks for them.
+`"character"`); strings are kept as byte views in native memory, with their
+existing encoding marks preserved, and only materialized to R `CHARSXP`s when
+something asks for them.
 
 Everything else happens in compiled code, through the public umbrella header
 `charport.h`, which is C++11-compatible and does not require consumers to
@@ -159,28 +160,29 @@ extern "C" SEXP C_total_bytes(SEXP x) {
 ```
 
 `cp::StrView` (= `charport_strview`) is `{const char * ptr; uint32_t len;
-charport_enc enc}`. `ptr == NULL` means `NA`. Registered backends only emit
-ASCII/UTF-8/byte views; the fallback path over plain vectors can additionally
-surface `CE_NATIVE`/`CE_LATIN1`, exactly as `Rf_getCharCE()` would.
+charport_enc enc}`. `ptr == NULL` means `NA`. Views carry their own encoding
+mark; `charvec` preserves what it was given, and the fallback path over plain
+vectors reports the CHARSXP mark exactly as `Rf_getCharCE()` would.
 
 **A reader is a borrow, in Rust terms.** Its views point into memory owned
 by the vector's backend; nothing is copied. Between resolving the reader and
-the last use of any view, keep `x` protected and do not touch it through the
-R API at all - no writes, no `DATAPTR()` or `STRING_PTR_RO()`, and no
-element access either: nothing in the ALTREP contract stops a class from
-materializing eagerly on `STRING_ELT()`, and mutation and materialization
-can both move or free the storage the views point into. While the borrow
-lasts, the reader is the only safe way to look at `x`. When R-level access
-is needed, finish with the reader (and every copy of it) first, then resolve
-a fresh one afterwards. A reader has no close operation. The borrow ends after
-the reader and all derived views are no longer used; C++ does not enforce this
-lifetime.
+the last use of any view, keep `x` protected and ensure neither `x` nor any
+alias is touched through the R API at all - no writes, no `DATAPTR()` or
+`STRING_PTR_RO()`, and no element access either: nothing in the ALTREP
+contract stops a class from materializing eagerly on `STRING_ELT()`, and
+mutation and materialization can both move or free the storage the views point
+into. While the borrow lasts, the reader is the only safe way to look at `x`.
+When R-level access is needed, finish with the reader (and every copy of it)
+first, then resolve a fresh one afterwards. A reader has no close operation.
+The borrow ends after the reader and all derived views are no longer used;
+C++ does not enforce this lifetime.
 
-For threaded reads, check `r.reentrant()` (true for registered reentrant
-backends and for the fallback path): the underlying `charport_reader` is an
-SEXP-free plain struct, so hand each worker a copy of `r.raw()` and adopt it
-with `cp::Reader(raw)` - workers never touch the R API. Resolve on the main
-thread; the borrow holds for as long as any copy is in use.
+For threaded reads, check `r.reentrant()` (true only for registered backends
+that make the reentrant promise; the fallback path over CHARSXPs is
+main-thread-only): the underlying `charport_reader` is an SEXP-free plain
+struct, so hand each worker a copy of `r.raw()` and adopt it with
+`cp::Reader(raw)` only when the flag is true. Resolve on the main thread; the
+borrow holds for as long as any copy is in use.
 
 ## Building a charvec
 
@@ -200,7 +202,7 @@ extern "C" SEXP C_repeat_word(SEXP word, SEXP n_) {
   for(R_xlen_t i = 0; i < n; ++i) {
     b.set(i, w);                 // copies the bytes into the store
   }
-  return b.finish();             // wraps the store in a charvec ALTREP
+  return b.to_charvec();             // wraps the store in a charvec ALTREP
 }
 ```
 
@@ -208,7 +210,7 @@ extern "C" SEXP C_repeat_word(SEXP word, SEXP n_) {
 The shard count is fixed at construction; each shard owns a private slice
 chain, so distinct shards may be written from distinct threads with no
 synchronization. Give each worker a shard index and a disjoint element range,
-then `finish()` after the join - the merge moves slice blocks, it does not
+then `to_charvec()` after the join - the merge moves slice blocks, it does not
 copy payload:
 
 ```cpp
@@ -217,16 +219,15 @@ cp::charvec::BuilderMT b(n, n_threads);   // n elements, n_threads shards
 // on worker t, for i in its own range only:
 //   b.set(/* shard = */ t, i, ptr, len, charport_enc::CE_UTF8);
 // distinct shard index per worker -> safe with no locking; set() touches no
-// R API and throws std::runtime_error on a policy violation, so catch in the
+// R API and throws std::runtime_error on bounds/size errors, so catch in the
 // worker (or let RcppParallel propagate to the join)
 
-SEXP out = b.finish();  // main thread, after every worker has joined
+SEXP out = b.to_charvec();  // main thread, after every worker has joined
 ```
 
-Both builders' `set()` enforces the emission policy at the write: encodings must be
-`CE_ASCII`, `CE_UTF8`, `CE_ASCII_OR_UTF8`, or `CE_BYTES` (translate
-latin1/native text to UTF-8 first), and `NA` is exactly
-`{NULL, 0, CE_NA}` (or `set_na()`).
+The builders do not impose an encoding policy. They copy the bytes and
+encoding they are given, and `NA` is exactly `{NULL, 0, CE_NA}` (or
+`set_na()`). Translation policy belongs in the consumer layer above charport.
 
 When the bytes don't already exist contiguously - you're formatting a number,
 concatenating, decoding - skip the intermediate buffer with `reserve()`, which
@@ -238,10 +239,10 @@ hands back the store's own memory to write into directly:
 std::memcpy(dst, src, len);   // or snprintf/format straight into dst, exactly len bytes
 ```
 
-`reserve()` takes a length and an (emittable) encoding, points the element at a
-fresh `len`-byte buffer, and returns it; you fill exactly `len` bytes. Use
-`set_na()` for `NA`. The pointer is valid until `finish()` (slice blocks never
-move). `set()` is just `reserve()` followed by a copy.
+`reserve()` takes a length and encoding, points the element at a fresh
+`len`-byte buffer, and returns it; you fill exactly `len` bytes. Use `set_na()`
+for `NA`. The pointer is valid until `to_charvec()` (slice blocks never move).
+`set()` is just `reserve()` followed by a copy.
 
 ## Registering a backend
 
@@ -256,7 +257,8 @@ static void * my_init(SEXP x) {
   return R_ExternalPtrAddr(R_altrep_data1(x));
 }
 
-// called per element, with the state my_init returned; no R API here
+// called per element, with the state my_init returned; no R API and no
+// C++ exceptions crossing the ABI here
 static charport_strview my_get(void * state, R_xlen_t i) {
   const my_store * s = static_cast<const my_store *>(state);
   return { s->ptr(i), s->len(i), charport_enc::CE_UTF8 };

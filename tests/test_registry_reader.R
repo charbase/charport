@@ -56,12 +56,12 @@ stopifnot(!is.na(charport_backend_of(x)))              # still claims the class
 expect_error_matching(charport_backend_of(1:3), "character")
 
 catn("reader equivalence: plain vector with mixed encodings and marks")
-# the direct path may surface latin1/native marks (only registered backends
-# promise UTF-8): the reader must reproduce the input exactly, marks included
+# the direct path may surface latin1/native marks: the reader must reproduce the
+# input exactly, marks included
 mixed <- c("plain", NA, "", w_utf8[1:5], w_latin1[6:10], b)
 stopifnot(any(Encoding(mixed) == "latin1"))
 info <- rinfo(mixed)
-stopifnot(info$n == length(mixed), isTRUE(info$reentrant), info$path == "direct")
+stopifnot(info$n == length(mixed), !isTRUE(info$reentrant), info$path == "direct")
 stopifnot(marks_identical(read_all(mixed), mixed))
 
 catn("reader equivalence: charvec is served by its backend")
@@ -75,7 +75,7 @@ stopifnot(!charport:::charvec_stats(x)$materialized)   # reading didn't material
 catn("reader equivalence: materialized charvec falls back to direct (init returns NULL)")
 charport_materialize(x)
 info <- rinfo(x)
-stopifnot(info$path == "direct", isTRUE(info$reentrant))
+stopifnot(info$path == "direct", !isTRUE(info$reentrant))
 stopifnot(marks_identical(read_all(x), ref))
 
 catn("reader equivalence: unregistered ALTREP is materialized once at resolve")
@@ -83,7 +83,7 @@ x <- as.character(1:5000)                              # deferred_string ALTREP
 stopifnot(grepl("deferred string conversion", capture.output(.Internal(inspect(x)))[1]))
 stopifnot(is.na(charport_backend_of(x)))               # ALTREP, but not registered
 info <- rinfo(x)
-stopifnot(info$path == "direct", isTRUE(info$reentrant))
+stopifnot(info$path == "direct", !isTRUE(info$reentrant))
 stopifnot(identical(read_all(x), as.character(1:5000)))
 
 catn("reader edge cases")

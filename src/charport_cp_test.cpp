@@ -60,7 +60,7 @@ SEXP C_cp_builder_from_reader(SEXP x, SEXP n_shards_) {
       for(R_xlen_t i = 0; i < n; ++i) {
         b.set(i, r[i]);
       }
-      return b.finish();
+      return b.to_charvec();
     }
 
     cp::charvec::BuilderMT b(n, static_cast<size_t>(k));
@@ -71,7 +71,7 @@ SEXP C_cp_builder_from_reader(SEXP x, SEXP n_shards_) {
         b.set(static_cast<size_t>(j), i, r[i]);
       }
     }
-    return b.finish();
+    return b.to_charvec();
   });
 }
 
@@ -79,9 +79,8 @@ SEXP C_cp_builder_from_reader(SEXP x, SEXP n_shards_) {
 // reserve() path: ask the builder for a buffer per element and memcpy the
 // reader's bytes straight into it, no set() copy through the builder. n_shards
 // == 0 exercises Builder::reserve; >= 1 exercises BuilderMT::reserve over
-// contiguous disjoint ranges. (Inputs must carry emittable encodings -- the
-// reserve path rejects latin1/native, exactly like set -- so the R test feeds
-// it as_charvec content, which is already normalized.)
+// contiguous disjoint ranges. reserve keeps whatever encoding the view carried
+// (no policy), so the reader's bytes and encoding are reproduced verbatim.
 SEXP C_cp_builder_reserve(SEXP x, SEXP n_shards_) {
   return charport_sexp_guard("cp_builder_reserve", [&]() -> SEXP {
     cp::Reader r(x);
@@ -99,7 +98,7 @@ SEXP C_cp_builder_reserve(SEXP x, SEXP n_shards_) {
         char * dst = b.reserve(i, v.len, v.enc);
         if(v.len > 0) { std::memcpy(dst, v.ptr, v.len); }
       }
-      return b.finish();
+      return b.to_charvec();
     }
 
     cp::charvec::BuilderMT b(n, static_cast<size_t>(k));
@@ -114,15 +113,15 @@ SEXP C_cp_builder_reserve(SEXP x, SEXP n_shards_) {
         if(v.len > 0) { std::memcpy(dst, v.ptr, v.len); }
       }
     }
-    return b.finish();
+    return b.to_charvec();
   });
 }
 
 // The builder error contract for both builders: no encoding policy (any
 // encoding passes through, ptr == NULL is NA), so set/reserve throw only in
-// genuinely-broken cases (index out of range, len > INT_MAX); finish is
-// single-shot; BuilderMT validates its shard index and n_shards; and a
-// thrown-into builder can be abandoned safely (destructor cleans up).
+// genuinely-broken cases (index out of range, len > INT_MAX); to_charvec() is
+// single-shot (a second exit throws); BuilderMT validates its shard index and
+// n_shards; and a thrown-into builder can be abandoned safely (dtor cleans up).
 SEXP C_cp_builder_errors(void) {
   return charport_sexp_guard("cp_builder_errors", [&]() -> SEXP {
     cp::charvec::Builder b(3);
@@ -151,10 +150,10 @@ SEXP C_cp_builder_errors(void) {
       ok = empty != nullptr;
     }
 
-    // single-shot finish; post-finish finish throws
-    SEXP out = b.finish();
+    // single-shot exit; a second to_charvec() throws
+    SEXP out = b.to_charvec();
     ok = ok && TYPEOF(out) == STRSXP && Rf_xlength(out) == 3;
-    ok = ok && throws_exception([&]() { b.finish(); });
+    ok = ok && throws_exception([&]() { b.to_charvec(); });
 
     // BuilderMT: n_shards must be >= 1, and set() validates the shard index
     ok = ok && throws_exception([&]() { cp::charvec::BuilderMT bad(4, 0); });

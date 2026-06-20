@@ -155,15 +155,24 @@ err <- tryCatch({charport_materialize(1:3); NULL}, error = identity)
 stopifnot(inherits(err, "error"))
 
 catn("corrupted serialized_state errors cleanly")
-encode_native_uint <- function(x, size) {
+encode_uint <- function(x, size, endian = .Platform$endian) {
   remaining <- as.numeric(x)
   out <- as.raw(integer(size))
   for (i in seq_len(size)) {
     byte <- as.integer(remaining %% 256)
-    out[[if (.Platform$endian == "little") i else size - i + 1L]] <- as.raw(byte)
+    out[[if (endian == "little") i else size - i + 1L]] <- as.raw(byte)
     remaining <- floor(remaining / 256)
   }
   out
+}
+native_endian_flag <- function() {
+  as.raw(if (.Platform$endian == "little") 1L else 2L)
+}
+opposite_endian <- function() {
+  if (.Platform$endian == "little") "big" else "little"
+}
+opposite_endian_flag <- function() {
+  as.raw(if (.Platform$endian == "little") 2L else 1L)
 }
 find_raw_subsequence <- function(haystack, needle) {
   limit <- length(haystack) - length(needle) + 1L
@@ -189,27 +198,50 @@ expect_unserialize_error <- function(serialized) {
   stopifnot(inherits(err, "error"))
   stopifnot(grepl("charport", conditionMessage(err), fixed = TRUE))
 }
-# state layout for charvec("abc"): u64 n=1 | u32 len=3 | u8 enc=254 (ascii) | "abc"
+# state layout for charvec("abc"):
+# "CPV1" | u8 endian flag | u64 n=1 | u32 len=3 | u8 enc=254 (ascii) | "abc"
 state_abc <- c(
-  encode_native_uint(1L, 8L),
-  encode_native_uint(3L, 4L),
+  charToRaw("CPV1"),
+  native_endian_flag(),
+  encode_uint(1L, 8L),
+  encode_uint(3L, 4L),
   as.raw(254L),
   charToRaw("abc")
 )
+state_abc_opposite_endian <- c(
+  charToRaw("CPV1"),
+  opposite_endian_flag(),
+  encode_uint(1L, 8L, opposite_endian()),
+  encode_uint(3L, 4L, opposite_endian()),
+  as.raw(254L),
+  charToRaw("abc")
+)
+y <- unserialize(mutate_serialized_state(charvec("abc"), state_abc, function(state) {
+  state_abc_opposite_endian
+}))
+stopifnot(is_charvec(y), identical(as.character(y), "abc"))
 expect_unserialize_error(mutate_serialized_state(charvec("abc"), state_abc, function(state) {
-  state[[1L]] <- as.raw(0x02)  # claim 2 elements: header truncated
+  state[[1L]] <- charToRaw("X")[[1L]]  # invalid magic
   state
 }))
 expect_unserialize_error(mutate_serialized_state(charvec("abc"), state_abc, function(state) {
-  state[[13L]] <- as.raw(0x04)  # not a charport_enc value
+  state[[5L]] <- as.raw(0x00)  # invalid endian flag
   state
 }))
 expect_unserialize_error(mutate_serialized_state(charvec("abc"), state_abc, function(state) {
-  state[9:12] <- encode_native_uint(5L, 4L)  # length runs past the payload
+  state[6:13] <- encode_uint(2L, 8L)  # claim 2 elements: header truncated
   state
 }))
 expect_unserialize_error(mutate_serialized_state(charvec("abc"), state_abc, function(state) {
-  state[9:12] <- encode_native_uint(2L, 4L)  # trailing payload byte
+  state[[18L]] <- as.raw(0x04)  # not a charport_enc value
+  state
+}))
+expect_unserialize_error(mutate_serialized_state(charvec("abc"), state_abc, function(state) {
+  state[14:17] <- encode_uint(5L, 4L)  # length runs past the payload
+  state
+}))
+expect_unserialize_error(mutate_serialized_state(charvec("abc"), state_abc, function(state) {
+  state[14:17] <- encode_uint(2L, 4L)  # trailing payload byte
   state
 }))
 
