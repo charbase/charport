@@ -12,7 +12,8 @@ RHUB_ALL_PLATFORMS := c( \
   "ubuntu-clang","ubuntu-gcc12","ubuntu-next", "ubuntu-release","valgrind" \
 )
 
-.PHONY: doc build install check check-no-vignette check-rhub test bench vignette clean $(BUILD)
+.PHONY: doc build install check check-no-vignette check-rhub test bench vignette \
+	clean clean-native clean-build-products
 
 check: $(BUILD)
 	R CMD check --as-cran $<
@@ -26,20 +27,24 @@ check-rhub: $(BUILD)
 doc:
 	Rscript -e 'roxygen2::roxygenise(roclets = "rd")'
 
-build: clean doc
+$(BUILD): clean-native doc
+	rm -f $(BUILD)
 	R CMD build .
+	$(MAKE) clean-native
 
-install: build
+build: $(BUILD)
+
+install: $(BUILD)
+	$(MAKE) clean-native
 	R CMD INSTALL $(BUILD)
+	$(MAKE) clean-native
+	rm -f $(BUILD)
 
-test:
-	tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-lib-XXXXXX); \
-	R CMD INSTALL -l $$tmp_lib .; \
+test: install
 	for f in tests/test_*.R; do \
 	  echo "== $$f"; \
-	  Rscript -e '.libPaths(c(commandArgs(TRUE)[2], .libPaths())); source(commandArgs(TRUE)[1])' $$f $$tmp_lib || exit 1; \
-	done; \
-	rm -rf $$tmp_lib
+	  Rscript $$f || exit 1; \
+	done
 
 bench:
 	Rscript inst/extra/benchmark.R 5
@@ -58,7 +63,7 @@ bench:
 test-san:
 	tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-san-XXXXXX); \
 	printf 'CXXFLAGS = -g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all\nSHLIB_CXXLDFLAGS = -fsanitize=address,undefined -shared\n' > $$tmp_lib/Makevars.san; \
-	R_MAKEVARS_USER=$$tmp_lib/Makevars.san R CMD INSTALL --no-test-load -l $$tmp_lib .; \
+	R_MAKEVARS_USER=$$tmp_lib/Makevars.san R CMD INSTALL --preclean --no-test-load -l $$tmp_lib .; \
 	for f in tests/test_*.R; do \
 	  echo "== $$f"; \
 	  LD_PRELOAD=$$(gcc -print-file-name=libasan.so) ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 \
@@ -69,7 +74,7 @@ test-san:
 # Full suite under valgrind memcheck (no rebuild; slow). Requires valgrind.
 test-valgrind:
 	tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-vg-XXXXXX); \
-	R CMD INSTALL -l $$tmp_lib .; \
+	R CMD INSTALL --preclean -l $$tmp_lib .; \
 	for f in tests/test_*.R; do \
 	  echo "== $$f"; \
 	  R_LIBS=$$tmp_lib R --vanilla -d "valgrind --tool=memcheck --leak-check=no --error-exitcode=1" -f $$f || exit 1; \
@@ -77,14 +82,20 @@ test-valgrind:
 	rm -rf $$tmp_lib
 
 vignette:
-	Rscript -e "rmarkdown::render(input='README.Rmd', output_format=rmarkdown::github_document(html_preview=FALSE))"
 	Rscript -e "rmarkdown::render(input='vignettes/charport.Rmd', output_format='html_vignette')"
+	IS_GITHUB=Yes Rscript -e "rmarkdown::render(input='vignettes/charport.Rmd', output_file='../README.md', output_format=rmarkdown::github_document(html_preview=FALSE))"; unset IS_GITHUB
 	Rscript -e "rmarkdown::render(input='vignettes/developer-guide.Rmd', output_format='html_vignette')"
 
-clean:
+clean: clean-native clean-build-products
+
+clean-native:
+	find . -iname "*.a" -exec rm {} \;
 	find . -iname "*.o" -exec rm {} \;
 	find . -iname "*.so" -exec rm {} \;
 	find . -iname "*.dll" -exec rm {} \;
+	rm -f src/symbols.rds
+
+clean-build-products:
 	rm -f vignettes/*.html
 	rm -f $(PACKAGE)_*.tar.gz
-	rm -rf $(PACKAGE).Rcheck
+	rm -rf $(PACKAGE).Rcheck ..Rcheck

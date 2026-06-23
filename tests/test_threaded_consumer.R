@@ -18,8 +18,6 @@ helper <- file.path("helpers", "internal_calls.R")
 if (!file.exists(helper)) helper <- file.path("tests", helper)
 source(helper)
 
-register_charvec_backend()
-
 marks_identical <- function(x, y) {
   x <- as.character(x)
   y <- as.character(y)
@@ -41,12 +39,13 @@ dll <- compile_test_dso(src, c(
   "PKG_CXXFLAGS = -pthread",
   "PKG_LIBS = -pthread"
 ), skip_label = "threaded consumer")
+consumer_symbol <- function(name) getNativeSymbolInfo(name, PACKAGE = dll[["name"]])
 rebuild2 <- function(x, n_threads = 2L) {
-  .Call("C_consumer_threaded_rebuild", x, as.integer(n_threads))
+  .Call(consumer_symbol("C_consumer_threaded_rebuild"), x, as.integer(n_threads))
 }
 
 catn("consumer load-time ABI check passes")
-stopifnot(isTRUE(.Call("C_consumer_abi_ok")))
+stopifnot(isTRUE(.Call(consumer_symbol("C_consumer_abi_ok"))))
 
 catn("threaded rebuild: 2 std::thread workers over reader POD copies + shards")
 w_utf8 <- readLines(words_file, encoding = "UTF-8", warn = FALSE)
@@ -67,7 +66,7 @@ out <- rebuild2(as_charvec(c("a", NA)))
 stopifnot(identical(as.character(out), c("a", NA)))
 
 catn("worker errors are caught, joined, and re-raised")
-worker_throws <- function() .Call("C_consumer_worker_throws")
+worker_throws <- function() .Call(consumer_symbol("C_consumer_worker_throws"))
 expect_error_matching(worker_throws(), "injected worker failure")
 
 catn("repeated threaded builds agree (merge determinism)")
@@ -75,5 +74,4 @@ ref <- as.character(x)
 for (i in 1:20) stopifnot(identical(as.character(rebuild2(x)), ref))
 
 dyn.unload(dll[["path"]])
-unregister_charvec_backend()
 catn("threaded consumer tests passed")

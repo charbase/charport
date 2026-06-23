@@ -4,11 +4,11 @@
 \name{charport-package}
 \alias{charport}
 \alias{charport-package}
-\title{charport: Interconnect for ALTREP Character Vector Backends}
+\title{charport: Interconnect for ALTREP Character Vector Classes}
 \description{
 \if{html}{\figure{logo.svg}{options: style='float: right' alt='logo' width='120'}}
 
-Infrastructure for ALTREP character vectors: a reference ALTREP string class ('charvec') backed by stable memory slices with a parallel-constructible builder, a runtime registration interface for third-party ALTREP string backends, and a common zero-copy read path so consumer packages can iterate over any character vector with a single code path. Writable interop (mutating another package's backend through a generic interface) is out of scope.
+Infrastructure for ALTREP character vectors: a reference ALTREP string class ('charvec') backed by stable memory slices with a parallel-constructible builder, a runtime registration interface for third-party ALTREP string classes, and a common zero-copy read path so consumer packages can iterate over any character vector with a single code path. Writable interop (mutating another package's ALTREP class through a generic interface) is out of scope.
 }
 \seealso{
 Useful links:

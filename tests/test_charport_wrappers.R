@@ -15,16 +15,19 @@ helper <- file.path("helpers", "internal_calls.R")
 if (!file.exists(helper)) helper <- file.path("tests", helper)
 source(helper)
 
-register_charvec_backend()
-
 catn("compiling the charport wrapper consumer (R CMD SHLIB)")
 dll <- compile_test_dso("charport_consumer.cpp", skip_label = "charport wrapper consumer")
 
 stats     <- charvec_stats
-roundtrip <- function(x) .Call("C_consumer_reader_roundtrip", x)
-rebuild <- function(x, n_shards = 1L) .Call("C_consumer_builder_from_reader", x, as.integer(n_shards))
-reserve_rebuild <- function(x, n_shards = 1L) .Call("C_consumer_builder_reserve", x, as.integer(n_shards))
-builder_errors <- function() .Call("C_consumer_builder_errors")
+consumer_symbol <- function(name) getNativeSymbolInfo(name, PACKAGE = dll[["name"]])
+roundtrip <- function(x) .Call(consumer_symbol("C_consumer_reader_roundtrip"), x)
+rebuild <- function(x, n_shards = 1L) {
+  .Call(consumer_symbol("C_consumer_builder_from_reader"), x, as.integer(n_shards))
+}
+reserve_rebuild <- function(x, n_shards = 1L) {
+  .Call(consumer_symbol("C_consumer_builder_reserve"), x, as.integer(n_shards))
+}
+builder_errors <- function() .Call(consumer_symbol("C_consumer_builder_errors"))
 
 marks_identical <- function(x, y) {
   x <- as.character(x)
@@ -68,7 +71,7 @@ for (k in c(0L, 1L, 2L, 3L, 8L)) {
   out <- rebuild(x, k)
   stopifnot(is_charvec(out))
   stopifnot(marks_identical(out, ref))
-  stopifnot(!is.na(charport_backend_of(out)))    # output is a real charvec backend class
+  stopifnot(!is.na(charport_class_of(out)))    # output is a real charvec class
 }
 stopifnot(!stats(x)$materialized)               # building never materialized the input
 
@@ -91,7 +94,7 @@ ref <- c(w_utf8[1:40], NA, "", w_latin1[41:80], b, NA)
 for (k in c(0L, 1L, 3L, 8L)) {
   out <- reserve_rebuild(x, k)
   stopifnot(is_charvec(out), marks_identical(out, ref))
-  stopifnot(!is.na(charport_backend_of(out)))
+  stopifnot(!is.na(charport_class_of(out)))
 }
 stopifnot(identical(as.character(reserve_rebuild(as_charvec(character(0)), 2L)), character(0)))
 
@@ -126,5 +129,4 @@ for (trial in 1:15) {
 }
 
 dyn.unload(dll[["path"]])
-unregister_charvec_backend()
 catn("charport wrapper tests passed")

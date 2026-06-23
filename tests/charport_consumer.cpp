@@ -73,6 +73,25 @@ SEXP C_consumer_reader_roundtrip(SEXP x) {
   });
 }
 
+SEXP C_consumer_reader_kind(SEXP x) {
+  return test_sexp_guard("reader_kind", [&]() -> SEXP {
+    charport::Reader r(x);
+    return Rf_ScalarInteger(static_cast<int>(r.kind()));
+  });
+}
+
+SEXP C_consumer_reader_capabilities(SEXP x) {
+  return test_sexp_guard("reader_capabilities", [&]() -> SEXP {
+    charport::Reader r(x);
+    SEXP out = PROTECT(Rf_allocVector(LGLSXP, 3));
+    LOGICAL(out)[0] = r.view_persistence() ? TRUE : FALSE;
+    LOGICAL(out)[1] = r.thread_safe_access() ? TRUE : FALSE;
+    LOGICAL(out)[2] = r.reentrant() ? TRUE : FALSE;
+    UNPROTECT(1);
+    return out;
+  });
+}
+
 SEXP C_consumer_builder_from_reader(SEXP x, SEXP n_shards_) {
   return test_sexp_guard("builder_from_reader", [&]() -> SEXP {
     charport::Reader r(x);

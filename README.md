@@ -1,128 +1,78 @@
+charport
+================
 
-# charport
-
-<img src="man/figures/logo.svg" align="right" width="160" alt="charport logo" />
+<img src="man/figures/logo.svg" align="right" width="160" alt="charport logo" style="border: 0; padding: 0; background: transparent;" />
 
 [![R-CMD-check](https://github.com/charport/charport/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/charport/charport/actions)
 
-`charport` is an interconnect for ALTREP character vector backends. It
-gives compiled R packages one way to read character vectors, whether the
-input is a plain `STRSXP`, a `charport::charvec`, or another package’s
-registered ALTREP string class.
+## ALTREP string interoperability
 
-The interface has three parts:
+`charport` provides a shared read interface for ALTREP character vectors.
+Backend packages register their ALTREP classes, and compiled consumers
+read string bytes through `charport::Reader` without depending on the
+backend's storage layout. Plain and unregistered vectors fall back to R's
+ordinary string representation.
 
-1.  Backend packages register an ALTREP class with a per-vector state
-    lookup and a per-element byte-view accessor.
-2.  Consumer packages call `charport_resolve()` or the C++ wrapper
-    `charport::Reader`.
-3.  Registered, unmaterialized backends are read zero-copy; everything
-    else uses a direct fallback over ordinary `CHARSXP`s.
+*The work in this package is funded by the R Consortium Infrastructure
+Steering Committee.*
 
-`charport` also ships `charvec`, a reference ALTREP character vector
-backed by native byte slices, plus serial and sharded builders for
-constructing `charvec` objects without first creating `CHARSXP`s.
+## Why use a shared reader?
 
-The ABI is still pre-release. A layout or contract change will bump
-`CHARPORT_ABI_VERSION`; downstream packages should call
-`charport::check_abi()` in their load hook.
-
-## Performance snapshot
+Compiled packages normally access character vectors through R's string
+API. An unmaterialized ALTREP class may need to allocate ordinary
+`CHARSXP` storage to support that access. Class-specific integration can
+avoid materialization, but couples the consumer to one backend.
+`charport` keeps that integration at one boundary: a backend registers
+once, and consumers use the same reader for every supported class.
 
 The benchmark below uses the enwik8 corpus split into 1.13 million
-strings (94 MB of string data). It compares the ordinary `STRING_ELT` /
-`SET_STRING_ELT` paths with `charport::Reader` and the `charvec`
-builders. The read benchmark explicitly registers `charvec` as a
-reference backend; normal package load leaves the backend registry empty
-until backend packages opt in.
+strings. The conventional read baseline is `STRING_ELT` materialization
+over a `charvec` ALTREP class. The comparison is `charport::Reader` over
+the same data, avoiding materialization. On the write path, writing
+standard R strings via `SET_STRING_ELT` is the baseline, compared to
+writing the same data to `charvec`.
 
-<img src="vignettes/bench.png" alt="" width="100%" />
+<img src="man/figures/bench.png" title="charport benchmark"
+style="width:100.0%" />
 
-## Installation
+The results show the materialization and construction costs for this
+corpus. They are not a general performance guarantee.
 
-``` r
-pak::pak("charport/charport")
-```
+## Interoperability
 
-## R interface
+`charport` acts as a small broker for ALTREP strings:
 
-The R API is small and mainly diagnostic:
+1.  A package registers the ALTREP string class it owns via
+    `register_altrep`.
+2.  A consumer package reads string data through `charport::Reader`,
+    without knowing that class’s storage layout.
+3.  Registered ALTREP classes can be read directly; ordinary vectors and
+    unregistered ALTREP classes fall back to standard R behavior.
 
-``` r
-library(charport)
+The contract covers bytes, encoding marks, pointer lifetime, and access
+capabilities. `charport` does not define string semantics, locale policy,
+normalization, or a new user-facing string API.
 
-x <- charvec("hello", "world", NA)
-typeof(x)
-#> [1] "character"
-is_charvec(x)
-#> [1] TRUE
-as.character(x)
-#> [1] "hello" "world" NA
+## `charvec`: a reference ALTREP character vector
 
-charport_backends()
-#> $n
-#> [1] 0
-#>
-#> $reentrant
-#> logical(0)
-charport_backend_of(x)
-#> [1] NA
-```
+`charport` also includes `charvec`, which stores string data in native
+blocks alongside a vector of metadata. To R, a `charvec` behaves like an
+ordinary character vector. Compiled code can construct one serially or
+across multiple worker threads, then read it through `charport::Reader`
+without materialization. It serves as both a reference implementation
+and an output type for packages that produce string data.
 
-`charvec` preserves bytes and encoding marks as supplied. It is not an
-encoding normalization layer; translation belongs in the package that
-understands the operation being performed.
+## For package developers
 
-`charvec` itself is not registered with the broker on package load. It is
-a reference storage class and builder target; backend packages that want
-to serve their own ALTREP classes register those classes explicitly.
+Package authors can use `charport` from either side of the interface.
 
-## Consumer example
+ALTREP string classes register through `register_altrep`. Consumer
+packages read through `charport::Reader`, and packages that construct
+string output can use `charvec` directly.
 
-A C++ consumer includes `charport.h`, constructs a reader on the main R
-thread, and then loops over `charport::StrView` values:
+The package developer guide covers registration, reading, fallback
+behavior, pointer lifetime, thread safety, and the `charvec` builder.
 
-``` cpp
-#include "charport.h"
-
-extern "C" SEXP C_total_bytes(SEXP x) {
-  charport::Reader r(x);
-  double total = 0;
-  for(charport::StrView v : r) {
-    if(!v.is_na()) total += v.len;
-  }
-  return Rf_ScalarReal(total);
-}
-```
-
-The reader borrows `x`. Keep `x` protected and do not touch it or any
-alias through the R API while the reader or a returned view is in use.
-ALTREP classes control their own materialization and storage lifetime,
-so R access may invalidate the borrowed pointers.
-
-## Builder example
-
-The serial builder copies supplied bytes into a new `charvec`:
-
-``` cpp
-charport::charvec::Builder b(n);
-for(R_xlen_t i = 0; i < n; ++i) {
-  b.set(i, ptr, len, charport_enc::CE_UTF8);
-}
-SEXP out = b.to_charvec();
-```
-
-For parallel construction, `charport::charvec::BuilderMT` gives each
-worker a shard. Workers may call `set()` or `reserve()` concurrently
-when shard indices and element ranges are disjoint; `to_charvec()` runs
-on the main R thread after the join.
-
-## Documentation
-
-- `vignette("charport", package = "charport")` is the quick package
-  tour.
-- `vignette("developer-guide", package = "charport")` is the interface
-  contract for backend and consumer package authors.
-
-Development of `charport` is funded by the R Consortium through an
-Infrastructure Steering Committee grant.
+- [Package developer guide](vignettes/developer-guide.Rmd), also
+  available from R with
+  `vignette("developer-guide", package = "charport")`.

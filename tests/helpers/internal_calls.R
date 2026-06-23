@@ -18,10 +18,10 @@ charvec_compact <- function(x) {
   invisible(.Call(charport_native_symbol("C_charvec_compact"), x))
 }
 
-register_charvec_backend <- function() {
-  invisible(.Call(charport_native_symbol("C_register_charvec_backend")))
+register_charvec <- function() {
+  invisible(.Call(charport_native_symbol("C_register_charvec")))
 }
 
-unregister_charvec_backend <- function() {
-  invisible(.Call(charport_native_symbol("C_unregister_charvec_backend")))
+unregister_charvec <- function() {
+  invisible(.Call(charport_native_symbol("C_unregister_charvec")))
 }

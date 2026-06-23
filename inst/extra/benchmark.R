@@ -1,6 +1,6 @@
 # Read/build benchmarks for charport. Run from the package root with the
 # package installed (`make bench`). Optional argument: number of repetitions
-# per timing (default 5). Writes the plot to vignettes/bench.png.
+# per timing (default 5). Writes the plot to man/figures/bench.png.
 #
 # Corpus: enwik8 (first 1e8 bytes of English Wikipedia XML; the standard
 # Hutter Prize dataset), split into lines: ~1.1M strings, ~94 MB. Too big to
@@ -15,12 +15,14 @@
 # fresh-string ingest. gc() between repetitions is not enough to undo that:
 # collected CHARSXPs leave the cache, but the cache's grown table stays, so
 # the session no longer looks like a fresh user session. The benchmark avoids
-# this in two ways:
+# this in three ways:
 # (1) the corpus is ingested in C, file -> charvec, so no CHARSXP is created
 # in the parent session; (2) every repetition of the mkCharLenCE baseline
 # runs in its own fresh R session (a worker script that ingests in C and
-# times exactly one build). charvec does not use the string cache, so the
-# builder timings are run normally, in-session.
+# times exactly one build); (3) every repetition of the STRING_ELT
+# materialization read baseline also runs in a fresh R session. charvec does
+# not use the string cache, so the builder and charport::Reader timings are
+# run normally, in-session.
 
 args <- commandArgs(trailingOnly = TRUE)
 reps <- if (length(args) >= 1) as.integer(args[1]) else 5L
@@ -30,7 +32,7 @@ suppressMessages(library(charport))
 charport_native_symbol <- function(name) {
   get(name, envir = asNamespace("charport"), inherits = FALSE)
 }
-invisible(.Call(charport_native_symbol("C_register_charvec_backend")))
+invisible(.Call(charport_native_symbol("C_register_charvec")))
 
 # --- corpus file ------------------------------------------------------------
 
@@ -114,7 +116,7 @@ writeLines(c(
   'args <- commandArgs(trailingOnly = TRUE)',
   'suppressMessages(library(charport))',
   'charport_native_symbol <- function(name) get(name, envir = asNamespace("charport"), inherits = FALSE)',
-  'invisible(.Call(charport_native_symbol("C_register_charvec_backend")))',
+  'invisible(.Call(charport_native_symbol("C_register_charvec")))',
   'dyn.load(args[1])',
   'cvec <- .Call("C_bench_read_lines_charvec", args[2], 1000L)',
   't <- system.time(.Call("C_bench_build_strsxp", cvec))[["elapsed"]]',
@@ -124,6 +126,29 @@ ms_fresh <- function() {
   t <- vapply(seq_len(reps), function(i) {
     out <- system2(file.path(R.home("bin"), "Rscript"),
                    c(worker_script, so, corpus_file), stdout = TRUE)
+    as.numeric(tail(out, 1))
+  }, numeric(1))
+  median(t) * 1000
+}
+
+# One fresh R session per repetition for STRING_ELT over unmaterialized charvec.
+# This read baseline creates CHARSXPs through the ALTREP Elt method, so repeated
+# timings in one session would mostly measure string-cache hits after the first
+# run. The charport::Reader read rows below run in this benchmark process
+# because they read charvec bytes without creating CHARSXPs.
+worker_string_elt_charvec <- file.path(build_dir, "worker_string_elt_charvec.R")
+writeLines(c(
+  'args <- commandArgs(trailingOnly = TRUE)',
+  'suppressMessages(library(charport))',
+  'dyn.load(args[1])',
+  'cvec <- .Call("C_bench_read_lines_charvec", args[2], 1000L)',
+  't <- system.time(.Call("C_bench_string_elt", cvec))[["elapsed"]]',
+  'cat(t, "\n")'
+), worker_string_elt_charvec)
+ms_fresh_string_elt_charvec <- function() {
+  t <- vapply(seq_len(reps), function(i) {
+    out <- system2(file.path(R.home("bin"), "Rscript"),
+                   c(worker_string_elt_charvec, so, corpus_file), stdout = TRUE)
     as.numeric(tail(out, 1))
   }, numeric(1))
   median(t) * 1000
@@ -158,19 +183,15 @@ out <- .Call("C_bench_build_charvec", cvec, n_threads)
 stopifnot(identical(.Call("C_bench_reader", out), ref))
 rm(out)
 
-# Now the corpus may exist as CHARSXPs: build the plain vector once for the
-# read benchmarks (read timings do not depend on cache state).
+# Build the plain vector once for correctness and access-path checks.
 plain <- .Call("C_bench_build_strsxp", cvec)
 
 cat("\nread path (FNV-1a over every element):\n")
 h1 <- .Call("C_bench_string_elt", plain)
 read_rows <- list(
-  row("STRING_ELT direct (baseline)",
-      ms(function() .Call("C_bench_string_elt", plain)), baseline = TRUE,
-      label = "STRING_ELT direct\n(baseline)"),
-  row("charport::Reader direct",
-      ms(function() .Call("C_bench_reader", plain)),
-      label = "charport::Reader\ndirect"),
+  row("STRING_ELT direct, unmaterialized charvec (baseline)",
+      ms_fresh_string_elt_charvec(), baseline = TRUE,
+      label = "STRING_ELT materialize\n(baseline)"),
   row("charport::Reader charvec, 1 thread",
       ms(function() .Call("C_bench_reader", cvec)),
       label = "charport::Reader\ncharvec, 1 thread"),
@@ -178,9 +199,6 @@ read_rows <- list(
       ms(function() .Call("C_bench_reader_threaded", cvec, n_threads)),
       label = sprintf("charport::Reader\ncharvec, %d threads", n_threads))
 )
-# STRING_ELT over an unmaterialized charvec is deliberately not a timed row:
-# element access on an ALTREP can materialize (a write), so it is not a read
-# timing. It is still checked for correctness:
 stopifnot(identical(h1, ref),
           identical(.Call("C_bench_reader", plain), ref),
           identical(.Call("C_bench_string_elt", cvec), ref))
@@ -191,7 +209,7 @@ invisible(row("STRING_ELT loop, plain vector (baseline)",
               ms(function() .Call("C_bench_sumlen_elt", plain))))
 invisible(row("charport::Reader, plain vector (direct path)",
               ms(function() .Call("C_bench_sumlen_reader", plain))))
-invisible(row("charport::Reader, charvec (registered backend)",
+invisible(row("charport::Reader, charvec (registered class)",
               ms(function() .Call("C_bench_sumlen_reader", cvec))))
 stopifnot(identical(s1, .Call("C_bench_sumlen_reader", plain)),
           identical(s1, .Call("C_bench_sumlen_reader", cvec)))
@@ -225,8 +243,8 @@ plot_panel <- function(rows, title) {
        xpd = NA, col = theme_text)
 }
 
-png_path <- if (dir.exists("vignettes")) {
-  file.path("vignettes", "bench.png")
+png_path <- if (dir.exists(file.path("man", "figures"))) {
+  file.path("man", "figures", "bench.png")
 } else {
   file.path("local", "bench.png")
 }

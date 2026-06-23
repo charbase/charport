@@ -1,143 +1,223 @@
 ---
 title: "charport"
-output: rmarkdown::html_vignette
+output:
+  html_vignette:
+    keep_md: no
+  rmarkdown::github_document: default
 vignette: >
   %\VignetteIndexEntry{charport}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---
 
-```{r, include = FALSE}
+```{r, setup, echo = FALSE}
 knitr::opts_chunk$set(
   collapse = TRUE,
   comment = "#>"
 )
-```
 
-`charport` is a small interoperability layer for ALTREP character vectors. It
-lets backend packages keep strings in their own storage while consumer packages
-read those strings through one common byte-view interface.
-
-The package has three pieces:
-
-1. A C ABI for resolving any character vector into a `charport_reader`.
-2. C++ convenience wrappers in `charport.h`, especially `charport::Reader`.
-3. `charvec`, a reference ALTREP string class with serial and sharded builders.
-
-The ABI is pre-release. Downstream packages should call `charport::check_abi()` at
-load time and expect recompilation when the ABI version changes.
-
-## Performance snapshot
-
-The current benchmark uses the enwik8 corpus split into 1.13 million strings
-(94 MB of string data). It compares the ordinary `STRING_ELT` / `SET_STRING_ELT`
-paths with `charport::Reader` and the `charvec` builders. The read benchmark
-explicitly registers `charvec` as a reference backend; normal package load
-leaves the backend registry empty until backend packages opt in.
-
-```{r, echo = FALSE, out.width = "100%"}
-knitr::include_graphics("bench.png")
-```
-
-## R helpers
-
-The R API is small:
-
-```{r}
-library(charport)
-
-x <- charvec("alpha", "beta", NA)
-typeof(x)
-is_charvec(x)
-as.character(x)
-```
-
-Diagnostics expose the currently registered backends and the backend serving a
-specific vector:
-
-```{r}
-charport_backends()
-charport_backend_of(x)
-```
-
-`charvec` is a storage class. It preserves the bytes and encoding marks it is
-given; it does not translate strings to UTF-8 or reject non-UTF-8 input.
-It is not registered with the broker on package load; backend packages register
-their own ALTREP classes explicitly.
-
-## Reading in C++
-
-Consumer packages add `LinkingTo: charport` and `Imports: charport`, include
-`charport.h`, and resolve a reader on the main R thread:
-
-```cpp
-#include "charport.h"
-
-extern "C" SEXP C_total_bytes(SEXP x) {
-  charport::Reader r(x);
-  double total = 0;
-  for(charport::StrView s : r) {
-    if(!s.is_na()) total += s.len;
-  }
-  return Rf_ScalarReal(total);
+IS_GITHUB <- nzchar(Sys.getenv("IS_GITHUB"))
+developer_guide <- if (IS_GITHUB) {
+  "vignettes/developer-guide.Rmd"
+} else {
+  "developer-guide.html"
 }
 ```
 
-`charport::StrView` is a borrowed view: `ptr`, byte `len`, and `enc`. `ptr == NULL`
-means `NA`. The bytes are not NUL-terminated by contract.
-
-A reader borrows the vector. While the reader or any view is in use, keep the
-vector protected and do not access or mutate it through the R API, including
-through aliases. The ALTREP class controls materialization and mutation, which
-may invalidate backend storage.
-
-For threaded consumers, resolve on the main R thread and only copy the raw
-reader to workers when `reader.reentrant()` is true.
-
-## Building a `charvec`
-
-The serial builder is for single-threaded construction:
-
-```cpp
-charport::charvec::Builder b(n);
-for(R_xlen_t i = 0; i < n; ++i) {
-  b.set(i, bytes, len, charport_enc::CE_UTF8);
-}
-SEXP out = b.to_charvec();
-```
-
-When output bytes are produced directly, `reserve()` avoids an intermediate
-buffer:
-
-```cpp
-char * dst = b.reserve(i, len, charport_enc::CE_UTF8);
-std::memcpy(dst, src, len);
-```
-
-For parallel construction, use `charport::charvec::BuilderMT`. Each worker gets a
-distinct shard index and a disjoint element range. Workers fill their shards
-without calling the R API; `to_charvec()` runs on the main thread after all
-workers join.
-
-## Backend registration
-
-A backend package registers an ALTREP class at load time:
-
-```cpp
-static void * my_init(SEXP x) {
-  return R_ExternalPtrAddr(R_altrep_data1(x));
+```{css, echo = FALSE, eval = !IS_GITHUB}
+:root {
+  color-scheme: dark;
+  --charport-bg: #1e282f;
+  --charport-surface: #26323d;
+  --charport-surface-2: #2f4147;
+  --charport-border: #4b6266;
+  --charport-text: #f2ead9;
+  --charport-muted: #bcc7c4;
+  --charport-link: #80cbc4;
+  --charport-link-hover: #a7ddd8;
+  --charport-code-bg: #182127;
 }
 
-static charport_strview my_get(void * state, R_xlen_t i) {
-  const my_store * s = static_cast<const my_store *>(state);
-  return make_strview(s->ptr(i), s->len(i), charport_enc::CE_UTF8);
+html,
+body,
+.main-container {
+  background-color: var(--charport-bg);
 }
 
-charport::register_backend(my_class, my_init, my_get, true);
+body,
+p,
+li,
+td,
+th {
+  color: var(--charport-text);
+}
+
+a,
+a:visited {
+  color: var(--charport-link);
+}
+
+a:hover,
+a:focus {
+  color: var(--charport-link-hover);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  color: var(--charport-text);
+  border-color: rgba(242, 234, 217, 0.16);
+}
+
+hr {
+  border-color: rgba(242, 234, 217, 0.18);
+}
+
+pre,
+code,
+kbd,
+samp {
+  color: #d8eee9;
+  background-color: var(--charport-code-bg);
+  border-color: rgba(128, 203, 196, 0.22);
+}
+
+pre code {
+  background-color: transparent;
+}
+
+blockquote {
+  color: var(--charport-muted);
+  background-color: rgba(47, 65, 71, 0.58);
+  border-color: var(--charport-link);
+}
+
+table {
+  color: var(--charport-text);
+  background-color: var(--charport-surface);
+  border-color: var(--charport-border);
+}
+
+thead,
+tr.header {
+  background-color: var(--charport-surface-2);
+}
+
+th,
+td {
+  border-color: var(--charport-border);
+}
+
+.tocify,
+.tocify-subheader,
+.list-group-item {
+  background-color: var(--charport-surface);
+  color: var(--charport-text);
+  border-color: var(--charport-border);
+}
+
+.tocify-item.active,
+.tocify-item:hover {
+  background-color: var(--charport-surface-2);
+  color: var(--charport-link-hover);
+}
+
+::selection {
+  color: #102026;
+  background-color: var(--charport-link);
+}
 ```
 
-`my_init()` runs once per resolved vector on the main R thread. `my_get()` runs
-per element and must not call the R API or throw C++ exceptions across the ABI.
-If `reentrant = true`, `my_get()` must also be safe to call concurrently.
+```{r, echo = FALSE, results = "asis"}
+logo <- if (IS_GITHUB) "man/figures/logo.svg" else "../man/figures/logo.svg"
+cat(sprintf(
+  '<img src="%s" align="right" width="160" alt="charport logo" style="border: 0; padding: 0; background: transparent;" />\n\n',
+  logo
+))
+```
 
-See `vignette("developer-guide", package = "charport")` for the full contract.
+```{r, echo = FALSE, results = "asis", eval = IS_GITHUB}
+cat('
+[![R-CMD-check](https://github.com/charport/charport/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/charport/charport/actions)
+')
+```
+
+## ALTREP string interoperability
+
+`charport` provides a shared read interface for ALTREP character vectors.
+Backend packages register their ALTREP classes, and compiled consumers read
+string bytes through `charport::Reader` without depending on the backend's
+storage layout. Plain and unregistered vectors fall back to R's ordinary string
+representation.
+
+*The work in this package is funded by the R Consortium Infrastructure Steering
+Committee.*
+
+## Why use a shared reader?
+
+Compiled packages normally access character vectors through R's string API. An
+unmaterialized ALTREP class may need to allocate ordinary `CHARSXP` storage to
+support that access. Class-specific integration can avoid materialization, but
+couples the consumer to one backend. `charport` keeps that integration at one
+boundary: a backend registers once, and consumers use the same reader for every
+supported class.
+
+The benchmark below uses the enwik8 corpus split into 1.13 million strings. The
+conventional read baseline is `STRING_ELT` materialization over a `charvec` ALTREP
+class. The comparison is `charport::Reader` over the same data, avoiding materialization. On the write path, writing standard R strings
+via `SET_STRING_ELT` is the baseline, compared to writing the same data to `charvec`.
+
+```{r, echo = FALSE, results = "asis"}
+if (IS_GITHUB) {
+  cat('![](man/figures/bench.png "charport benchmark"){width=100%}')
+} else {
+  cat('![](../man/figures/bench.png "charport benchmark"){width=100%}')
+}
+```
+
+The results show the materialization and construction costs for this corpus.
+They are not a general performance guarantee.
+
+## Interoperability
+
+`charport` acts as a small broker for ALTREP strings:
+
+1. A package registers the ALTREP string class it owns via `register_altrep`.
+2. A consumer package reads string data through `charport::Reader`, without
+   knowing that class's storage layout.
+3. Registered ALTREP classes can be read directly; ordinary vectors and
+   unregistered ALTREP classes fall back to standard R behavior.
+
+The contract covers bytes, encoding marks, pointer lifetime, and access
+capabilities. `charport` does not define string semantics, locale policy,
+normalization, or a new user-facing string API.
+
+## `charvec`: a reference ALTREP character vector
+
+`charport` also includes `charvec`, which stores string data in native blocks
+alongside a vector of metadata. To R, a `charvec` behaves like an ordinary
+character vector. Compiled code can construct one serially or across multiple
+worker threads, then read it through `charport::Reader` without materialization.
+It serves as both a reference implementation and an output type for packages
+that produce string data.
+
+## For package developers
+
+Package authors can use `charport` from either side of the interface.
+
+ALTREP string classes register through `register_altrep`. Consumer packages
+read through `charport::Reader`, and packages that construct string output can
+use `charvec` directly.
+
+The package developer guide covers registration, reading, fallback behavior,
+pointer lifetime, thread safety, and the `charvec` builder.
+
+```{r, echo = FALSE, results = "asis"}
+cat(sprintf(
+  "- [Package developer guide](%s), also available from R with `vignette(\"developer-guide\", package = \"charport\")`.\n",
+  developer_guide
+))
+```

@@ -568,7 +568,7 @@ struct charvec_altrep {
     });
   }
 
-  // Broker hooks used when the reference backend is explicitly registered.
+  // Broker hooks used when the reference class is registered.
   // init borrows the store pointer that already hangs off data1; a materialized
   // charvec has released its store, so init returns NULL and the broker serves
   // it via the direct path over the cached data2.
@@ -579,7 +579,7 @@ struct charvec_altrep {
     return Ptr(x);
   }
 
-  // Pure state read with no R calls, allocation, or mutation: reentrant.
+  // Pure state read: no R, no allocation, no mutation, persistent records.
   static charport_strview reader_get(void * state, R_xlen_t i) {
     return static_cast<cpi::charvec_data *>(state)->records[static_cast<size_t>(i)];
   }

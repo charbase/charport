@@ -26,7 +26,7 @@ suppressMessages(library(charport))
 charport_native_symbol <- function(name) {
   get(name, envir = asNamespace("charport"), inherits = FALSE)
 }
-invisible(.Call(charport_native_symbol("C_register_charvec_backend")))
+invisible(.Call(charport_native_symbol("C_register_charvec")))
 
 # --- corpus file (same corpus and cache as benchmark.R) ----------------------
 
@@ -116,7 +116,7 @@ writeLines(c(
   'args <- commandArgs(trailingOnly = TRUE)',
   'suppressMessages(library(charport))',
   'charport_native_symbol <- function(name) get(name, envir = asNamespace("charport"), inherits = FALSE)',
-  'invisible(.Call(charport_native_symbol("C_register_charvec_backend")))',
+  'invisible(.Call(charport_native_symbol("C_register_charvec")))',
   'dyn.load(args[1])',
   'cvec <- .Call("C_bench_read_lines_charvec", args[2], 1000L)',
   't <- system.time(.Call("C_benchl_build_strsxp_list", cvec, as.integer(args[3])))[["elapsed"]]',
@@ -175,7 +175,7 @@ if (file.exists("/proc/self/status")) {
     'args <- commandArgs(trailingOnly = TRUE)',
     'suppressMessages(library(charport))',
     'charport_native_symbol <- function(name) get(name, envir = asNamespace("charport"), inherits = FALSE)',
-    'invisible(.Call(charport_native_symbol("C_register_charvec_backend")))',
+    'invisible(.Call(charport_native_symbol("C_register_charvec")))',
     'dyn.load(args[1])',
     'vmrss_kb <- function() {',
     '  as.numeric(sub("VmRSS:\\\\s*(\\\\d+) kB", "\\\\1",',

@@ -1,17 +1,18 @@
 Package: charport
-Title: Interconnect for ALTREP Character Vector Backends
+Title: Interconnect for ALTREP Character Vector Classes
 Version: 0.0.0.9000
 Date: 2026-06-10
 Authors@R: c(
     person("Travers", "Ching", email = "traversc@gmail.com", role = c("aut", "cre", "cph")))
+Author: Travers Ching [aut, cre, cph]
 Maintainer: Travers Ching <traversc@gmail.com>
 Description: Infrastructure for ALTREP character vectors: a reference
     ALTREP string class ('charvec') backed by stable memory slices with a
     parallel-constructible builder, a runtime registration interface for
-    third-party ALTREP string backends, and a common zero-copy read path
+    third-party ALTREP string classes, and a common zero-copy read path
     so consumer packages can iterate over any character vector with a
     single code path. Writable interop (mutating another package's
-    backend through a generic interface) is out of scope.
+    ALTREP class through a generic interface) is out of scope.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Suggests:

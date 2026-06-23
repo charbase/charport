@@ -26,10 +26,17 @@ expect_error_matching <- function(expr, pattern) {
 
 catn("compiling the charport reader consumer (R CMD SHLIB)")
 dll <- compile_test_dso("charport_consumer.cpp", skip_label = "charport reader consumer")
-on.exit(dyn.unload(dll[["path"]]), add = TRUE)
-on.exit(unregister_charvec_backend(), add = TRUE)
 
-roundtrip <- function(x) .Call("C_consumer_reader_roundtrip", x)
+consumer_symbol <- function(name) getNativeSymbolInfo(name, PACKAGE = dll[["name"]])
+roundtrip <- function(x) .Call(consumer_symbol("C_consumer_reader_roundtrip"), x)
+reader_kind <- function(x) .Call(consumer_symbol("C_consumer_reader_kind"), x)
+reader_capabilities <- function(x) {
+  .Call(consumer_symbol("C_consumer_reader_capabilities"), x)
+}
+K_PLAIN <- 0L
+K_MATERIALIZED_ALTREP <- 1L
+K_REGISTERED_ALTREP <- 2L
+K_FALLBACK_ALTREP <- 3L
 
 words_file <- "words_utf8.txt"
 if (!file.exists(words_file)) words_file <- file.path("tests", "words_utf8.txt")
@@ -40,40 +47,61 @@ b <- rawToChar(as.raw(0xE9)); Encoding(b) <- "bytes"
 set.seed(20260610)
 
 catn("C ABI symbols resolve from a downstream-style consumer")
-stopifnot(isTRUE(.Call("C_consumer_abi_ok")))
+stopifnot(isTRUE(.Call(consumer_symbol("C_consumer_abi_ok"))))
 
-catn("registry state at load: no backends are registered by default")
-unregister_charvec_backend()
-reg <- charport_backends()
-stopifnot(reg$n == 0L, is.logical(reg$reentrant), length(reg$reentrant) == 0L)
+catn("registry state at load: charvec is registered by default")
+reg <- charport_classes()
+stopifnot(reg$n == 1L)
+stopifnot(identical(reg$view_persistence, TRUE))
+stopifnot(identical(reg$thread_safe_access, TRUE))
+stopifnot(identical(reg$reentrant, TRUE))
 x <- charvec("a", "b")
-stopifnot(is.na(charport_backend_of(x)))
-stopifnot(!charvec_stats(x)$materialized)   # backend_of didn't touch data
+stopifnot(!is.na(charport_class_of(x)))
+stopifnot(!charvec_stats(x)$materialized)   # class_of didn't touch data
 
-catn("register: charvec backend is explicit and reentrant")
-register_charvec_backend()
-reg <- charport_backends()
-stopifnot(reg$n == 1L, identical(reg$reentrant, TRUE))
+catn("duplicate register: charvec registration throws")
+expect_error_matching(register_charvec(), "already registered")
+reg <- charport_classes()
+stopifnot(reg$n == 1L)
+stopifnot(identical(reg$view_persistence, TRUE))
+stopifnot(identical(reg$thread_safe_access, TRUE))
+stopifnot(identical(reg$reentrant, TRUE))
 
-catn("backend_of: class membership, no materialization")
+catn("class_of: class membership, no materialization")
 x <- charvec("a", "b")
 if (getRversion() >= "4.6.0") {
-  stopifnot(identical(charport_backend_of(x), "charport::charvec"))
+  stopifnot(identical(charport_class_of(x), "charport::charvec"))
 } else {
-  stopifnot(!is.na(charport_backend_of(x)))
+  stopifnot(!is.na(charport_class_of(x)))
 }
-stopifnot(is.na(charport_backend_of(letters)))
-stopifnot(!charvec_stats(x)$materialized)   # backend_of didn't touch data
+stopifnot(is.na(charport_class_of(letters)))
+stopifnot(!charvec_stats(x)$materialized)   # class_of didn't touch data
 charport_materialize(x)
-stopifnot(!is.na(charport_backend_of(x)))   # still claims the class
-expect_error_matching(charport_backend_of(1:3), "character")
+stopifnot(!is.na(charport_class_of(x)))   # still claims the class
+expect_error_matching(charport_class_of(1:3), "character")
+
+catn("reader kind: plain, registered, materialized, and fallback")
+stopifnot(identical(reader_kind(c("a", "b")), K_PLAIN))
+stopifnot(identical(reader_capabilities(c("a", "b")), c(TRUE, FALSE, FALSE)))
+x <- as_charvec(c("a", "b"))
+stopifnot(identical(reader_kind(x), K_REGISTERED_ALTREP))
+stopifnot(identical(reader_capabilities(x), c(TRUE, TRUE, TRUE)))
+stopifnot(!charvec_stats(x)$materialized)
+charport_materialize(x)
+stopifnot(identical(reader_kind(x), K_MATERIALIZED_ALTREP))
+stopifnot(identical(reader_capabilities(x), c(TRUE, FALSE, FALSE)))
+x <- as_charvec(c("u", "v"))
+unregister_charvec()
+stopifnot(identical(reader_kind(x), K_FALLBACK_ALTREP))
+stopifnot(identical(reader_capabilities(x), c(TRUE, FALSE, FALSE)))
+register_charvec()
 
 catn("reader equivalence: plain vector with mixed encodings and marks")
 mixed <- c("plain", NA, "", w_utf8[1:5], w_latin1[6:10], b)
 stopifnot(any(Encoding(mixed) == "latin1"))
 stopifnot(marks_identical(roundtrip(mixed), mixed))
 
-catn("reader equivalence: charvec is served by its backend")
+catn("reader equivalence: charvec is served by its class")
 ref <- c(w_utf8[1:20], NA, "", w_latin1[21:40], b)
 x <- as_charvec(ref)
 stopifnot(marks_identical(roundtrip(x), ref))
@@ -86,11 +114,10 @@ stopifnot(marks_identical(roundtrip(x), ref))
 catn("reader equivalence: unregistered ALTREP is materialized by fallback")
 x <- as.character(1:5000)
 stopifnot(grepl("deferred string conversion", capture.output(.Internal(inspect(x)))[1]))
-stopifnot(is.na(charport_backend_of(x)))
+stopifnot(is.na(charport_class_of(x)))
 stopifnot(identical(roundtrip(x), as.character(1:5000)))
 
 catn("reader edge cases")
-register_charvec_backend()
 stopifnot(identical(roundtrip(character(0)), character(0)))
 stopifnot(identical(roundtrip(charvec()), character(0)))
 stopifnot(identical(roundtrip(c(NA_character_, NA_character_)), c(NA_character_, NA_character_)))
@@ -101,27 +128,26 @@ expect_error_matching(roundtrip(NULL), "character")
 expect_error_matching(roundtrip(list("a")), "character")
 
 catn("unregister: charvec resolves through fallback; re-register restores")
-n0 <- charport_backends()$n
+n0 <- charport_classes()$n
 x <- as_charvec(c("u", NA, "v"))
-unregister_charvec_backend()
-stopifnot(charport_backends()$n == n0 - 1L)
-stopifnot(is.na(charport_backend_of(x)))
+unregister_charvec()
+stopifnot(charport_classes()$n == n0 - 1L)
+stopifnot(is.na(charport_class_of(x)))
 stopifnot(identical(roundtrip(x), c("u", NA, "v")))
 stopifnot(charvec_stats(x)$materialized)    # the one-time fallback cost
-register_charvec_backend()
-stopifnot(charport_backends()$n == n0)
+register_charvec()
+stopifnot(charport_classes()$n == n0)
 y <- as_charvec(c("w", "z"))
-stopifnot(!is.na(charport_backend_of(y)))
+stopifnot(!is.na(charport_class_of(y)))
 
-catn("re-registration is idempotent")
-register_charvec_backend()
-register_charvec_backend()
-stopifnot(charport_backends()$n == n0)
+catn("duplicate registration errors")
+expect_error_matching(register_charvec(), "already registered")
+stopifnot(charport_classes()$n == n0)
 
 catn("reader equivalence under serialization round trip")
 x <- as_charvec(c(w_utf8[1:10], NA, ""))
 y <- unserialize(serialize(x, NULL))
-stopifnot(!is.na(charport_backend_of(y)))
+stopifnot(!is.na(charport_class_of(y)))
 stopifnot(marks_identical(roundtrip(y), roundtrip(x)))
 
 catn("property test: reader output == STRING_ELT view of the same object")
@@ -135,4 +161,5 @@ for (trial in 1:20) {
   stopifnot(marks_identical(out, input))
 }
 
+dyn.unload(dll[["path"]])
 catn("registry/reader tests passed")

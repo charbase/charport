@@ -24,7 +24,7 @@ reference:
   - is_charvec
   - as_charvec
   - charport_materialize
-- title: Backend Diagnostics
+- title: Class Diagnostics
   contents:
-  - charport_backends
-  - charport_backend_of
+  - charport_classes
+  - charport_class_of

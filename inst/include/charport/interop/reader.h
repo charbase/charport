@@ -1,7 +1,7 @@
 #ifndef CHARPORT_INTEROP_READER_H
 #define CHARPORT_INTEROP_READER_H
 
-// Reader and backend-registration ABI. Include charport.h from packages.
+// Reader and ALTREP registration ABI. Include charport.h from packages.
 
 #define R_NO_REMAP
 #include <Rinternals.h>
@@ -23,18 +23,38 @@ extern "C" {
 typedef charport_strview (*charport_get_strview_fn)(void * state, R_xlen_t i);
 typedef void * (*charport_init_fn)(SEXP x);
 
+#ifdef __cplusplus
+enum class charport_reader_kind : uint8_t {
+    PLAIN              = 0,
+    MATERIALIZED_ALTREP = 1,
+    REGISTERED_ALTREP = 2,
+    FALLBACK_ALTREP   = 3
+};
+#else
+typedef uint8_t charport_reader_kind;
+enum {
+    CHARPORT_READER_PLAIN              = 0,
+    CHARPORT_READER_MATERIALIZED_ALTREP = 1,
+    CHARPORT_READER_REGISTERED_ALTREP = 2,
+    CHARPORT_READER_FALLBACK_ALTREP   = 3
+};
+#endif
+
 typedef struct charport_reader {
     R_xlen_t n;
     void * state;
     charport_get_strview_fn get;
-    bool reentrant;
+    bool view_persistence;
+    bool thread_safe_access;
+    charport_reader_kind kind;
 } charport_reader;
 
-typedef void (*charport_register_backend_t)(R_altrep_class_t cls,
-                                            charport_init_fn init,
-                                            charport_get_strview_fn get_strview,
-                                            bool reentrant);
-typedef void (*charport_unregister_backend_t)(R_altrep_class_t cls);
+typedef void (*charport_register_altrep_t)(R_altrep_class_t cls,
+                                           charport_init_fn init,
+                                           charport_get_strview_fn get_strview,
+                                           bool view_persistence,
+                                           bool thread_safe_access);
+typedef void (*charport_unregister_altrep_t)(R_altrep_class_t cls);
 typedef charport_reader (*charport_resolve_t)(SEXP x);
 typedef int (*charport_abi_version_t)(void);
 typedef SEXP (*charport_charvec_wrap_t)(void * store);
@@ -50,6 +70,7 @@ typedef SEXP (*charport_charvec_wrap_t)(void * store);
 namespace charport {
 
 using StrView = charport_strview;
+using ReaderKind = charport_reader_kind;
 
 namespace detail {
 
@@ -65,16 +86,18 @@ inline charport_reader resolve(SEXP x) {
   return fn(x);
 }
 
-inline void register_backend(R_altrep_class_t cls, charport_init_fn init,
-                             charport_get_strview_fn get_strview, bool reentrant) {
-  static charport_register_backend_t fn =
-    reinterpret_cast<charport_register_backend_t>(detail::fetch("charport_register_backend"));
-  fn(cls, init, get_strview, reentrant);
+inline void register_altrep(R_altrep_class_t cls, charport_init_fn init,
+                            charport_get_strview_fn get_strview,
+                            bool view_persistence,
+                            bool thread_safe_access) {
+  static charport_register_altrep_t fn =
+    reinterpret_cast<charport_register_altrep_t>(detail::fetch("charport_register_altrep"));
+  fn(cls, init, get_strview, view_persistence, thread_safe_access);
 }
 
-inline void unregister_backend(R_altrep_class_t cls) {
-  static charport_unregister_backend_t fn =
-    reinterpret_cast<charport_unregister_backend_t>(detail::fetch("charport_unregister_backend"));
+inline void unregister_altrep(R_altrep_class_t cls) {
+  static charport_unregister_altrep_t fn =
+    reinterpret_cast<charport_unregister_altrep_t>(detail::fetch("charport_unregister_altrep"));
   fn(cls);
 }
 
@@ -99,7 +122,10 @@ public:
   explicit Reader(const charport_reader & r) noexcept : r_(r) {}
 
   R_xlen_t size() const noexcept { return r_.n; }
-  bool reentrant() const noexcept { return r_.reentrant; }
+  bool view_persistence() const noexcept { return r_.view_persistence; }
+  bool thread_safe_access() const noexcept { return r_.thread_safe_access; }
+  bool reentrant() const noexcept { return view_persistence() && thread_safe_access(); }
+  ReaderKind kind() const noexcept { return r_.kind; }
   StrView operator[](R_xlen_t i) const { return r_.get(r_.state, i); }
   const charport_reader & raw() const noexcept { return r_; }
 
