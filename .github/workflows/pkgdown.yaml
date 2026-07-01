@@ -5,29 +5,63 @@ on:
 
 name: pkgdown
 
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 jobs:
-  pkgdown:
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: r-lib/actions/setup-pandoc@v2
+      - uses: r-lib/actions/setup-pandoc@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
 
-      - uses: r-lib/actions/setup-r@v2
+      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
         with:
           use-public-rspm: true
 
-      - uses: r-lib/actions/setup-r-dependencies@v2
+      - uses: r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
         with:
           extra-packages: any::pkgdown, local::.
           needs: website
 
-      - name: Deploy site
-        run: pkgdown::deploy_to_branch(new_process = FALSE)
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+
+      - name: Build site
+        run: |
+          dir.create("pkgdown", showWarnings = FALSE)
+          readme <- readLines("README.md", warn = FALSE)
+          keep <- !grepl("^<img src=\"man/figures/logo\\.svg\"", readme)
+          writeLines(readme[keep], "pkgdown/index.md")
+
+          Sys.setenv(IN_PKGDOWN = "true")
+          pkgdown::build_site(new_process = FALSE, install = FALSE, override = list(home = list(sidebar = FALSE)))
         shell: Rscript {0}
+
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

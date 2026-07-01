@@ -166,6 +166,29 @@ inline char * shard_allocate_bytes(charvec_shard & shard, uint32_t len, size_t n
   return dest;
 }
 
+inline char * shard_push_slice(charvec_shard & shard, size_t len) {
+  if(len == 0) {
+    return const_cast<char*>(empty_data());
+  }
+  const uint32_t cap = checked_u32(len, "slice size");
+  char * block = new char[slice_header_bytes() + static_cast<size_t>(cap)];
+  slice_set_next(block, shard.slice_head);
+  shard.slice_head = block;
+  shard.current_slice_used = cap;
+  shard.current_slice_capacity = cap;
+  shard.allocated_bytes += static_cast<size_t>(cap);
+  return slice_payload(block);
+}
+
+inline char * shard_data_slice(charvec_shard & shard, size_t idx) noexcept {
+  char * block = shard.slice_head;
+  while(block != nullptr && idx > 0) {
+    block = slice_next(block);
+    --idx;
+  }
+  return block == nullptr ? nullptr : slice_payload(block);
+}
+
 inline char * fill_record(charvec_shard & shard, charport_strview * records, size_t n,
                           size_t idx, size_t len, charport_enc enc) {
   if(records == nullptr) {

@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 520" role="img" aria-labelledby="title desc">
+  <title id="title">charport developer integration map</title>
+  <desc id="desc">A technical flowchart showing a producer package registering an ALTREP class or using charvec, charport storing registrations, and a consumer package reading through charport::Reader.</desc>
+  <defs>
+    <style>
+      .background { fill: #1f2529; }
+      .lane {
+        fill: none;
+        stroke: #536168;
+        stroke-width: 1.4;
+      }
+      .lane-hub {
+        fill: none;
+        stroke: #80cbc4;
+        stroke-width: 1.7;
+      }
+      .box {
+        fill: none;
+        stroke: #9aa7a8;
+        stroke-width: 1.5;
+      }
+      .lane-title {
+        fill: #f2ead9;
+        font: 700 19px Inter, Avenir, Helvetica, Arial, sans-serif;
+      }
+      .hub-title {
+        fill: #f2ead9;
+        font: 750 22px Inter, Avenir, Helvetica, Arial, sans-serif;
+      }
+      .label {
+        fill: #f2ead9;
+        font: 650 16px Inter, Avenir, Helvetica, Arial, sans-serif;
+      }
+      .mono {
+        fill: #f2ead9;
+        font: 650 15px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .muted {
+        fill: #c7d0cc;
+        font: 600 14px Inter, Avenir, Helvetica, Arial, sans-serif;
+      }
+      .edge-label-bg {
+        fill: #1f2529;
+        stroke: #536168;
+        stroke-width: 1;
+      }
+      .edge-label {
+        fill: #f2ead9;
+        font: 650 14px Inter, Avenir, Helvetica, Arial, sans-serif;
+      }
+      .arrow {
+        fill: none;
+        stroke: #9aa7a8;
+        stroke-width: 1.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        marker-end: url(#arrowhead);
+      }
+      .note-line {
+        stroke: #536168;
+        stroke-width: 1.2;
+        stroke-dasharray: 5 6;
+      }
+    </style>
+    <marker id="arrowhead" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path d="M0 0 L9 4.5 L0 9 Z" fill="#9aa7a8"/>
+    </marker>
+  </defs>
+
+  <rect width="1080" height="520" class="background"/>
+
+  <rect x="40" y="40" width="280" height="430" rx="3" class="lane"/>
+  <rect x="360" y="32" width="360" height="446" rx="3" class="lane-hub"/>
+  <rect x="760" y="40" width="280" height="430" rx="3" class="lane"/>
+
+  <text x="180" y="77" text-anchor="middle" class="lane-title">producerpkg</text>
+  <text x="540" y="76" text-anchor="middle" class="hub-title">charport</text>
+  <text x="900" y="77" text-anchor="middle" class="lane-title">consumerpkg</text>
+
+  <rect x="70" y="112" width="220" height="82" rx="2" class="box"/>
+  <text x="180" y="144" text-anchor="middle" class="label">Package-specific</text>
+  <text x="180" y="166" text-anchor="middle" class="label">ALTREP class</text>
+  <text x="180" y="185" text-anchor="middle" class="muted">owns storage layout</text>
+
+  <rect x="70" y="252" width="220" height="78" rx="2" class="box"/>
+  <text x="180" y="284" text-anchor="middle" class="mono">register_altrep()</text>
+  <text x="180" y="306" text-anchor="middle" class="muted">init / get / release</text>
+
+  <rect x="70" y="384" width="220" height="52" rx="2" class="box"/>
+  <text x="180" y="416" text-anchor="middle" class="label">use charvec directly</text>
+
+  <rect x="410" y="112" width="260" height="96" rx="2" class="box"/>
+  <text x="540" y="143" text-anchor="middle" class="label">Registry</text>
+  <text x="540" y="166" text-anchor="middle" class="muted">ALTREP class -> read methods</text>
+  <text x="540" y="188" text-anchor="middle" class="muted">view guarantees + release hook</text>
+
+  <rect x="410" y="266" width="260" height="72" rx="2" class="box"/>
+  <text x="540" y="296" text-anchor="middle" class="label">charvec</text>
+  <text x="540" y="318" text-anchor="middle" class="muted">built-in registered class</text>
+
+  <rect x="790" y="112" width="220" height="82" rx="2" class="box"/>
+  <text x="900" y="144" text-anchor="middle" class="mono">charport::Reader</text>
+  <text x="900" y="166" text-anchor="middle" class="muted">constructed from SEXP</text>
+  <text x="900" y="185" text-anchor="middle" class="muted">resolves read path once</text>
+
+  <rect x="790" y="252" width="220" height="78" rx="2" class="box"/>
+  <text x="900" y="284" text-anchor="middle" class="mono">StrView</text>
+  <text x="900" y="306" text-anchor="middle" class="muted">ptr + len + enc</text>
+
+  <rect x="790" y="384" width="220" height="52" rx="2" class="box"/>
+  <text x="900" y="416" text-anchor="middle" class="label">Consumer algorithm</text>
+
+  <path d="M180 194 V244" class="arrow"/>
+  <path d="M290 291 C345 291 346 160 402 160" class="arrow"/>
+  <rect x="313" y="218" width="68" height="22" rx="2" class="edge-label-bg"/>
+  <text x="347" y="234" text-anchor="middle" class="edge-label">Register</text>
+
+  <text x="180" y="362" text-anchor="middle" class="muted">or</text>
+  <path d="M290 410 C345 410 346 302 402 302" class="arrow"/>
+
+  <path d="M900 194 V244" class="arrow"/>
+  <path d="M900 330 V376" class="arrow"/>
+
+  <path d="M790 152 H678" class="arrow"/>
+  <rect x="703" y="124" width="62" height="22" rx="2" class="edge-label-bg"/>
+  <text x="734" y="140" text-anchor="middle" class="edge-label">resolve</text>
+
+  <path d="M670 166 H782" class="arrow"/>
+  <rect x="680" y="171" width="92" height="22" rx="2" class="edge-label-bg"/>
+  <text x="726" y="187" text-anchor="middle" class="edge-label">read methods</text>
+
+  <line x1="540" y1="208" x2="540" y2="266" class="note-line"/>
+</svg>

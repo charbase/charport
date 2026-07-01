@@ -4,8 +4,8 @@
 # would consume the installed headers + R_GetCCallable symbols. If the
 # toolchain can't build it, skip because the package's own build is untouched.
 #
-# Workers: each thread reads its range through a copy of the reader POD and
-# writes its own BuilderMT shard index. 2 threads (CRAN core limit).
+# Workers: each thread reads its range through the same reentrant Reader and
+# writes its own ParallelBuilder shard index. 2 threads (CRAN core limit).
 
 suppressPackageStartupMessages(library(charport))
 
@@ -47,7 +47,7 @@ rebuild2 <- function(x, n_threads = 2L) {
 catn("consumer load-time ABI check passes")
 stopifnot(isTRUE(.Call(consumer_symbol("C_consumer_abi_ok"))))
 
-catn("threaded rebuild: 2 std::thread workers over reader POD copies + shards")
+catn("threaded rebuild: 2 std::thread workers over shared reentrant Reader + shards")
 w_utf8 <- readLines(words_file, encoding = "UTF-8", warn = FALSE)
 w_latin1 <- iconv(w_utf8, "UTF-8", "latin1")
 b <- rawToChar(as.raw(0xE9)); Encoding(b) <- "bytes"

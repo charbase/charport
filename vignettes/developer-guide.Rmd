@@ -2,6 +2,7 @@
 title: "charport package developer guide"
 output:
   html_vignette:
+    css: !expr if (identical(Sys.getenv("IN_PKGDOWN"), "true")) NULL else "charport-vignette.css"
     tabset: true
 vignette: >
   %\VignetteIndexEntry{charport package developer guide}
@@ -14,173 +15,47 @@ knitr::opts_chunk$set(
   collapse = TRUE,
   comment = "#>"
 )
-```
 
-```{css, echo = FALSE}
-:root {
-  color-scheme: dark;
-  --charport-bg: #1e282f;
-  --charport-surface: #26323d;
-  --charport-surface-2: #2f4147;
-  --charport-border: #4b6266;
-  --charport-text: #f2ead9;
-  --charport-muted: #bcc7c4;
-  --charport-link: #80cbc4;
-  --charport-link-hover: #a7ddd8;
-  --charport-code-bg: #182127;
-}
-
-html,
-body,
-.main-container {
-  background-color: var(--charport-bg);
-}
-
-body,
-p,
-li,
-td,
-th {
-  color: var(--charport-text);
-}
-
-a,
-a:visited {
-  color: var(--charport-link);
-}
-
-a:hover,
-a:focus {
-  color: var(--charport-link-hover);
-}
-
-h1,
-h2,
-h3,
-h4,
-h5,
-h6 {
-  color: var(--charport-text);
-  border-color: rgba(242, 234, 217, 0.16);
-}
-
-hr {
-  border-color: rgba(242, 234, 217, 0.18);
-}
-
-pre,
-code,
-kbd,
-samp {
-  color: #d8eee9;
-  background-color: var(--charport-code-bg);
-  border-color: rgba(128, 203, 196, 0.22);
-}
-
-pre code {
-  background-color: transparent;
-}
-
-blockquote {
-  color: var(--charport-muted);
-  background-color: rgba(47, 65, 71, 0.58);
-  border-color: var(--charport-link);
-}
-
-table {
-  color: var(--charport-text);
-  background-color: var(--charport-surface);
-  border-color: var(--charport-border);
-}
-
-thead,
-tr.header {
-  background-color: var(--charport-surface-2);
-}
-
-th,
-td {
-  border-color: var(--charport-border);
-}
-
-.tocify,
-.tocify-subheader,
-.list-group-item {
-  background-color: var(--charport-surface);
-  color: var(--charport-text);
-  border-color: var(--charport-border);
-}
-
-.tocify-item.active,
-.tocify-item:hover {
-  background-color: var(--charport-surface-2);
-  color: var(--charport-link-hover);
-}
-
-.tabset > .tab {
-  border-color: var(--charport-border);
-  background-color: transparent;
-}
-
-.tabset > .tabmenu {
-  border-color: var(--charport-border);
-  border-bottom: 1px solid var(--charport-border);
-}
-
-.tabset > .tabmenu button {
-  color: var(--charport-link);
-  background-color: var(--charport-surface);
-  border: 1px solid var(--charport-border);
-  padding: 0.4rem 0.75rem;
-}
-
-.tabset > .tabmenu button:hover,
-.tabset > .tabmenu button:focus {
-  color: var(--charport-link-hover);
-  background-color: var(--charport-surface-2);
-  border-color: var(--charport-border);
-}
-
-.tabset > .tabmenu .active button {
-  color: var(--charport-text);
-  background-color: var(--charport-bg);
-  border-color: var(--charport-border);
-  border-bottom-color: var(--charport-bg);
-  text-decoration: none;
-}
-
-.tabset > .tabmenu .active button:before {
-  content: "";
-}
-
-::selection {
-  color: #102026;
-  background-color: var(--charport-link);
-}
+developer_flow <- "../man/figures/developer-flow.svg"
 ```
 
 This guide is for packages that read ALTREP character vectors, register an
 ALTREP string class, or build `charvec` output.
 
-`charport::Reader` exposes low-level byte views and their lifetime guarantees.
-Encoding policy remains with the consumer.
+`charport` defines an interface between ALTREP string producers and consumers.
+Producers register a way to view their string data, and consumers read those
+views without depending on the producer's storage layout or forcing ordinary R
+string materialization.
 
-The guide is organized around three use cases:
+A package may produce an ALTREP string class, consume ALTREP strings, or use
+`charvec`, a built-in ALTREP class, as its own output representation. The
+diagram below shows how those roles meet through charport.
 
-| Section | Purpose |
-|---|---|
-| [Using `Reader`](#universal-reader) | Read registered ALTREP strings through one C++ interface. |
-| [Registering an ALTREP class](#altrep-registration) | Make an ALTREP string class readable by other packages through `charport`. |
-| [Using `charvec` directly](#charvec-direct) | Build `charvec` output directly with serial or multithreaded builders. |
+```{r, echo = FALSE, results = "asis"}
+cat(sprintf(
+  '<img src="%s" alt="charport developer integration flowchart" />\n\n',
+  developer_flow
+))
+```
 
-All three use cases start the same way: link to `charport`, include the umbrella
-header, and check the ABI once when your package loads.
+The guide covers three use cases:
+
+- [Using `Reader`](#universal-reader): read ALTREP
+  strings through one C++ interface.
+- [Registering an ALTREP class](#altrep-registration): make an ALTREP string
+  class readable by other packages through `charport`.
+- [Using `charvec` directly](#charvec-direct): build the included `charvec`
+  class with serial or multithreaded builders.
+
+All three use cases start the same way: link to `charport`, include the
+umbrella header, and check the ABI once when your package loads.
 
 ## Linking to `charport` {#linking-to-charport}
 
 Use the C++ interface in `charport.h`.
 
-In `DESCRIPTION`, declare both the runtime dependency and the header dependency:
+In `DESCRIPTION`, declare both the runtime dependency and the header
+dependency:
 
 ```text
 Imports:
@@ -189,31 +64,51 @@ LinkingTo:
     charport
 ```
 
-In `NAMESPACE`, load your package's native code and import `charport` so its
-runtime entry points are available:
+In `NAMESPACE`, import `charport` so its runtime entry points are available:
 
 ### Namespace setup {.tabset}
 
-#### NAMESPACE
-
-```text
-useDynLib(yourpkg, .registration = TRUE)
-import(charport)
-```
-
 #### roxygen2
-
 ```r
 #' @useDynLib yourpkg, .registration = TRUE
 #' @import charport
 "_PACKAGE"
 ```
 
+#### NAMESPACE
+```text
+useDynLib(yourpkg, .registration = TRUE)
+import(charport)
+```
+
 ### ABI check hook {.tabset}
 
-`charport::check_abi()` verifies that the installed package matches the headers
-used to compile the consumer. Call it once from native initialization, using a
-manual, Rcpp, or cpp11 hook. An `.onLoad` wrapper is also possible.
+`check_abi()` compares the ABI version compiled into your package with the ABI
+provided by the installed `charport`. It returns `true` when they match and
+`false` when they do not. Your package decides how to report a mismatch.
+
+#### Manual `.onLoad`
+
+```cpp
+#include "charport.h"
+
+extern "C" SEXP C_check_charport_abi(void) {
+  return Rf_ScalarLogical(charport::check_abi() ? TRUE : FALSE);
+}
+```
+
+Register `C_check_charport_abi` in the package's `.Call` table, then add:
+
+```r
+.onLoad <- function(libname, pkgname) {
+  if (!isTRUE(.Call(C_check_charport_abi))) {
+    stop(
+      "yourpkg was built against an incompatible charport ABI",
+      call. = FALSE
+    )
+  }
+}
+```
 
 #### Rcpp init
 
@@ -222,7 +117,9 @@ manual, Rcpp, or cpp11 hook. An `.onLoad` wrapper is also possible.
 
 // [[Rcpp::init]]
 void init_yourpkg(DllInfo * dll) {
-  charport::check_abi();
+  if(!charport::check_abi()) {
+    Rf_error("yourpkg was built against an incompatible charport ABI");
+  }
   (void)dll;
 }
 ```
@@ -234,7 +131,9 @@ void init_yourpkg(DllInfo * dll) {
 
 [[cpp11::init]]
 void init_yourpkg(DllInfo * dll) {
-  charport::check_abi();
+  if(!charport::check_abi()) {
+    Rf_error("yourpkg was built against an incompatible charport ABI");
+  }
   (void)dll;
 }
 ```
@@ -247,33 +146,18 @@ void init_yourpkg(DllInfo * dll) {
 extern "C" void R_init_yourpkg(DllInfo * dll) {
   R_registerRoutines(dll, NULL, call_entries, NULL, NULL);
   R_useDynamicSymbols(dll, FALSE);
-  charport::check_abi();
+  if(!charport::check_abi()) {
+    Rf_error("yourpkg was built against an incompatible charport ABI");
+  }
   R_forceSymbols(dll, TRUE);
 }
 ```
 
-#### Manual `.onLoad`
-
-```cpp
-#include "charport.h"
-
-extern "C" SEXP C_check_charport_abi(void) {
-  charport::check_abi();
-  return R_NilValue;
-}
-```
-
-Register `C_check_charport_abi` in the package's `.Call` table, then add:
-
-```r
-.onLoad <- function(libname, pkgname) {
-  .Call(C_check_charport_abi)
-}
-```
+### ABI version
 
 The current ABI version is `CHARPORT_ABI_VERSION=1`. Any layout or contract
-break bumps this value. `check_abi()` compares the version compiled into
-`yourpkg` with the installed `charport` version and throws if they differ.
+break bumps this value. `check_abi()` returns `false` when the version compiled
+into `yourpkg` does not match the installed `charport` version.
 
 ## Using `Reader` {#universal-reader}
 
@@ -285,23 +169,41 @@ elements by iteration or index.
 using namespace charport;
 Reader r(robj);
 for(StrView s : r) {
-  // ...
-}
-
-for(R_xlen_t i=0; i<r.size(); ++i) {
-  StrView s = r[i];
   if(!s.is_na()) {
     // s.ptr, s.len, s.enc
   }
 }
+
+for(R_xlen_t i=0; i<r.size(); ++i) {
+  StrView s = r[i];
+  // ...
+}
 ```
 
-For a registered ALTREP class, `Reader` gives you non-materializing views. For a plain vector, a materialized ALTREP vector or an ALTREP vector that is not registered, `Reader` falls back to ordinary access via `STRING_PTR_RO`.
+For scalar inputs, `Reader::read_scalar()` reads the first element and returns a
+`StrView`:
 
-### Reader kind
+```cpp
+StrView s = Reader::read_scalar(x);
+```
 
-`Reader::kind()` reports how the current `Reader` was resolved. It describes the read path chosen when
-the `Reader` was constructed.
+`read_scalar()` expects a non-empty character vector and should be called on
+the main R thread. It uses the registered ALTREP path when it can return a
+persistent view without keeping reader state alive; otherwise it uses ordinary
+R string access.
+
+For a registered ALTREP class, `Reader` gives you non-materializing views. For
+a plain vector, a materialized ALTREP or an ALTREP that is not registered,
+`Reader` falls back to ordinary access via `STRING_PTR_RO`.
+
+`Reader` owns the active borrow and is move-only. Most code should keep it as a
+local stack object and let its destructor clean up any state supplied by the
+registered class.
+
+### Reader properties
+
+`Reader::kind()` reports how the current `Reader` was resolved. It describes
+the read path chosen when the `Reader` was constructed.
 
 | Value | Meaning |
 |---|---|
@@ -310,25 +212,30 @@ the `Reader` was constructed.
 | `charport::ReaderKind::REGISTERED_ALTREP` | ALTREP character vector served by a `charport`-registered class. |
 | `charport::ReaderKind::FALLBACK_ALTREP` | ALTREP character vector not served directly; resolving the `Reader` falls back to ordinary R string access. |
 
-`Reader::view_persistence()` and `Reader::thread_safe_access()` report the two
-primitive reader guarantees. `Reader::reentrant()` is a convenience check that
-returns true only when both guarantees are true.
+`Reader::view_persistence()` is true when returned `StrView` pointers remain
+valid for the lifetime of the `Reader`.
+
+`Reader::thread_safe_access()` is true when `Reader` access may happen from
+outside the main thread and concurrently from multiple threads.
+
+`Reader::reentrant()` is a combined convenience check when `view_persistence()`
+and `thread_safe_access()` are true.
 
 ### `StrView`
 
-`StrView` is the element type returned by `Reader`. It is a non-owning view of
-bytes owned by the character vector.
+`charport::StrView` is the type returned by `Reader` element access. It is a
+non-owning view of bytes owned by the character vector.
 
 Each `StrView` contains:
 
 1. `ptr`, a pointer to the string data
-2. `len`, the length of the string in bytes
+2. `len`, the string length in bytes
 3. `enc`, the encoding mark for those bytes
 
 `ptr` is not guaranteed to be null-terminated; use `len` for its byte length.
 
-`enc` is an extended enum similar to, but not identical to, base R's
-`cetype_t`. The following values are defined:
+`enc` is an enum similar to, but not identical to, base R's `cetype_t`. The
+following values are defined:
 
 | Value | Meaning |
 |---|---|
@@ -347,57 +254,72 @@ R `CHARSXP`.
 
 In Rust terms, a `Reader` acts like a strict borrow. It is a temporary view of
 the vector's current string storage, valid only while that storage remains
-protected and unmodified.
-
-R accessors on the original vector (`STRING_ELT()`, `STRING_PTR_RO()`, `DATAPTR_RO()`, etc.) can invalidate the `Reader`.
+protected and unmodified. While the `Reader` is active, do not access or modify
+the original R object. Calls such as `STRING_ELT`, `STRING_PTR_RO`, and
+`DATAPTR_RO` can invalidate the borrow.
 
 When `view_persistence()` is true, `StrView` pointers returned from the
-`Reader` remain valid after later `Reader` access, until the active borrow ends.
-This allows code to collect views on the main thread and process on worker threads.
+`Reader` remain valid after later `Reader` access, until the active borrow
+ends. This allows code to collect views on the main thread and process on
+worker threads.
 
 When `thread_safe_access()` is true, `Reader` access itself may happen off the
 main thread and concurrently. `reentrant()` returns true only when both
 `view_persistence()` and `thread_safe_access()` are true.
 
-The fallback `Reader` path over `CHARSXP`s has persistent views but is
-main-thread-only for access. It uses R's string objects and accessors.
+The fallback `Reader` path has persistent views but is main-thread-only.
 
 ## Registering an ALTREP class {#altrep-registration}
 
-A package registers its ALTREP class after creating it. Registration can happen
-directly in native package initialization, or from `.onLoad()` via a small
-native routine.
+A package can register its ALTREP class to make non-materializing access
+available to `charport::Reader`. Registration can happen directly in native
+package initialization, or from `.onLoad()` via a small native routine.
+
+The registration function has the following signature:
+
+```cpp
+void charport::register_altrep(
+  R_altrep_class_t cls,
+  charport_reader_init_fn reader_init,       // (SEXP x) -> void*
+  charport_reader_get_fn reader_get,         // (void* state, R_xlen_t i) -> StrView
+  charport_reader_release_fn reader_release, // (void* state) -> void
+  bool view_persistence,
+  bool thread_safe_access
+);
+```
+
+`reader_init(SEXP x)` starts the borrow and returns the state that
+`reader_get()` needs. When `reader_release` is `NULL`, the state is borrowed
+and must remain owned by the ALTREP object. When `reader_release` is
+non-`NULL`, the state is a per-`Reader` native context and `charport::Reader`
+releases it when the borrow ends. Returning `NULL` from `reader_init` means
+this particular vector cannot satisfy the reader contract, so `charport` falls
+back to default access using `STRING_PTR_RO`.
+
+`reader_get(void * state, R_xlen_t i)` returns the view for element `i`. It
+receives only reader state and the index.
+
+`reader_release(void * state)` is optional. Use it when `reader_init` allocates
+a native reader context, for example to hold temporary decoded bytes.
+
+If `cls` is already registered, `register_altrep()` throws an error. Duplicate
+registration probably means the package registered from more than one load hook
+or failed to unregister before reload.
 
 ### Registration location {.tabset}
 
-Native package initialization is the usual registration point. An `.onLoad`
-wrapper can call the same native registration routine.
-
-#### Init hook registration example
-```cpp
-static R_altrep_class_t your_altrep;
-
-extern "C" void R_init_yourpkg(DllInfo * dll) {
-  // Other init hook operations
-  // ...
-  your_altrep = R_make_altstring_class("yourclass", "yourpkg", dll);
-  charport::check_abi();
-  charport::register_altrep(your_altrep, init_fn, get_fn, true, true);
-}
-
-extern "C" void R_unload_yourpkg(DllInfo * dll) {
-  charport::unregister_altrep(your_altrep);
-  (void)dll;
-}
-```
-Rcpp and cpp11 initialization hooks can perform the same registration.
-
 #### .onLoad hook registration example
+
+An `.onLoad` hook can call a small native registration routine:
 
 ```cpp
 extern "C" SEXP C_register_yourpkg_altrep(void) {
-  charport::check_abi();
-  charport::register_altrep(your_altrep, init_fn, get_fn, true, true);
+  if(!charport::check_abi()) {
+    Rf_error("yourpkg was built against an incompatible charport ABI");
+  }
+  charport::register_altrep(
+    your_altrep, reader_init, reader_get, nullptr, true, true
+  );
   return R_NilValue;
 }
 
@@ -417,139 +339,188 @@ extern "C" SEXP C_unregister_yourpkg_altrep(void) {
 }
 ```
 
-The registration function has the following signature:
+#### Init hook registration example
+
+Native package initialization is the usual registration point.
 
 ```cpp
-void charport::register_altrep(
-  R_altrep_class_t cls,
-  charport_init_fn init,
-  charport_get_strview_fn get_strview,
-  bool view_persistence,
-  bool thread_safe_access
-);
+static R_altrep_class_t your_altrep;
+
+extern "C" void R_init_yourpkg(DllInfo * dll) {
+  // Other init hook operations
+  // ...
+  your_altrep = R_make_altstring_class("yourclass", "yourpkg", dll);
+  if(!charport::check_abi()) {
+    Rf_error("yourpkg was built against an incompatible charport ABI");
+  }
+  charport::register_altrep(
+    your_altrep, reader_init, reader_get, nullptr, true, true
+  );
+}
+
+extern "C" void R_unload_yourpkg(DllInfo * dll) {
+  charport::unregister_altrep(your_altrep);
+  (void)dll;
+}
 ```
 
-If `your_altrep` is already registered, `register_altrep()` throws an error.
-Duplicate registration usually means the package registered from more than one
-load hook or failed to unregister before reload.
-
-`init_fn(SEXP x)` returns the per-vector state that `get_fn()` needs. The state
-is borrowed; `charport` never frees it. A class implementation that needs a lazy
-index or cache should build it in `init` on the main R thread and attach it to
-the ALTREP object so R owns the lifetime. Returning `NULL` means this vector
-cannot be served zero-copy, so `charport` falls back to the direct path.
-
-`get_fn(void * state, R_xlen_t i)` returns the view for element `i`. It receives
-only class-specific state and the index; it must not need the original `SEXP`.
+Rcpp and cpp11 initialization hooks can perform the same registration.
 
 ### Error and unwind rules
 
-No C++ exception may cross the `charport` C ABI or an R `.Call` boundary.
+Every function pointer registered with `charport`, and every C++ function
+called through `.Call`, is entered through a C interface. If that code can
+throw a C++ exception, catch it before returning through the C interface.
+Convert the failure to an R error, a `NULL` init result, or another explicit
+status before the registered function or `.Call` entry point returns.
 
-Registered `init(SEXP)` runs on the main R thread and may report failure with
-`Rf_error()`. Registered `get(state, i)` should be total for valid `i`; it must
-not call the R API and must not throw. If a C++ implementation can fail,
-translate that failure before crossing the ABI boundary or make it impossible by
-construction.
-
-Consumer-side C++ code that catches exceptions and reports R errors should let
-the C++ exception unwind before calling `Rf_error()`. Calling `Rf_error()` from
-inside a catch block can bypass C++ cleanup in that catch scope.
-
-Long-running materialization loops in `charport` do not check user interrupts.
-Interrupting midway through native store release or ALTREP materialization would
-be harder to reason about than completing the operation.
+`reader_init(SEXP)` runs on the main R thread and may report failure with
+`Rf_error()`. `reader_get(state, i)` should be total for valid `i`; it must not
+call the R API and must not throw C++ exceptions. `reader_release(state)`
+should also be R-free and exception-free.
 
 ## Using `charvec` directly {#charvec-direct}
 
-Use `charport::charvec::Builder` for serial construction:
+`charvec` is `charport`'s included ALTREP string class. Packages can use it as
+an output representation without implementing another ALTREP backend.
+
+Internally, a `charvec` object owns two things:
+
+1. One or more byte slices that hold string data.
+2. A fixed array of string records.
+
+The shape is roughly:
 
 ```cpp
-charport::charvec::Builder b(n);
+struct charvec_data {
+  char * slice_head;     // linked list of owned byte blocks
+  StrView records[n];    // one record per vector element
+};
+```
+
+For non-empty strings, `records[i].ptr` points into one of the owned byte
+slices. Empty strings point at shared empty storage. Missing strings are stored
+as `{nullptr, 0, charport_enc::CE_NA}`.
+
+Starting at `slice_head`, each slice is one allocation: a pointer storing the
+next-slice address, followed by the string data bytes. When the active slice
+does not have enough room, `charvec` allocates a new slice and links it at the
+head. For multi-string vectors, the initial slice size scales with vector
+length and is capped at 16 KiB. Later slices grow to a size of half the bytes
+already allocated, rounded to 64-byte boundaries, with a 256 KiB per-slice cap.
+
+For one-element output, `charvec::build_scalar()` is the smallest helper:
+
+```cpp
+SEXP out = charvec::build_scalar(view);
+```
+
+Like the builder `to_sexp()` methods, call it on the main R thread.
+
+### Constructing a `charvec` with `charvec::Builder`
+
+`charvec::Builder` builds a `charvec` serially, one string at a time. The
+constructor takes the vector length and creates an initial slice. Insert a
+string with either `set()` or `reserve()`.
+
+Use `set()` to copy an existing buffer.
+
+```cpp
+charvec::Builder b(n);
 b.set(i, ptr, len, charport_enc::CE_UTF8);
-SEXP out = b.to_charvec();
 ```
 
 Use `reserve()` when the output bytes can be written directly into the store:
 
 ```cpp
 char * dst = b.reserve(i, len, charport_enc::CE_UTF8);
-std::memcpy(dst, src, len);
+// write to dst directly
 ```
 
-Use `charport::charvec::BuilderMT` for parallel construction. The builder owns a
-fixed set of shards. Each worker must use a distinct shard index and write a
-disjoint element range. Worker calls to `set()` and `reserve()` do not touch the
-R API. `to_charvec()` runs on the main R thread after all workers have joined.
+`to_sexp()` returns the ALTREP R vector. Call `reset()` to reuse the builder.
 
-Both builders are single-shot after `to_charvec()` or `release_store()`. Call
-`reset()` before reuse. Unwritten elements remain `NA`.
+```cpp
+SEXP out = b.to_sexp();
+b.reset(n);
+```
 
-The builders throw C++ exceptions for programming errors such as out-of-range
-indices, invalid shard indices, negative lengths, and strings larger than R's
-single-string size limit. Catch those exceptions before returning to R.
+### Constructing a `charvec` with `charvec::DirectBuilder`
 
-## `charvec` store notes
+Use `charvec::DirectBuilder` when the total byte size is known in advance or
+the caller needs to control slice growth. It exposes slice pointers and the
+record array directly.
 
-`charvec` stores one fixed record array plus a chain of owned payload blocks.
-Each record is exactly the ABI view type, so the registered class accessor can
-return `records[i]`.
+```cpp
+charvec::DirectBuilder b(n, total_bytes);
 
-The reference class for `charvec` is registered automatically when `charport`
-loads, so downstream consumers can read `charvec` objects through `Reader`
-without any extra setup. Registering the same ALTREP class again is an error.
+char * data = b.data_slice(0); // 0 is the index of the slice
+StrView * records = b.records();
 
-During construction, each writer owns a private shard with a bump-allocated
-slice chain. Finishing a builder splices shard chains into the store without
-copying payload. This is the reason sharded construction can avoid locking when
-element ranges are disjoint.
+std::memcpy(data, src, total_bytes);
+records[0] = {data + offset0, len0, charport_enc::CE_UTF8};
+records[1] = {nullptr, 0, charport_enc::CE_NA};
 
-Post-construction mutation may reuse an element's current bytes when the new
-string fits; a grow allocates a fresh slice and leaves old bytes unreferenced
-until manual compaction. Compaction rewrites live payload into fresh slices and
-moves pointers, so it must not happen during an active `Reader` borrow.
+SEXP out = b.to_sexp();
+b.reset(n, total_bytes);
+```
 
-## Serialization
+`allocate_next_slice(bytes)` allocates another owned slice and returns its data
+pointer.
 
-`charvec` serialized state currently uses:
+### Constructing a `charvec` with `charvec::ParallelBuilder`
 
-1. A magic/version prefix.
-2. A one-byte endian flag.
-3. Native-endian integer fields.
-4. Encoding bytes and payload bytes.
+Use `charvec::ParallelBuilder` for parallel construction. The builder owns a
+fixed set of shards. Each worker uses a distinct shard index with `set()` or
+`reserve()`. `to_sexp()` combines the shards on the main thread.
 
-On read, `charport` checks the flag and byte-swaps integer fields only when the
-serialized state came from a machine with the opposite endianness. This keeps
-the common path simple. Big-endian hardware is not available in the normal test
-matrix, so tests include a synthetic opposite-endian serialized state; real
-big-endian coverage should be added if a runner becomes available.
+```cpp
+charvec::ParallelBuilder b(n, n_workers);
 
-The serialized format is not frozen until the first CRAN release.
+// worker_id is 0 .. n_workers-1
+parallel_for_each_worker(worker_id, n_workers) {
+  R_xlen_t begin = n * worker_id / n_workers;
+  R_xlen_t end = n * (worker_id + 1) / n_workers;
 
-## Consumer runtime checklist
+  for(R_xlen_t i = begin; i < end; ++i) {
+    char * dst = b.reserve(worker_id, i, len[i], charport_enc::CE_UTF8);
+    // write this worker's bytes into dst
+  }
+}
 
-1. Call `charport::check_abi()` at load time.
+SEXP out = b.to_sexp();
+```
+
+## Summary checklists
+
+### Using `Reader`
+
+1. Check `charport::check_abi()` at load time and report a mismatch before
+   using the `charport` interface.
 2. Construct `Reader` objects on the main R thread.
-3. Respect the borrow rule: no R access to the source vector or aliases during
+3. Use `Reader::read_scalar()` when you only need the first element.
+4. Respect the borrow rule: no R access to the source vector or aliases during
    active reads.
-4. Call `Reader` access from worker threads only when `r.thread_safe_access()` is true.
-5. Catch C++ exceptions before returning to R.
+5. Call `Reader` access from worker threads only when
+   `r.thread_safe_access()` is true.
 
-## Class checklist
+### Registering an ALTREP class
 
-1. Register in `R_init_<pkg>()` or `.onLoad` after ALTREP class creation.
-2. Unregister in `.onUnload`.
-3. Keep class-specific state alive through R-owned ALTREP data.
-4. Return `NULL` from `init` when a vector can no longer be served zero-copy.
-5. Make `get` R-free, exception-free, and total for valid indices.
-6. Set `view_persistence = true` only when returned views remain valid until the borrow ends.
-7. Set `thread_safe_access = true` only when concurrent calls are actually safe.
+1. Register in `R_init_yourpkg()` and unregister in `R_unload_yourpkg()`.
+2. Return `NULL` from `reader_init()` when a specific vector instance cannot
+   satisfy the `Reader` contract.
+3. Make `get` and `release` free of R API and exceptions for valid indices.
+4. Set `view_persistence = true` when returned views remain valid until
+   the borrow ends.
+5. Set `thread_safe_access = true` when concurrent calls are safe.
 
-## Testing pattern
+### Using `charvec` directly
 
-`charport` tests downstream-style consumers by compiling small DSOs under
-`tests/` against the installed headers. One consumer exercises `Reader` and
-the builders through `R_GetCCallable`; another uses real `std::thread` workers
-without requiring thread flags in the `charport` package itself. Packages that
-integrate with `charport` should use the same pattern for their own compiled
-interop tests.
+1. Use `charvec::build_scalar()` for one-element output.
+2. Use `charvec::Builder` for ordinary serial construction.
+3. Use `charvec::DirectBuilder` when you want to manage slices and records
+   directly.
+4. Use `charvec::ParallelBuilder` for parallel construction.
+5. Store missing values as `{nullptr, 0, charport_enc::CE_NA}` and set encoding
+   marks deliberately.
+6. Call `to_sexp()` only after all writes are complete, and on the main R
+   thread.

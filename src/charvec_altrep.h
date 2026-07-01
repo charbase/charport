@@ -10,6 +10,7 @@
 #include "../inst/include/charport.h"
 
 #include <cstdio>
+#include <cstring>
 #include <exception>
 
 namespace cpi = charport::internal;
@@ -81,6 +82,7 @@ inline SEXP charport_sexp_guard(const char * op, Fun fun) {
   try {
     return fun();
   } catch(const std::exception & e) {
+    // snprintf copies the message; Rf_error must run after C++ catch exits.
     std::snprintf(msg, sizeof(msg), "%s", e.what());
   } catch(...) {
     std::snprintf(msg, sizeof(msg), "unknown C++ exception");
@@ -231,14 +233,33 @@ inline const char * charvec_serialized_payload(const unsigned char *& data_offse
 struct charvec_altrep {
   static R_altrep_class_t class_t;
 
-  static SEXP Make(cpi::charvec_data * data, bool owner) {
-    SEXP xp = PROTECT(R_MakeExternalPtr(data, R_NilValue, R_NilValue));
-    if(owner) {
-      R_RegisterCFinalizerEx(xp, charvec_altrep::Finalize, TRUE);
-    }
-    SEXP res = R_new_altrep(class_t, xp, R_NilValue);
-    UNPROTECT(1);
+  struct make_owned_context {
+    cpi::charvec_data * data;
+  };
+
+  static SEXP MakeOwnedBody(void * ptr) {
+    make_owned_context * ctx = static_cast<make_owned_context *>(ptr);
+    SEXP xp = PROTECT(R_MakeExternalPtr(ctx->data, R_NilValue, R_NilValue));
+    SEXP res = PROTECT(R_new_altrep(class_t, xp, R_NilValue));
+    R_RegisterCFinalizerEx(xp, charvec_altrep::Finalize, TRUE);
+    ctx->data = nullptr;
+    UNPROTECT(2);
     return res;
+  }
+
+  static void MakeOwnedCleanup(void * ptr, Rboolean /* jump */) {
+    make_owned_context * ctx = static_cast<make_owned_context *>(ptr);
+    delete ctx->data;
+    ctx->data = nullptr;
+  }
+
+  static SEXP MakeOwned(cpi::charvec_data * data) {
+    if(data == nullptr) {
+      Rf_error("charvec MakeOwned: data is NULL");
+    }
+    // R allocation can longjmp; keep native ownership until finalizer install.
+    make_owned_context ctx{data};
+    return R_UnwindProtect(MakeOwnedBody, &ctx, MakeOwnedCleanup, &ctx, NULL);
   }
 
   static void Finalize(SEXP xp) {
@@ -310,10 +331,10 @@ struct charvec_altrep {
                                cpi::charsxp_to_view(STRING_ELT(data2, i)));
             }
           });
-        return Make(out.release(), true);
+        return MakeOwned(out.release());
       }
       auto * out = new cpi::charvec_data(Get(vec));
-      return Make(out, true);
+      return MakeOwned(out);
     });
   }
 
@@ -413,7 +434,7 @@ struct charvec_altrep {
         const int * idx = LOGICAL(indx);
         const R_xlen_t idx_len = Rf_xlength(indx);
         if(idx_len == 0) {
-          return Make(new cpi::charvec_data(), true);
+          return MakeOwned(new cpi::charvec_data());
         }
 
         R_xlen_t out_len = 0;
@@ -436,7 +457,7 @@ struct charvec_altrep {
               }
             }
           });
-        return Make(out.release(), true);
+        return MakeOwned(out.release());
       }
 
       if(TYPEOF(indx) != INTSXP && TYPEOF(indx) != REALSXP) {
@@ -461,7 +482,7 @@ struct charvec_altrep {
             }
           }
         });
-      return Make(out.release(), true);
+      return MakeOwned(out.release());
     });
   }
 
@@ -564,7 +585,7 @@ struct charvec_altrep {
       if(data_offset != layout.data_end) {
         throw std::runtime_error("serialized_state has trailing bytes");
       }
-      return Make(ret.release(), true);
+      return MakeOwned(ret.release());
     });
   }
 

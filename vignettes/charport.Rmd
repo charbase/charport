@@ -2,6 +2,7 @@
 title: "charport"
 output:
   html_vignette:
+    css: !expr if (identical(Sys.getenv("IN_PKGDOWN"), "true")) NULL else "charport-vignette.css"
     keep_md: no
   rmarkdown::github_document: default
 vignette: >
@@ -17,124 +18,28 @@ knitr::opts_chunk$set(
 )
 
 IS_GITHUB <- nzchar(Sys.getenv("IS_GITHUB"))
+IN_PKGDOWN <- identical(Sys.getenv("IN_PKGDOWN"), "true")
 developer_guide <- if (IS_GITHUB) {
-  "vignettes/developer-guide.Rmd"
+  "https://charport.github.io/charport/articles/developer-guide.html"
 } else {
   "developer-guide.html"
 }
-```
-
-```{css, echo = FALSE, eval = !IS_GITHUB}
-:root {
-  color-scheme: dark;
-  --charport-bg: #1e282f;
-  --charport-surface: #26323d;
-  --charport-surface-2: #2f4147;
-  --charport-border: #4b6266;
-  --charport-text: #f2ead9;
-  --charport-muted: #bcc7c4;
-  --charport-link: #80cbc4;
-  --charport-link-hover: #a7ddd8;
-  --charport-code-bg: #182127;
+access_diagram <- if (IS_GITHUB) {
+  "man/figures/altrep-string-access.svg"
+} else {
+  "../man/figures/altrep-string-access.svg"
 }
-
-html,
-body,
-.main-container {
-  background-color: var(--charport-bg);
-}
-
-body,
-p,
-li,
-td,
-th {
-  color: var(--charport-text);
-}
-
-a,
-a:visited {
-  color: var(--charport-link);
-}
-
-a:hover,
-a:focus {
-  color: var(--charport-link-hover);
-}
-
-h1,
-h2,
-h3,
-h4,
-h5,
-h6 {
-  color: var(--charport-text);
-  border-color: rgba(242, 234, 217, 0.16);
-}
-
-hr {
-  border-color: rgba(242, 234, 217, 0.18);
-}
-
-pre,
-code,
-kbd,
-samp {
-  color: #d8eee9;
-  background-color: var(--charport-code-bg);
-  border-color: rgba(128, 203, 196, 0.22);
-}
-
-pre code {
-  background-color: transparent;
-}
-
-blockquote {
-  color: var(--charport-muted);
-  background-color: rgba(47, 65, 71, 0.58);
-  border-color: var(--charport-link);
-}
-
-table {
-  color: var(--charport-text);
-  background-color: var(--charport-surface);
-  border-color: var(--charport-border);
-}
-
-thead,
-tr.header {
-  background-color: var(--charport-surface-2);
-}
-
-th,
-td {
-  border-color: var(--charport-border);
-}
-
-.tocify,
-.tocify-subheader,
-.list-group-item {
-  background-color: var(--charport-surface);
-  color: var(--charport-text);
-  border-color: var(--charport-border);
-}
-
-.tocify-item.active,
-.tocify-item:hover {
-  background-color: var(--charport-surface-2);
-  color: var(--charport-link-hover);
-}
-
-::selection {
-  color: #102026;
-  background-color: var(--charport-link);
+benchmark_figure <- if (IS_GITHUB) {
+  "man/figures/bench.png"
+} else {
+  "../man/figures/bench.png"
 }
 ```
 
-```{r, echo = FALSE, results = "asis"}
+```{r, echo = FALSE, results = "asis", eval = !IN_PKGDOWN}
 logo <- if (IS_GITHUB) "man/figures/logo.svg" else "../man/figures/logo.svg"
 cat(sprintf(
-  '<img src="%s" align="right" width="160" alt="charport logo" style="border: 0; padding: 0; background: transparent;" />\n\n',
+  '<img src="%s" align="right" width="160" alt="charport logo" />\n\n',
   logo
 ))
 ```
@@ -156,32 +61,37 @@ representation.
 *The work in this package is funded by the R Consortium Infrastructure Steering
 Committee.*
 
-## Why use a shared reader?
+## ALTREP string access
 
-Compiled packages normally access character vectors through R's string API. An
-unmaterialized ALTREP class may need to allocate ordinary `CHARSXP` storage to
-support that access. Class-specific integration can avoid materialization, but
-couples the consumer to one backend. `charport` keeps that integration at one
-boundary: a backend registers once, and consumers use the same reader for every
-supported class.
-
-The benchmark below uses the enwik8 corpus split into 1.13 million strings. The
-conventional read baseline is `STRING_ELT` materialization over a `charvec` ALTREP
-class. The comparison is `charport::Reader` over the same data, avoiding materialization. On the write path, writing standard R strings
-via `SET_STRING_ELT` is the baseline, compared to writing the same data to `charvec`.
+The diagram compares ordinary R access, which may materialize an ALTREP vector,
+with access through a registered `charport::Reader` backend.
 
 ```{r, echo = FALSE, results = "asis"}
-if (IS_GITHUB) {
-  cat('![](man/figures/bench.png "charport benchmark"){width=100%}')
-} else {
-  cat('![](../man/figures/bench.png "charport benchmark"){width=100%}')
-}
+cat(sprintf(
+  '<img src="%s" alt="ALTREP string access diagram" />\n\n',
+  access_diagram
+))
 ```
 
-The results show the materialization and construction costs for this corpus.
-They are not a general performance guarantee.
+The benchmark uses the `enwik8` dataset, the first 100 million bytes of
+Wikipedia split by line. The read baseline is `STRING_ELT` over an
+unmaterialized `charvec` (a built-in ALTREP class). The `charport::Reader`
+paths read the same data without materialization.
 
-## Interoperability
+On the write path, writing standard R strings via `SET_STRING_ELT` is the
+baseline, compared to writing the same data to `charvec`.
+
+```{r, echo = FALSE, results = "asis"}
+cat(sprintf(
+  '<img src="%s" alt="charport benchmark" />\n\n',
+  benchmark_figure
+))
+```
+
+The results measure materialization and construction costs for this corpus and
+are not a general performance guarantee.
+
+## A broker for ALTREP strings
 
 `charport` acts as a small broker for ALTREP strings:
 
@@ -198,11 +108,13 @@ normalization, or a new user-facing string API.
 ## `charvec`: a reference ALTREP character vector
 
 `charport` also includes `charvec`, which stores string data in native blocks
-alongside a vector of metadata. To R, a `charvec` behaves like an ordinary
-character vector. Compiled code can construct one serially or across multiple
-worker threads, then read it through `charport::Reader` without materialization.
-It serves as both a reference implementation and an output type for packages
-that produce string data.
+alongside a vector of metadata.
+
+To R, a `charvec` behaves like an ordinary character vector. In compiled code,
+a `charvec` can be constructed serially or across multiple worker threads, then
+read through `charport::Reader` without materialization. It serves as both a
+reference implementation and an output type for packages that produce string
+data.
 
 ## For package developers
 
@@ -217,7 +129,7 @@ pointer lifetime, thread safety, and the `charvec` builder.
 
 ```{r, echo = FALSE, results = "asis"}
 cat(sprintf(
-  "- [Package developer guide](%s), also available from R with `vignette(\"developer-guide\", package = \"charport\")`.\n",
+  "- [Package developer guide](%s), also listed by `utils::vignette(package = \"charport\")`.\n",
   developer_guide
 ))
 ```

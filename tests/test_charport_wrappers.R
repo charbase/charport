@@ -1,6 +1,6 @@
 # charport:: consumer-wrapper semantics, exercised by charport consuming its own
 # public header through R_GetCCallable: charport::Reader must agree with the raw
-# resolve loop, and charport::charvec::Builder / BuilderMT must reproduce any
+# resolve loop, and charport::charvec::Builder / ParallelBuilder must reproduce any
 # reader's content as a fresh charvec (the end-to-end interop scenario:
 # read via reader, build via builder, no CHARSXPs in between).
 
@@ -27,7 +27,10 @@ rebuild <- function(x, n_shards = 1L) {
 reserve_rebuild <- function(x, n_shards = 1L) {
   .Call(consumer_symbol("C_consumer_builder_reserve"), x, as.integer(n_shards))
 }
+direct_build <- function() .Call(consumer_symbol("C_consumer_builder_direct"))
 builder_errors <- function() .Call(consumer_symbol("C_consumer_builder_errors"))
+read_scalar <- function(x) .Call(consumer_symbol("C_consumer_read_scalar"), x)
+build_scalar <- function(x) .Call(consumer_symbol("C_consumer_build_scalar"), x)
 
 marks_identical <- function(x, y) {
   x <- as.character(x)
@@ -62,6 +65,23 @@ for (input in inputs) {
   stopifnot(marks_identical(roundtrip(input), as.character(input)))
 }
 expect_error_matching(roundtrip(1:3), "character")
+
+catn("scalar helpers read and build one-element views")
+x <- as_charvec(c("scalar", "tail"))
+stopifnot(identical(read_scalar(x), "scalar"))
+stopifnot(!stats(x)$materialized)
+out <- build_scalar(c(NA_character_, "tail"))
+stopifnot(is_charvec(out), length(out) == 1L, is.na(out))
+expect_error_matching(read_scalar(character(0)), "length at least 1")
+
+catn("read_scalar does not borrow state-owning registered ALTREP classes")
+release_test_count <- function() .Call(consumer_symbol("C_consumer_release_test_count"))
+release_test_vector <- function() .Call(consumer_symbol("C_consumer_release_test_vector"))
+invisible(.Call(consumer_symbol("C_consumer_register_release_test")))
+on.exit(.Call(consumer_symbol("C_consumer_unregister_release_test")), add = TRUE)
+before <- release_test_count()
+expect_error_matching(read_scalar(release_test_vector()), "data pointer")
+stopifnot(identical(release_test_count(), before))
 
 catn("builder rebuilds a charvec input across shard counts")
 input <- c(w_utf8[1:40], NA, "", w_latin1[41:80], b, NA)
@@ -98,7 +118,12 @@ for (k in c(0L, 1L, 3L, 8L)) {
 }
 stopifnot(identical(as.character(reserve_rebuild(as_charvec(character(0)), 2L)), character(0)))
 
-catn("builder error contract (throwing set/reserve, single-shot finish, safe abandon)")
+catn("builder direct payload and record access")
+out <- direct_build()
+stopifnot(is_charvec(out))
+stopifnot(marks_identical(out, c("alpha", "beta", NA, "", "gamma", "gamma")))
+
+catn("builder error contract (throwing set/reserve, safe abandon)")
 stopifnot(isTRUE(builder_errors()))
 
 catn("builder edge cases")

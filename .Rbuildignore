@@ -12,3 +12,4 @@
 ^Makefile$
 ^inst/extra$
 ^scratch$
+^tools$

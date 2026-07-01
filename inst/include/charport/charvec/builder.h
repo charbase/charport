@@ -30,7 +30,6 @@ public:
     }
     records_ = internal::strview_array(static_cast<size_t>(n));
     shard_ = internal::charvec_shard();
-    finished_ = false;
   }
 
   void set(R_xlen_t i, const char * ptr, size_t len, charport_enc enc) {
@@ -57,16 +56,12 @@ public:
   }
 
   std::unique_ptr<internal::charvec_data> release_store() {
-    if(finished_) {
-      throw std::runtime_error("charvec builder: already finished");
-    }
     auto store = internal::make_unique<internal::charvec_data>(std::move(records_));
     store->adopt_chain(shard_);
-    finished_ = true;
     return store;
   }
 
-  SEXP to_charvec() {
+  SEXP to_sexp() {
     static charport_charvec_wrap_t wrap =
       reinterpret_cast<charport_charvec_wrap_t>(detail::fetch("charport_charvec_wrap"));
     return wrap(release_store().release());
@@ -88,19 +83,77 @@ public:
 private:
   internal::strview_array records_;
   internal::charvec_shard shard_;
-  bool finished_ = false;
 };
 
-class BuilderMT {
+class DirectBuilder {
 public:
-  BuilderMT(R_xlen_t n, size_t n_shards) {
+  explicit DirectBuilder(R_xlen_t n, size_t total_bytes = 0) {
+    reset(n, total_bytes);
+  }
+
+  DirectBuilder(const DirectBuilder &) = delete;
+  DirectBuilder & operator=(const DirectBuilder &) = delete;
+  DirectBuilder(DirectBuilder &&) noexcept = default;
+  DirectBuilder & operator=(DirectBuilder &&) noexcept = default;
+
+  void reset(R_xlen_t n, size_t total_bytes = 0) {
+    if(n < 0) {
+      throw std::runtime_error("charvec builder: negative length");
+    }
+    records_ = internal::strview_array(static_cast<size_t>(n));
+    shard_ = internal::charvec_shard();
+    if(total_bytes > 0) {
+      allocate_next_slice(total_bytes);
+    }
+  }
+
+  StrView * records() noexcept {
+    return records_.data();
+  }
+
+  const StrView * records() const noexcept {
+    return records_.data();
+  }
+
+  char * data_slice(size_t i = 0) {
+    char * ptr = internal::shard_data_slice(shard_, i);
+    if(ptr == nullptr) {
+      throw std::runtime_error("charvec direct builder: data slice index out of range");
+    }
+    return ptr;
+  }
+
+  char * allocate_next_slice(size_t bytes) {
+    return internal::shard_push_slice(shard_, bytes);
+  }
+
+  std::unique_ptr<internal::charvec_data> release_store() {
+    auto store = internal::make_unique<internal::charvec_data>(std::move(records_));
+    store->adopt_chain(shard_);
+    return store;
+  }
+
+  SEXP to_sexp() {
+    static charport_charvec_wrap_t wrap =
+      reinterpret_cast<charport_charvec_wrap_t>(detail::fetch("charport_charvec_wrap"));
+    return wrap(release_store().release());
+  }
+
+private:
+  internal::strview_array records_;
+  internal::charvec_shard shard_;
+};
+
+class ParallelBuilder {
+public:
+  ParallelBuilder(R_xlen_t n, size_t n_shards) {
     reset(n, n_shards);
   }
 
-  BuilderMT(const BuilderMT &) = delete;
-  BuilderMT & operator=(const BuilderMT &) = delete;
-  BuilderMT(BuilderMT &&) noexcept = default;
-  BuilderMT & operator=(BuilderMT &&) noexcept = default;
+  ParallelBuilder(const ParallelBuilder &) = delete;
+  ParallelBuilder & operator=(const ParallelBuilder &) = delete;
+  ParallelBuilder(ParallelBuilder &&) noexcept = default;
+  ParallelBuilder & operator=(ParallelBuilder &&) noexcept = default;
 
   void reset(R_xlen_t n, size_t n_shards) {
     if(n < 0) {
@@ -115,7 +168,6 @@ public:
     for(size_t i = 0; i < n_shards; ++i) {
       shards_.emplace_back();
     }
-    finished_ = false;
   }
 
   size_t n_shards() const noexcept { return shards_.size(); }
@@ -145,19 +197,15 @@ public:
   }
 
   std::unique_ptr<internal::charvec_data> release_store() {
-    if(finished_) {
-      throw std::runtime_error("charvec builder: already finished");
-    }
     auto store = internal::make_unique<internal::charvec_data>(std::move(records_));
     for(internal::charvec_shard & shard : shards_) {
       store->adopt_chain(shard);
     }
-    finished_ = true;
     shards_.clear();
     return store;
   }
 
-  SEXP to_charvec() {
+  SEXP to_sexp() {
     static charport_charvec_wrap_t wrap =
       reinterpret_cast<charport_charvec_wrap_t>(detail::fetch("charport_charvec_wrap"));
     return wrap(release_store().release());
@@ -173,8 +221,13 @@ private:
 
   internal::strview_array records_;
   std::vector<internal::charvec_shard> shards_;
-  bool finished_ = false;
 };
+
+inline SEXP build_scalar(const StrView & value) {
+  Builder b(1);
+  b.set(0, value);
+  return b.to_sexp();
+}
 
 } // namespace charvec
 } // namespace charport

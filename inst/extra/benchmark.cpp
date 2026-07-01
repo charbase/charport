@@ -71,7 +71,7 @@ extern "C" SEXP C_bench_read_lines_charvec(SEXP path_, SEXP na_every_) {
       }
       start = end + 1;
     }
-    return b.to_charvec();
+    return b.to_sexp();
   } catch(const std::exception & e) {
     Rf_error("read_lines_charvec: %s", e.what());
   }
@@ -103,9 +103,9 @@ extern "C" SEXP C_bench_reader(SEXP x) {
   return hash_to_sexp(h, n_na);
 }
 
-// Reader split across threads: each worker adopts a copy of the plain-struct
-// reader and hashes its own contiguous range; hashes combine by XOR so the
-// result is order-independent (not comparable to the serial hash).
+// Reader split across threads: workers share a reentrant Reader by reference
+// and hash their own contiguous ranges; hashes combine by XOR so the result is
+// order-independent (not comparable to the serial hash).
 extern "C" SEXP C_bench_reader_threaded(SEXP x, SEXP n_threads_) {
   charport::Reader r(x);
   if(!r.reentrant()) Rf_error("reader is not reentrant");
@@ -113,16 +113,14 @@ extern "C" SEXP C_bench_reader_threaded(SEXP x, SEXP n_threads_) {
   const R_xlen_t n = r.size();
   std::vector<uint64_t> hashes(static_cast<size_t>(k), 0);
   std::vector<R_xlen_t> nas(static_cast<size_t>(k), 0);
-  const charport_reader raw = r.raw();
   std::vector<std::thread> workers;
   for(int t = 0; t < k; ++t) {
     const R_xlen_t lo = n * t / k, hi = n * (t + 1) / k;
     workers.emplace_back([&, t, lo, hi]() {
-      charport::Reader wr(raw);
       uint64_t h = 14695981039346656037ULL;
       R_xlen_t n_na = 0;
       for(R_xlen_t i = lo; i < hi; ++i) {
-        charport::StrView v = wr[i];
+        charport::StrView v = r[i];
         if(v.is_na()) { ++n_na; continue; }
         h = fnv1a(v.ptr, v.len, h);
       }
@@ -194,21 +192,19 @@ extern "C" SEXP C_bench_build_charvec(SEXP x, SEXP n_threads_) {
         charport::StrView v = r[i];
         if(v.is_na()) b.set_na(i); else b.set(i, v);
       }
-      return b.to_charvec();
+      return b.to_sexp();
     }
     if(!r.reentrant()) Rf_error("reader is not reentrant");
-    charport::charvec::BuilderMT b(n, static_cast<size_t>(k));
-    const charport_reader raw = r.raw();
+    charport::charvec::ParallelBuilder b(n, static_cast<size_t>(k));
     std::vector<std::thread> workers;
     std::vector<std::string> errors(static_cast<size_t>(k));
     for(int t = 0; t < k; ++t) {
       const R_xlen_t lo = n * t / k, hi = n * (t + 1) / k;
       workers.emplace_back([&, t, lo, hi]() {
         try {
-          charport::Reader wr(raw);
           const size_t shard = static_cast<size_t>(t);
           for(R_xlen_t i = lo; i < hi; ++i) {
-            charport::StrView v = wr[i];
+            charport::StrView v = r[i];
             if(v.is_na()) b.set_na(shard, i); else b.set(shard, i, v);
           }
         } catch(const std::exception & e) {
@@ -220,7 +216,7 @@ extern "C" SEXP C_bench_build_charvec(SEXP x, SEXP n_threads_) {
     for(const std::string & e : errors) {
       if(!e.empty()) Rf_error("worker: %s", e.c_str());
     }
-    return b.to_charvec();
+    return b.to_sexp();
   } catch(const std::exception & e) {
     Rf_error("build_charvec: %s", e.what());
   }

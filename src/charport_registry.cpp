@@ -1,7 +1,7 @@
 #include "charvec_altrep.h"
 #include "charport_registry.h"
 
-#include <cstdio>
+#include <cstring>
 #include <exception>
 #include <vector>
 
@@ -11,8 +11,9 @@ namespace {
 
 struct altrep_entry {
   R_altrep_class_t cls;
-  charport_init_fn init;
-  charport_get_strview_fn get;
+  charport_reader_init_fn reader_init;
+  charport_reader_get_fn reader_get;
+  charport_reader_release_fn reader_release;
   bool view_persistence;
   bool thread_safe_access;
 };
@@ -37,6 +38,7 @@ charport_reader direct_reader(SEXP x, const void * direct, charport_reader_kind 
   r.n = Rf_xlength(x);
   r.state = const_cast<void *>(direct);
   r.get = direct_get;
+  r.release = nullptr;
   r.view_persistence = true;
   r.thread_safe_access = false;
   r.kind = kind;
@@ -46,12 +48,13 @@ charport_reader direct_reader(SEXP x, const void * direct, charport_reader_kind 
 } // namespace
 
 extern "C" void charport_register_altrep(R_altrep_class_t cls,
-                                         charport_init_fn init,
-                                         charport_get_strview_fn get_strview,
+                                         charport_reader_init_fn reader_init,
+                                         charport_reader_get_fn reader_get,
+                                         charport_reader_release_fn reader_release,
                                          bool view_persistence,
                                          bool thread_safe_access) {
-  if(R_SEXP(cls) == NULL || init == NULL || get_strview == NULL) {
-    Rf_error("charport_register_altrep: cls, init, and get_strview must be non-NULL");
+  if(R_SEXP(cls) == NULL || reader_init == NULL || reader_get == NULL) {
+    Rf_error("charport_register_altrep: cls, reader_init, and reader_get must be non-NULL");
   }
   for(altrep_entry & entry : altrep_registry()) {
     if(R_SEXP(entry.cls) == R_SEXP(cls)) {
@@ -60,7 +63,7 @@ extern "C" void charport_register_altrep(R_altrep_class_t cls,
   }
   try {
     altrep_registry().push_back(altrep_entry{
-      cls, init, get_strview, view_persistence, thread_safe_access
+      cls, reader_init, reader_get, reader_release, view_persistence, thread_safe_access
     });
   } catch(const std::exception & e) {
     Rf_error("charport_register_altrep: %s", e.what());
@@ -93,9 +96,10 @@ extern "C" charport_reader charport_resolve(SEXP x) {
   r.n = Rf_xlength(x);
   for(const altrep_entry & entry : altrep_registry()) {
     if(R_altrep_inherits(x, entry.cls) == TRUE) {
-      if(void * state = entry.init(x)) {
+      if(void * state = entry.reader_init(x)) {
         r.state = state;
-        r.get = entry.get;
+        r.get = entry.reader_get;
+        r.release = entry.reader_release;
         r.view_persistence = entry.view_persistence;
         r.thread_safe_access = entry.thread_safe_access;
         r.kind = charport_reader_kind::REGISTERED_ALTREP;
@@ -107,6 +111,31 @@ extern "C" charport_reader charport_resolve(SEXP x) {
   return direct_reader(x, STRING_PTR_RO(x),
                        is_altrep ? charport_reader_kind::FALLBACK_ALTREP :
                                     charport_reader_kind::PLAIN);
+}
+
+extern "C" charport_strview charport_read_scalar(SEXP x) {
+  if(TYPEOF(x) != STRSXP) {
+    Rf_error("charport_read_scalar: x must be a character vector");
+  }
+  if(Rf_xlength(x) < 1) {
+    Rf_error("charport_read_scalar: x must have length at least 1");
+  }
+
+  if(ALTREP(x) == TRUE && DATAPTR_OR_NULL(x) == nullptr) {
+    for(const altrep_entry & entry : altrep_registry()) {
+      if(R_altrep_inherits(x, entry.cls) == TRUE) {
+        if(entry.view_persistence && entry.reader_release == nullptr) {
+          if(void * state = entry.reader_init(x)) {
+            return entry.reader_get(state, 0);
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  (void)STRING_PTR_RO(x);
+  return cpi::charsxp_to_view(STRING_ELT(x, 0));
 }
 
 extern "C" int charport_abi_version(void) {
@@ -143,11 +172,19 @@ extern "C" SEXP C_charport_class_of(SEXP x) {
   for(const altrep_entry & entry : altrep_registry()) {
     if(R_altrep_inherits(x, entry.cls) == TRUE) {
 #if (R_VERSION >= R_Version(4, 6, 0))
-      const char * cls_name = CHAR(Rf_asChar(R_altrep_class_name(x)));
-      const char * pkg_name = CHAR(Rf_asChar(R_altrep_class_package(x)));
-      char buf[256];
-      std::snprintf(buf, sizeof(buf), "%s::%s", pkg_name, cls_name);
-      return Rf_ScalarString(Rf_mkCharCE(buf, CE_UTF8));
+      SEXP cls_sexp = PROTECT(Rf_asChar(R_altrep_class_name(x)));
+      SEXP pkg_sexp = PROTECT(Rf_asChar(R_altrep_class_package(x)));
+      const char * cls_name = CHAR(cls_sexp);
+      const char * pkg_name = CHAR(pkg_sexp);
+      const size_t pkg_len = std::strlen(pkg_name);
+      const size_t cls_len = std::strlen(cls_name);
+      char * buf = static_cast<char *>(R_alloc(pkg_len + cls_len + 3, sizeof(char)));
+      std::memcpy(buf, pkg_name, pkg_len);
+      std::memcpy(buf + pkg_len, "::", 2);
+      std::memcpy(buf + pkg_len + 2, cls_name, cls_len + 1);
+      SEXP out = Rf_ScalarString(Rf_mkCharCE(buf, CE_UTF8));
+      UNPROTECT(2);
+      return out;
 #else
       return Rf_mkString("<registered ALTREP class>");
 #endif
@@ -165,6 +202,7 @@ extern "C" SEXP C_register_charvec(void) {
   charport_register_altrep(charvec_altrep::class_t,
                            charvec_altrep::reader_init,
                            charvec_altrep::reader_get,
+                           nullptr,
                            true,
                            true);
   return R_NilValue;
@@ -177,6 +215,8 @@ extern "C" void charport_registry_init(DllInfo * dll) {
                       reinterpret_cast<DL_FUNC>(&charport_unregister_altrep));
   R_RegisterCCallable("charport", "charport_resolve",
                       reinterpret_cast<DL_FUNC>(&charport_resolve));
+  R_RegisterCCallable("charport", "charport_read_scalar",
+                      reinterpret_cast<DL_FUNC>(&charport_read_scalar));
   R_RegisterCCallable("charport", "charport_abi_version",
                       reinterpret_cast<DL_FUNC>(&charport_abi_version));
   R_RegisterCCallable("charport", "charport_charvec_wrap",

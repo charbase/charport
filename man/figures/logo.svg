@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
   <title id="title">charport logo</title>
-  <desc id="desc">A quiet dusky hex badge with a small flat sailboat, waves, and charport text.</desc>
+  <desc id="desc">A hexagonal badge with a sailboat, waves, and the charport name.</desc>
   <defs>
     <linearGradient id="dusk" x1="80" y1="70" x2="430" y2="450" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#26323d"/>

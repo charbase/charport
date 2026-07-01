@@ -2,11 +2,18 @@ url: https://charport.github.io/charport/
 
 template:
   bootstrap: 5
+  light-switch: true
+  bslib:
+    font-size-base: "0.9rem"
 
 navbar:
   structure:
-    left: [intro, reference, articles]
-    right: [github]
+    left: [intro, developer_guide, reference]
+    right: [search, github, lightswitch]
+  components:
+    developer_guide:
+      text: "Developer guide"
+      href: articles/developer-guide.html
 
 articles:
 - title: Start Here

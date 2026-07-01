@@ -33,6 +33,18 @@ reader_kind <- function(x) .Call(consumer_symbol("C_consumer_reader_kind"), x)
 reader_capabilities <- function(x) {
   .Call(consumer_symbol("C_consumer_reader_capabilities"), x)
 }
+register_release_test <- function() {
+  invisible(.Call(consumer_symbol("C_consumer_register_release_test")))
+}
+unregister_release_test <- function() {
+  invisible(.Call(consumer_symbol("C_consumer_unregister_release_test")))
+}
+release_test_vector <- function() {
+  .Call(consumer_symbol("C_consumer_release_test_vector"))
+}
+release_test_count <- function() {
+  .Call(consumer_symbol("C_consumer_release_test_count"))
+}
 K_PLAIN <- 0L
 K_MATERIALIZED_ALTREP <- 1L
 K_REGISTERED_ALTREP <- 2L
@@ -143,6 +155,17 @@ stopifnot(!is.na(charport_class_of(y)))
 catn("duplicate registration errors")
 expect_error_matching(register_charvec(), "already registered")
 stopifnot(charport_classes()$n == n0)
+
+catn("reader release: per-reader state is released")
+register_release_test()
+on.exit(try(unregister_release_test(), silent = TRUE), add = TRUE)
+z <- release_test_vector()
+count0 <- release_test_count()
+stopifnot(identical(reader_kind(z), K_REGISTERED_ALTREP))
+stopifnot(identical(release_test_count(), count0 + 1L))
+stopifnot(identical(roundtrip(z), c("alpha", "beta")))
+stopifnot(identical(release_test_count(), count0 + 2L))
+unregister_release_test()
 
 catn("reader equivalence under serialization round trip")
 x <- as_charvec(c(w_utf8[1:10], NA, ""))

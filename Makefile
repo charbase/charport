@@ -13,7 +13,8 @@ RHUB_ALL_PLATFORMS := c( \
 )
 
 .PHONY: doc build install check check-no-vignette check-rhub test bench vignette \
-	clean clean-native clean-build-products
+	reflow-docs pkgdown pkgdown-index clean-pkgdown clean clean-native \
+	clean-build-products
 
 check: $(BUILD)
 	R CMD check --as-cran $<
@@ -86,6 +87,24 @@ vignette:
 	IS_GITHUB=Yes Rscript -e "rmarkdown::render(input='vignettes/charport.Rmd', output_file='../README.md', output_format=rmarkdown::github_document(html_preview=FALSE))"; unset IS_GITHUB
 	Rscript -e "rmarkdown::render(input='vignettes/developer-guide.Rmd', output_format='html_vignette')"
 
+reflow-docs:
+	Rscript tools/reflow-rmd.R --width 80 vignettes/charport.Rmd vignettes/developer-guide.Rmd
+
+pkgdown: clean-native clean-pkgdown doc
+	$(MAKE) pkgdown-index
+	mkdir -p local/cache
+	XDG_CACHE_HOME=$(CURDIR)/local/cache R_USER_CACHE_DIR=$(CURDIR)/local/cache/R \
+	  IN_PKGDOWN=true Rscript -e 'pkgdown::build_site(new_process = FALSE, install = FALSE, quiet = FALSE, override = list(home = list(sidebar = FALSE)))'
+	$(MAKE) clean-native
+
+pkgdown-index:
+	mkdir -p pkgdown
+	Rscript -e 'x <- readLines("README.md", warn = FALSE); keep <- !grepl("^<img src=\"man/figures/logo\\.svg\"", x); writeLines(x[keep], "pkgdown/index.md")'
+
+clean-pkgdown:
+	rm -rf docs
+	rm -f pkgdown/index.md
+
 clean: clean-native clean-build-products
 
 clean-native:
@@ -99,3 +118,4 @@ clean-build-products:
 	rm -f vignettes/*.html
 	rm -f $(PACKAGE)_*.tar.gz
 	rm -rf $(PACKAGE).Rcheck ..Rcheck
+	rm -rf docs

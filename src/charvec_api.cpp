@@ -40,9 +40,8 @@ extern "C" SEXP charport_charvec_wrap(void * store_) {
   if(store_ == nullptr) {
     Rf_error("charport charvec wrap: store is NULL");
   }
-  std::unique_ptr<cpi::charvec_data> store(static_cast<cpi::charvec_data *>(store_));
   return charport_sexp_guard("charvec wrap", [&]() -> SEXP {
-    return charvec_altrep::Make(store.release(), true);
+    return charvec_altrep::MakeOwned(static_cast<cpi::charvec_data *>(store_));
   });
 }
 
@@ -59,13 +58,13 @@ extern "C" SEXP C_as_charvec(SEXP x) {
                            cpi::charsxp_to_view(STRING_ELT(x, i)));
         }
       });
-    return charvec_altrep::Make(store.release(), true);
+    return charvec_altrep::MakeOwned(store.release());
   });
 }
 
 extern "C" SEXP C_charvec_alloc(SEXP n_) {
   return charport_sexp_guard("charvec_alloc", [&]() -> SEXP {
-    return charvec_altrep::Make(new cpi::charvec_data(checked_len_arg(n_)), true);
+    return charvec_altrep::MakeOwned(new cpi::charvec_data(checked_len_arg(n_)));
   });
 }
 

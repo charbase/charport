@@ -6,12 +6,14 @@
 extern "C" {
 
 void charport_register_altrep(R_altrep_class_t cls,
-                              charport_init_fn init,
-                              charport_get_strview_fn get_strview,
+                              charport_reader_init_fn reader_init,
+                              charport_reader_get_fn reader_get,
+                              charport_reader_release_fn reader_release,
                               bool view_persistence,
                               bool thread_safe_access);
 void charport_unregister_altrep(R_altrep_class_t cls);
 charport_reader charport_resolve(SEXP x);
+charport_strview charport_read_scalar(SEXP x);
 int charport_abi_version(void);
 SEXP charport_charvec_wrap(void * store);
 

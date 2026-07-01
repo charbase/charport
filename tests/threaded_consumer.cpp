@@ -4,13 +4,13 @@
 // exactly like a downstream package. Thread flags live in the test-local
 // Makevars, so charport itself carries none.
 //
-// The parallel-consumer pattern: worker threads read x through copies of
-// the reader POD and write disjoint ranges through their own BuilderMT shard
-// index, with no R API off the main thread on either side. Worker exceptions are
-// caught in the worker and re-raised after the join.
+// The parallel-consumer pattern: worker threads share a reentrant Reader by
+// reference and write disjoint ranges through their own ParallelBuilder shard index.
+// Worker exceptions are caught in the worker and re-raised after the join.
 
 #include "charport.h"
 
+#include <cstdio>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -20,13 +20,17 @@ namespace {
 
 template <typename Fun>
 SEXP guarded(const char * op, Fun fun) {
+  char msg[512];
   try {
     return fun();
   } catch(const std::exception & e) {
-    Rf_error("threaded_consumer %s: %s", op, e.what());
+    // snprintf copies the message; Rf_error must run after C++ catch exits.
+    std::snprintf(msg, sizeof(msg), "%s", e.what());
   } catch(...) {
-    Rf_error("threaded_consumer %s: unknown C++ exception", op);
+    std::snprintf(msg, sizeof(msg), "unknown C++ exception");
   }
+  Rf_error("threaded_consumer %s: %s", op, msg);
+  return R_NilValue;
 }
 
 } // namespace
@@ -34,8 +38,7 @@ SEXP guarded(const char * op, Fun fun) {
 extern "C" {
 
 SEXP C_consumer_abi_ok(void) {
-  charport::check_abi();
-  return Rf_ScalarLogical(TRUE);
+  return Rf_ScalarLogical(charport::check_abi() ? TRUE : FALSE);
 }
 
 SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
@@ -50,9 +53,8 @@ SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
       throw std::runtime_error("input reader is not reentrant");
     }
 
-    charport::charvec::BuilderMT b(n, static_cast<size_t>(k));
+    charport::charvec::ParallelBuilder b(n, static_cast<size_t>(k));
 
-    const charport_reader raw = r.raw();
     std::vector<std::string> worker_errors(static_cast<size_t>(k));
     std::vector<std::thread> threads;
     threads.reserve(static_cast<size_t>(k));
@@ -61,11 +63,10 @@ SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
       const R_xlen_t hi = n * (j + 1) / k;
       const size_t shard = static_cast<size_t>(j);
       std::string * err = &worker_errors[static_cast<size_t>(j)];
-      threads.emplace_back([&b, raw, shard, lo, hi, err]() {
+      threads.emplace_back([&b, &r, shard, lo, hi, err]() {
         try {
-          const charport::Reader worker_reader(raw);  // adopt the POD on the worker
           for(R_xlen_t i = lo; i < hi; ++i) {
-            b.set(shard, i, worker_reader[i]);  // distinct shard per worker -> no sync
+            b.set(shard, i, r[i]);  // distinct shard per worker -> no sync
           }
         } catch(const std::exception & e) {
           *err = e.what();
@@ -82,7 +83,7 @@ SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
         throw std::runtime_error(err);
       }
     }
-    return b.to_charvec();
+    return b.to_sexp();
   });
 }
 
@@ -92,7 +93,7 @@ SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
 // and be re-raised as an R error on the main thread.
 SEXP C_consumer_worker_throws(void) {
   return guarded("worker_throws", [&]() -> SEXP {
-    charport::charvec::BuilderMT b(2, 2);
+    charport::charvec::ParallelBuilder b(2, 2);
     std::vector<std::string> worker_errors(2);
     std::vector<std::thread> threads;
     for(int j = 0; j < 2; ++j) {
@@ -116,7 +117,7 @@ SEXP C_consumer_worker_throws(void) {
         throw std::runtime_error(err);
       }
     }
-    return b.to_charvec();
+    return b.to_sexp();
   });
 }
 

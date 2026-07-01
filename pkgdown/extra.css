@@ -1,0 +1,9 @@
+body {
+  font-size: var(--bs-body-font-size);
+}
+
+@media (min-width: 1400px) {
+  body {
+    font-size: var(--bs-body-font-size);
+  }
+}

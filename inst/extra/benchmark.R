@@ -5,10 +5,9 @@
 # Corpus: enwik8 (first 1e8 bytes of English Wikipedia XML; the standard
 # Hutter Prize dataset), split into lines: ~1.1M strings, ~94 MB. Too big to
 # ship in the package, so it is downloaded once and cached in local/ (git-
-# and Rbuildignored). If the download fails, a synthetic corpus is built
-# from tests/words_utf8.txt instead.
+# and Rbuildignored).
 #
-# String-cache discipline: Rf_mkCharLenCE interns every string in R's global
+# String-cache handling: Rf_mkCharLenCE interns every string in R's global
 # string cache, and an already-interned string costs a hash lookup instead
 # of an allocation. So if the corpus were read with readLines() first, the
 # construction baseline would get cache hits and look much faster than real
@@ -40,13 +39,12 @@ dir.create("local", showWarnings = FALSE)
 enwik8_txt <- file.path("local", "enwik8")
 if (!file.exists(enwik8_txt)) {
   zip_path <- file.path("local", "enwik8.zip")
-  ok <- tryCatch({
-    download.file("https://mattmahoney.net/dc/enwik8.zip", zip_path, mode = "wb")
-    unzip(zip_path, exdir = "local")
-    file.remove(zip_path)
-    file.exists(enwik8_txt)
-  }, error = function(e) FALSE, warning = function(w) FALSE)
-  if (!ok) message("enwik8 download failed; falling back to synthetic corpus")
+  download.file("https://mattmahoney.net/dc/enwik8.zip", zip_path, mode = "wb")
+  unzip(zip_path, exdir = "local")
+  file.remove(zip_path)
+  if (!file.exists(enwik8_txt)) {
+    stop("enwik8 download completed, but local/enwik8 was not created")
+  }
 }
 
 # --- compile the kernels against the installed headers ----------------------
@@ -71,24 +69,8 @@ dyn.load(so)
 
 # --- corpus as a file, ingested in C (no CHARSXPs in this session) ----------
 
-if (file.exists(enwik8_txt)) {
-  corpus_name <- "enwik8 lines"
-  corpus_file <- enwik8_txt
-} else {
-  corpus_name <- "synthetic (words_utf8.txt sampled)"
-  corpus_file <- file.path("local", "synthetic_corpus.txt")
-  if (!file.exists(corpus_file)) {
-    words <- readLines(file.path("tests", "words_utf8.txt"), encoding = "UTF-8")
-    set.seed(1)
-    lines <- vapply(
-      sample.int(length(words), 1e6, replace = TRUE),
-      function(i) paste(words[sample.int(length(words), 8, replace = TRUE)], collapse = " "),
-      character(1)
-    )
-    writeLines(lines, corpus_file, useBytes = TRUE)
-    rm(lines, words)
-  }
-}
+corpus_name <- "enwik8 lines"
+corpus_file <- enwik8_txt
 cvec <- .Call("C_bench_read_lines_charvec", corpus_file, 1000L)
 
 ref <- .Call("C_bench_reader", cvec)   # reference hash + NA count
@@ -173,7 +155,7 @@ build_rows <- list(
   row("charport::charvec::Builder, serial",
       ms(function() .Call("C_bench_build_charvec", cvec, 0L)),
       label = "charvec::Builder\n(1 thread)"),
-  row(sprintf("charport::charvec::Builder, %d threads", n_threads),
+  row(sprintf("charport::charvec::ParallelBuilder, %d threads", n_threads),
       ms(function() .Call("C_bench_build_charvec", cvec, n_threads)),
       label = sprintf("charvec::Builder\n(%d threads)", n_threads))
 )
@@ -191,7 +173,7 @@ h1 <- .Call("C_bench_string_elt", plain)
 read_rows <- list(
   row("STRING_ELT direct, unmaterialized charvec (baseline)",
       ms_fresh_string_elt_charvec(), baseline = TRUE,
-      label = "STRING_ELT materialize\n(baseline)"),
+      label = "STRING_ELT\nmaterialize\n(baseline)"),
   row("charport::Reader charvec, 1 thread",
       ms(function() .Call("C_bench_reader", cvec)),
       label = "charport::Reader\ncharvec, 1 thread"),
@@ -236,10 +218,11 @@ plot_panel <- function(rows, title) {
   par(new = TRUE)
   bp <- barplot(gbps, horiz = TRUE, names.arg = labels, col = cols,
                 border = NA, xlab = "GB/s", main = title,
-                xlim = c(0, max(gbps) * 1.20), cex.names = 0.82,
-                cex.main = 1.05, font.main = 2, col.axis = theme_text,
-                col.lab = theme_text, col.main = theme_text, axes = TRUE)
-  text(gbps, bp, sprintf("%.2f", gbps), pos = 4, cex = 0.78,
+                xlim = c(0, max(gbps) * 1.18), cex.names = 1.18,
+                cex.axis = 1.05, cex.lab = 1.1, cex.main = 1.28,
+                font.main = 2, col.axis = theme_text, col.lab = theme_text,
+                col.main = theme_text, axes = TRUE)
+  text(gbps, bp, sprintf("%.2f", gbps), pos = 4, cex = 1.02,
        xpd = NA, col = theme_text)
 }
 
@@ -248,8 +231,8 @@ png_path <- if (dir.exists(file.path("man", "figures"))) {
 } else {
   file.path("local", "bench.png")
 }
-png(png_path, width = 2200, height = 850, res = 200)
-par(mfrow = c(1, 2), mar = c(4, 9.7, 2.6, 1.8), mgp = c(2.2, 0.6, 0),
+png(png_path, width = 1700, height = 1350, res = 180)
+par(mfrow = c(2, 1), mar = c(4.2, 11.2, 2.8, 1.4), mgp = c(2.4, 0.75, 0),
     las = 1, bg = "#26323d", fg = "#f2ead9")
 plot_panel(read_rows, "read path (hash data)")
 plot_panel(build_rows, "write path")

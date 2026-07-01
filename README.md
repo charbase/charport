@@ -1,7 +1,7 @@
 charport
 ================
 
-<img src="man/figures/logo.svg" align="right" width="160" alt="charport logo" style="border: 0; padding: 0; background: transparent;" />
+<img src="man/figures/logo.svg" align="right" width="160" alt="charport logo" />
 
 [![R-CMD-check](https://github.com/charport/charport/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/charport/charport/actions)
 
@@ -16,29 +16,27 @@ ordinary string representation.
 *The work in this package is funded by the R Consortium Infrastructure
 Steering Committee.*
 
-## Why use a shared reader?
+## ALTREP string access
 
-Compiled packages normally access character vectors through R's string
-API. An unmaterialized ALTREP class may need to allocate ordinary
-`CHARSXP` storage to support that access. Class-specific integration can
-avoid materialization, but couples the consumer to one backend.
-`charport` keeps that integration at one boundary: a backend registers
-once, and consumers use the same reader for every supported class.
+The diagram compares ordinary R access, which may materialize an ALTREP
+vector, with access through a registered `charport::Reader` backend.
 
-The benchmark below uses the enwik8 corpus split into 1.13 million
-strings. The conventional read baseline is `STRING_ELT` materialization
-over a `charvec` ALTREP class. The comparison is `charport::Reader` over
-the same data, avoiding materialization. On the write path, writing
-standard R strings via `SET_STRING_ELT` is the baseline, compared to
-writing the same data to `charvec`.
+<img src="man/figures/altrep-string-access.svg" alt="ALTREP string access diagram" />
 
-<img src="man/figures/bench.png" title="charport benchmark"
-style="width:100.0%" />
+The benchmark uses the `enwik8` dataset, the first 100 million bytes of
+Wikipedia split by line. The read baseline is `STRING_ELT` over an
+unmaterialized `charvec` (a built-in ALTREP class). The
+`charport::Reader` paths read the same data without materialization.
 
-The results show the materialization and construction costs for this
-corpus. They are not a general performance guarantee.
+On the write path, writing standard R strings via `SET_STRING_ELT` is
+the baseline, compared to writing the same data to `charvec`.
 
-## Interoperability
+<img src="man/figures/bench.png" alt="charport benchmark" />
+
+The results measure materialization and construction costs for this corpus and
+are not a general performance guarantee.
+
+## A broker for ALTREP strings
 
 `charport` acts as a small broker for ALTREP strings:
 
@@ -56,11 +54,13 @@ normalization, or a new user-facing string API.
 ## `charvec`: a reference ALTREP character vector
 
 `charport` also includes `charvec`, which stores string data in native
-blocks alongside a vector of metadata. To R, a `charvec` behaves like an
-ordinary character vector. Compiled code can construct one serially or
-across multiple worker threads, then read it through `charport::Reader`
-without materialization. It serves as both a reference implementation
-and an output type for packages that produce string data.
+blocks alongside a vector of metadata.
+
+To R, a `charvec` behaves like an ordinary character vector. In compiled
+code, a `charvec` can be constructed serially or across multiple worker
+threads, then read through `charport::Reader` without materialization. It
+serves as both a reference implementation and an output type for packages
+that produce string data.
 
 ## For package developers
 
@@ -73,6 +73,6 @@ string output can use `charvec` directly.
 The package developer guide covers registration, reading, fallback
 behavior, pointer lifetime, thread safety, and the `charvec` builder.
 
-- [Package developer guide](vignettes/developer-guide.Rmd), also
-  available from R with
-  `vignette("developer-guide", package = "charport")`.
+- [Package developer
+  guide](https://charport.github.io/charport/articles/developer-guide.html),
+  also listed by `utils::vignette(package = "charport")`.
