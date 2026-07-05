@@ -233,7 +233,7 @@ expect_unserialize_error(mutate_serialized_state(charvec("abc"), state_abc, func
   state
 }))
 expect_unserialize_error(mutate_serialized_state(charvec("abc"), state_abc, function(state) {
-  state[[18L]] <- as.raw(0x04)  # not a charport_enc value
+  state[[18L]] <- as.raw(0x04)  # not a cetype_ext_t value
   state
 }))
 expect_unserialize_error(mutate_serialized_state(charvec("abc"), state_abc, function(state) {

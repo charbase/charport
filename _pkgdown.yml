@@ -8,30 +8,35 @@ template:
 
 navbar:
   structure:
-    left: [intro, developer_guide, reference]
+    left: [intro, developer_guide, design_rationale, reference]
     right: [search, github, lightswitch]
   components:
     developer_guide:
       text: "Developer guide"
       href: articles/developer-guide.html
+    design_rationale:
+      text: "Design rationale"
+      href: articles/design-rationale.html
 
 articles:
-- title: Start Here
+- title: Start here
   navbar: ~
   contents:
   - charport
-- title: Developer Documentation
+- title: Developer documentation
   contents:
   - developer-guide
+  - design-rationale
 
 reference:
-- title: Construct And Inspect `charvec`
+- title: Construct and inspect `charvec`
   contents:
   - charvec
   - is_charvec
   - as_charvec
   - charport_materialize
-- title: Class Diagnostics
+- title: Class diagnostics
   contents:
   - charport_classes
+  - charport_info
   - charport_class_of

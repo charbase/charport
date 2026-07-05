@@ -20,7 +20,8 @@ Suggests:
 VignetteBuilder: knitr
 Biarch: true
 Depends: R (>= 3.6.0)
-URL: https://github.com/charport/charport
+URL: https://charport.github.io/charport/,
+    https://github.com/charport/charport
 BugReports: https://github.com/charport/charport/issues
 Config/roxygen2/version: 8.0.0
 Config/Needs/website: pkgdown

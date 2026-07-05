@@ -21,35 +21,60 @@ extern "C" {
 #endif
 
 typedef void * (*charport_reader_init_fn)(SEXP x);
-typedef charport_strview (*charport_reader_get_fn)(void * state, R_xlen_t i);
 typedef void (*charport_reader_release_fn)(void * state);
+typedef void (*charport_reader_range_fn)(void * state, R_xlen_t start,
+                                         R_xlen_t size,
+                                         const char ** out_ptrs,
+                                         int * out_lens,
+                                         cetype_ext_t * out_encs);
+typedef void (*charport_reader_index_fn)(void * state,
+                                         const R_xlen_t * indices,
+                                         R_xlen_t size,
+                                         const char ** out_ptrs,
+                                         int * out_lens,
+                                         cetype_ext_t * out_encs);
 
-#ifdef __cplusplus
-enum class charport_reader_kind : uint8_t {
-    PLAIN              = 0,
-    MATERIALIZED_ALTREP = 1,
-    REGISTERED_ALTREP = 2,
-    FALLBACK_ALTREP   = 3
-};
-#else
-typedef uint8_t charport_reader_kind;
-enum {
-    CHARPORT_READER_PLAIN              = 0,
-    CHARPORT_READER_MATERIALIZED_ALTREP = 1,
-    CHARPORT_READER_REGISTERED_ALTREP = 2,
-    CHARPORT_READER_FALLBACK_ALTREP   = 3
-};
-#endif
+typedef struct charport_reader_state_fns {
+    charport_reader_init_fn init;
+    charport_reader_release_fn release;
+} charport_reader_state_fns;
+
+typedef struct charport_reader_access_fns {
+    charport_reader_range_fn range;
+    charport_reader_index_fn index;
+} charport_reader_access_fns;
+
+typedef struct charport_reader_capabilities {
+    bool persistent_views;
+    bool concurrent_access;
+} charport_reader_capabilities;
 
 typedef struct charport_reader {
     R_xlen_t n;
     void * state;
-    charport_reader_get_fn get;
     charport_reader_release_fn release;
-    bool view_persistence;
-    bool thread_safe_access;
-    charport_reader_kind kind;
+    charport_reader_access_fns access;
+    charport_reader_capabilities capabilities;
 } charport_reader;
+
+typedef struct charport_sexp_info {
+    bool is_strsxp;
+    R_xlen_t length;
+    bool is_altrep;
+    bool is_materialized;
+    bool is_registered;
+    bool persistent_views;
+    bool concurrent_access;
+    bool stateful_reader;
+    const char * altrep_class_name;
+    const char * altrep_class_package;
+
+#ifdef __cplusplus
+    inline bool reentrant() const noexcept {
+      return persistent_views && concurrent_access;
+    }
+#endif
+} charport_sexp_info;
 
 /* End a raw C reader borrow. C++ users should prefer charport::Reader. */
 static inline void charport_reader_release(charport_reader * r) {
@@ -63,14 +88,12 @@ static inline void charport_reader_release(charport_reader * r) {
 }
 
 typedef void (*charport_register_altrep_t)(R_altrep_class_t cls,
-                                           charport_reader_init_fn reader_init,
-                                           charport_reader_get_fn reader_get,
-                                           charport_reader_release_fn reader_release,
-                                           bool view_persistence,
-                                           bool thread_safe_access);
+                                           charport_reader_state_fns state_fns,
+                                           charport_reader_access_fns access_fns,
+                                           charport_reader_capabilities capabilities);
 typedef void (*charport_unregister_altrep_t)(R_altrep_class_t cls);
 typedef charport_reader (*charport_resolve_t)(SEXP x);
-typedef charport_strview (*charport_read_scalar_t)(SEXP x);
+typedef charport_sexp_info (*charport_sexp_info_t)(SEXP x);
 typedef int (*charport_abi_version_t)(void);
 typedef SEXP (*charport_charvec_wrap_t)(void * store);
 
@@ -81,11 +104,14 @@ typedef SEXP (*charport_charvec_wrap_t)(void * store);
 #ifdef __cplusplus
 
 #include <iterator>
+#include <stdexcept>
+#include <vector>
 
 namespace charport {
 
 using StrView = charport_strview;
-using ReaderKind = charport_reader_kind;
+using ByteView = charport_byteview;
+using SexpInfo = charport_sexp_info;
 
 namespace detail {
 
@@ -108,14 +134,12 @@ inline charport_reader resolve(SEXP x) {
 }
 
 inline void register_altrep(R_altrep_class_t cls,
-                            charport_reader_init_fn reader_init,
-                            charport_reader_get_fn reader_get,
-                            charport_reader_release_fn reader_release,
-                            bool view_persistence,
-                            bool thread_safe_access) {
+                            charport_reader_state_fns state_fns,
+                            charport_reader_access_fns access_fns,
+                            charport_reader_capabilities capabilities) {
   static charport_register_altrep_t fn =
     reinterpret_cast<charport_register_altrep_t>(detail::fetch("charport_register_altrep"));
-  fn(cls, reader_init, reader_get, reader_release, view_persistence, thread_safe_access);
+  fn(cls, state_fns, access_fns, capabilities);
 }
 
 inline void unregister_altrep(R_altrep_class_t cls) {
@@ -128,14 +152,80 @@ inline bool check_abi() {
   return detail::loaded_abi_version() == CHARPORT_ABI_VERSION;
 }
 
-class Reader {
+inline SexpInfo sexp_info(SEXP x) {
+  static charport_sexp_info_t fn =
+    reinterpret_cast<charport_sexp_info_t>(detail::fetch("charport_sexp_info"));
+  return fn(x);
+}
+
+class ByteViews {
 public:
-  static StrView read_scalar(SEXP x) {
-    static charport_read_scalar_t fn =
-      reinterpret_cast<charport_read_scalar_t>(detail::fetch("charport_read_scalar"));
-    return fn(x);
+  explicit ByteViews(R_xlen_t size = 0) { resize(size); }
+
+  void resize(R_xlen_t size) {
+    if(size < 0) {
+      throw std::runtime_error("charport::ByteViews: negative size");
+    }
+    ptrs_.resize(static_cast<size_t>(size));
+    lens_.resize(static_cast<size_t>(size));
   }
 
+  R_xlen_t size() const noexcept {
+    return static_cast<R_xlen_t>(ptrs_.size());
+  }
+
+  const char ** ptrs() noexcept { return ptrs_.data(); }
+  int * lengths() noexcept { return lens_.data(); }
+  const char * const * ptrs() const noexcept { return ptrs_.data(); }
+  const int * lengths() const noexcept { return lens_.data(); }
+
+  ByteView operator[](R_xlen_t i) const noexcept {
+    return make_byteview(ptrs_[static_cast<size_t>(i)],
+                         lens_[static_cast<size_t>(i)]);
+  }
+
+private:
+  std::vector<const char *> ptrs_;
+  std::vector<int> lens_;
+};
+
+class StrViews {
+public:
+  explicit StrViews(R_xlen_t size = 0) { resize(size); }
+
+  void resize(R_xlen_t size) {
+    if(size < 0) {
+      throw std::runtime_error("charport::StrViews: negative size");
+    }
+    ptrs_.resize(static_cast<size_t>(size));
+    lens_.resize(static_cast<size_t>(size));
+    encs_.resize(static_cast<size_t>(size));
+  }
+
+  R_xlen_t size() const noexcept {
+    return static_cast<R_xlen_t>(ptrs_.size());
+  }
+
+  const char ** ptrs() noexcept { return ptrs_.data(); }
+  int * lengths() noexcept { return lens_.data(); }
+  cetype_ext_t * encodings() noexcept { return encs_.data(); }
+  const char * const * ptrs() const noexcept { return ptrs_.data(); }
+  const int * lengths() const noexcept { return lens_.data(); }
+  const cetype_ext_t * encodings() const noexcept { return encs_.data(); }
+
+  StrView operator[](R_xlen_t i) const noexcept {
+    const size_t j = static_cast<size_t>(i);
+    return make_strview(ptrs_[j], lens_[j], encs_[j]);
+  }
+
+private:
+  std::vector<const char *> ptrs_;
+  std::vector<int> lens_;
+  std::vector<cetype_ext_t> encs_;
+};
+
+class Reader {
+public:
   explicit Reader(SEXP x) : r_(resolve(x)) {}
   explicit Reader(charport_reader r) noexcept : r_(r) {}
   ~Reader() { release_owned(); }
@@ -154,11 +244,103 @@ public:
   }
 
   R_xlen_t size() const noexcept { return r_.n; }
-  bool view_persistence() const noexcept { return r_.view_persistence; }
-  bool thread_safe_access() const noexcept { return r_.thread_safe_access; }
-  bool reentrant() const noexcept { return view_persistence() && thread_safe_access(); }
-  ReaderKind kind() const noexcept { return r_.kind; }
-  StrView operator[](R_xlen_t i) const { return r_.get(r_.state, i); }
+  bool persistent_views() const noexcept { return r_.capabilities.persistent_views; }
+  bool concurrent_access() const noexcept { return r_.capabilities.concurrent_access; }
+  bool reentrant() const noexcept { return persistent_views() && concurrent_access(); }
+
+  ByteView byteview(R_xlen_t i) const {
+    const char * ptr = nullptr;
+    int len = NA_INTEGER;
+    r_.access.range(r_.state, i, 1, &ptr, &len, nullptr);
+    return make_byteview(ptr, len);
+  }
+  int length(R_xlen_t i) const {
+    int len = NA_INTEGER;
+    r_.access.range(r_.state, i, 1, nullptr, &len, nullptr);
+    return len;
+  }
+  cetype_ext_t encoding(R_xlen_t i) const {
+    cetype_ext_t enc = cetype_ext_t::CE_NA;
+    r_.access.range(r_.state, i, 1, nullptr, nullptr, &enc);
+    return enc;
+  }
+  StrView view(R_xlen_t i) const {
+    const char * ptr = nullptr;
+    int len = NA_INTEGER;
+    cetype_ext_t enc = cetype_ext_t::CE_NA;
+    r_.access.range(r_.state, i, 1, &ptr, &len, &enc);
+    return make_strview(ptr, len, enc);
+  }
+  StrView operator[](R_xlen_t i) const { return view(i); }
+
+  void views(R_xlen_t start, R_xlen_t size, const char ** out_ptrs,
+             int * out_lens, cetype_ext_t * out_encs) const {
+    r_.access.range(r_.state, start, size, out_ptrs, out_lens, out_encs);
+  }
+  void views(int start, R_xlen_t size, const char ** out_ptrs,
+             int * out_lens, cetype_ext_t * out_encs) const {
+    views(static_cast<R_xlen_t>(start), size, out_ptrs, out_lens, out_encs);
+  }
+  void views(R_xlen_t start, R_xlen_t size, StrViews & out) const {
+    out.resize(size);
+    views(start, size, out.ptrs(), out.lengths(), out.encodings());
+  }
+  void views(int start, R_xlen_t size, StrViews & out) const {
+    views(static_cast<R_xlen_t>(start), size, out);
+  }
+
+  void byteviews(R_xlen_t start, R_xlen_t size, const char ** out_ptrs,
+                 int * out_lens) const {
+    r_.access.range(r_.state, start, size, out_ptrs, out_lens, nullptr);
+  }
+  void byteviews(int start, R_xlen_t size, const char ** out_ptrs,
+                 int * out_lens) const {
+    byteviews(static_cast<R_xlen_t>(start), size, out_ptrs, out_lens);
+  }
+  void byteviews(R_xlen_t start, R_xlen_t size, ByteViews & out) const {
+    out.resize(size);
+    byteviews(start, size, out.ptrs(), out.lengths());
+  }
+  void byteviews(int start, R_xlen_t size, ByteViews & out) const {
+    byteviews(static_cast<R_xlen_t>(start), size, out);
+  }
+
+  void lengths(R_xlen_t start, R_xlen_t size, int * out) const {
+    r_.access.range(r_.state, start, size, nullptr, out, nullptr);
+  }
+  void lengths(int start, R_xlen_t size, int * out) const {
+    lengths(static_cast<R_xlen_t>(start), size, out);
+  }
+  void encodings(R_xlen_t start, R_xlen_t size, cetype_ext_t * out) const {
+    r_.access.range(r_.state, start, size, nullptr, nullptr, out);
+  }
+  void encodings(int start, R_xlen_t size, cetype_ext_t * out) const {
+    encodings(static_cast<R_xlen_t>(start), size, out);
+  }
+
+  void views(const R_xlen_t * indices, R_xlen_t size, const char ** out_ptrs,
+             int * out_lens, cetype_ext_t * out_encs) const {
+    r_.access.index(r_.state, indices, size, out_ptrs, out_lens, out_encs);
+  }
+  void views(const R_xlen_t * indices, R_xlen_t size, StrViews & out) const {
+    out.resize(size);
+    views(indices, size, out.ptrs(), out.lengths(), out.encodings());
+  }
+
+  void byteviews(const R_xlen_t * indices, R_xlen_t size, const char ** out_ptrs,
+                 int * out_lens) const {
+    r_.access.index(r_.state, indices, size, out_ptrs, out_lens, nullptr);
+  }
+  void byteviews(const R_xlen_t * indices, R_xlen_t size, ByteViews & out) const {
+    out.resize(size);
+    byteviews(indices, size, out.ptrs(), out.lengths());
+  }
+  void lengths(const R_xlen_t * indices, R_xlen_t size, int * out) const {
+    r_.access.index(r_.state, indices, size, nullptr, out, nullptr);
+  }
+  void encodings(const R_xlen_t * indices, R_xlen_t size, cetype_ext_t * out) const {
+    r_.access.index(r_.state, indices, size, nullptr, nullptr, out);
+  }
 
   class const_iterator {
   public:
@@ -169,7 +351,13 @@ public:
     using iterator_category = std::input_iterator_tag;
 
     const_iterator(const charport_reader * r, R_xlen_t i) noexcept : r_(r), i_(i) {}
-    StrView operator*() const { return r_->get(r_->state, i_); }
+    StrView operator*() const {
+      const char * ptr = nullptr;
+      int len = NA_INTEGER;
+      cetype_ext_t enc = cetype_ext_t::CE_NA;
+      r_->access.range(r_->state, i_, 1, &ptr, &len, &enc);
+      return make_strview(ptr, len, enc);
+    }
     const_iterator & operator++() noexcept { ++i_; return *this; }
     const_iterator operator++(int) noexcept { const_iterator tmp = *this; ++i_; return tmp; }
     bool operator==(const const_iterator & other) const noexcept { return i_ == other.i_; }

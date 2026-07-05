@@ -51,11 +51,12 @@ extern "C" SEXP C_as_charvec(SEXP x) {
       throw std::runtime_error("x must be a character vector");
     }
     const R_xlen_t n = Rf_xlength(x);
+    const SEXP * ptr = STRING_PTR_RO(x);
     auto store = charport::charvec::Builder::build_store(n,
-      [&](cpi::charvec_shard & shard, charport_strview * rec, size_t nn) {
+      [&](cpi::charvec_shard & shard, cpi::charvec_records & rec) {
         for(R_xlen_t i = 0; i < n; ++i) {
-          cpi::copy_record(shard, rec, nn, static_cast<size_t>(i),
-                           cpi::charsxp_to_view(STRING_ELT(x, i)));
+          cpi::copy_record(shard, rec, static_cast<size_t>(i),
+                           cpi::charsxp_to_view(ptr[i]));
         }
       });
     return charvec_altrep::MakeOwned(store.release());
@@ -98,7 +99,7 @@ extern "C" SEXP C_charvec_stats(SEXP x) {
       SET_VECTOR_ELT(out, 1, Rf_ScalarReal(NA_REAL));
     } else {
       auto & store = checked_store(x);
-      SET_VECTOR_ELT(out, 0, Rf_ScalarReal(static_cast<double>(store.records.size())));
+      SET_VECTOR_ELT(out, 0, Rf_ScalarReal(static_cast<double>(store.size())));
       SET_VECTOR_ELT(out, 1, Rf_ScalarReal(static_cast<double>(store.slice_count())));
     }
     SET_VECTOR_ELT(out, 2, Rf_ScalarLogical(materialized ? TRUE : FALSE));

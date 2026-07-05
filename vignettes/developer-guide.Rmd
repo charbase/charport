@@ -27,6 +27,9 @@ Producers register a way to view their string data, and consumers read those
 views without depending on the producer's storage layout or forcing ordinary R
 string materialization.
 
+For the design decisions behind that contract, see [Design
+Rationale](design-rationale.html).
+
 A package may produce an ALTREP string class, consume ALTREP strings, or use
 `charvec`, a built-in ALTREP class, as its own output representation. The
 diagram below shows how those roles meet through charport.
@@ -162,35 +165,87 @@ into `yourpkg` does not match the installed `charport` version.
 ## Using `Reader` {#universal-reader}
 
 `charport::Reader` reads string data from a registered ALTREP class or an
-ordinary R character vector. Construct it from a character vector, then access
-elements by iteration or index.
+ordinary R character vector.
+
+The main access pattern is block access. Construct a `Reader`, choose a block
+size that works for your algorithm, and ask `Reader` to fill caller-owned
+buffers.
 
 ```cpp
 using namespace charport;
+
 Reader r(robj);
-for(StrView s : r) {
+const R_xlen_t block_size = 4096;
+ByteViews byteviews(block_size);
+
+for(R_xlen_t start = 0; start < r.size(); start += block_size) {
+  R_xlen_t n = std::min(block_size, r.size() - start);
+  r.byteviews(start, n, byteviews);
+
+  for(R_xlen_t j = 0; j < n; ++j) {
+    ByteView b = byteviews[j];
+    if(!b.is_na()) {
+      // b.ptr, b.len
+    }
+  }
+}
+```
+
+Use the narrowest access that fits the work:
+
+- `byteviews()` when you need bytes and lengths.
+- `lengths()` when you only need element sizes and missingness.
+- `encodings()` when you only need encoding marks.
+
+There are two block forms. Range access reads a contiguous 0-based interval:
+
+```cpp
+r.views(start, size, strviews);
+r.byteviews(start, size, byteviews);
+r.lengths(start, size, out_len);
+r.encodings(start, size, out_enc);
+```
+
+Indexed access gathers 0-based indices:
+
+```cpp
+R_xlen_t idx[] = {0, 10, 20};
+r.byteviews(idx, 3, byteviews);
+```
+
+Scalar methods are convenience wrappers for code that really is element-wise:
+
+```cpp
+for(R_xlen_t i = 0; i < r.size(); ++i) {
+  StrView s = r.view(i);
   if(!s.is_na()) {
     // s.ptr, s.len, s.enc
   }
 }
 
-for(R_xlen_t i=0; i<r.size(); ++i) {
-  StrView s = r[i];
-  // ...
+for(R_xlen_t i = 0; i < r.size(); ++i) {
+  ByteView b = r.byteview(i);
+  if(!b.is_na()) {
+    // b.ptr, b.len
+  }
+}
+
+for(R_xlen_t i = 0; i < r.size(); ++i) {
+  int len = r.length(i);
+  if(len >= 0) {
+    // len is the element length in bytes
+  }
+}
+
+for(R_xlen_t i = 0; i < r.size(); ++i) {
+  cetype_ext_t enc = r.encoding(i);
+  // enc is cetype_ext_t::CE_NA for missing strings
 }
 ```
 
-For scalar inputs, `Reader::read_scalar()` reads the first element and returns a
-`StrView`:
-
-```cpp
-StrView s = Reader::read_scalar(x);
-```
-
-`read_scalar()` expects a non-empty character vector and should be called on
-the main R thread. It uses the registered ALTREP path when it can return a
-persistent view without keeping reader state alive; otherwise it uses ordinary
-R string access.
+`operator[]` and range-for iteration are aliases for the full `StrView`
+interface. They are handy, but block access is usually the better default for
+large vectors.
 
 For a registered ALTREP class, `Reader` gives you non-materializing views. For
 a plain vector, a materialized ALTREP or an ALTREP that is not registered,
@@ -200,31 +255,44 @@ a plain vector, a materialized ALTREP or an ALTREP that is not registered,
 local stack object and let its destructor clean up any state supplied by the
 registered class.
 
-### Reader properties
+### Reader information
 
-`Reader::kind()` reports how the current `Reader` was resolved. It describes
-the read path chosen when the `Reader` was constructed.
+Most code should not branch on the source vector's implementation. Construct a
+`Reader` and use the guarantees it reports.
 
-| Value | Meaning |
-|---|---|
-| `charport::ReaderKind::PLAIN` | Ordinary non-ALTREP character vector. |
-| `charport::ReaderKind::MATERIALIZED_ALTREP` | ALTREP character vector whose ordinary string storage is already available. |
-| `charport::ReaderKind::REGISTERED_ALTREP` | ALTREP character vector served by a `charport`-registered class. |
-| `charport::ReaderKind::FALLBACK_ALTREP` | ALTREP character vector not served directly; resolving the `Reader` falls back to ordinary R string access. |
+`charport::sexp_info(x)` is available for diagnostics and preflight checks when
+you need to understand a source vector without forcing it:
 
-`Reader::view_persistence()` is true when returned `StrView` pointers remain
-valid for the lifetime of the `Reader`.
+```cpp
+charport::SexpInfo info = charport::sexp_info(x);
+```
 
-`Reader::thread_safe_access()` is true when `Reader` access may happen from
-outside the main thread and concurrently from multiple threads.
+It reports whether `x` is a character vector, whether it is ALTREP, whether
+ordinary string pointer storage is already available, whether a registered
+ALTREP class matches, the reader capability flags, and whether the registered
+reader owns per-`Reader` state. ALTREP class and package names are reported as
+borrowed `const char *` pointers, or `NULL` when unavailable.
 
-`Reader::reentrant()` is a combined convenience check when `view_persistence()`
-and `thread_safe_access()` are true.
+`sexp_info()` is non-forcing. It does not call `STRING_ELT()`,
+`STRING_PTR_RO()`, `DATAPTR()`, `reader_init()`, or the reader callbacks.
+`is_materialized` means `DATAPTR_OR_NULL(x) != NULL`: ordinary string pointer
+storage is available without forcing. It does not mean that no element has ever
+been lazily cached by an ALTREP class.
+
+`Reader::persistent_views()` is true when returned byte pointers remain valid
+for the lifetime of the `Reader`, even after later `Reader` access calls.
+
+`Reader::concurrent_access()` is true when `Reader` access calls may happen
+from worker threads and from multiple threads at the same time.
+
+`Reader::reentrant()` is a convenience check that returns true when both
+capabilities are true.
 
 ### `StrView`
 
-`charport::StrView` is the type returned by `Reader` element access. It is a
-non-owning view of bytes owned by the character vector.
+`charport::StrView` is the type returned by `Reader::view(i)`,
+`Reader::operator[]`, and range-for iteration. It is a non-owning view of bytes
+owned by the character vector.
 
 Each `StrView` contains:
 
@@ -239,16 +307,29 @@ following values are defined:
 
 | Value | Meaning |
 |---|---|
-| `charport_enc::CE_NATIVE` | Native encoding based on machine locale. |
-| `charport_enc::CE_UTF8` | UTF-8. |
-| `charport_enc::CE_LATIN1` | Latin-1. |
-| `charport_enc::CE_BYTES` | Bytes encoding. |
-| `charport_enc::CE_ASCII_OR_UTF8` | ASCII/UTF-8-compatible bytes. |
-| `charport_enc::CE_ASCII` | ASCII bytes, equivalent to `Rf_charIsASCII(x)`. |
-| `charport_enc::CE_NA` | Missing string. `ptr` is `NULL` and `len` is zero. |
+| `cetype_ext_t::CE_NATIVE` | Native encoding based on machine locale. |
+| `cetype_ext_t::CE_UTF8` | UTF-8. |
+| `cetype_ext_t::CE_LATIN1` | Latin-1. |
+| `cetype_ext_t::CE_BYTES` | Bytes encoding. |
+| `cetype_ext_t::CE_ASCII_OR_UTF8` | ASCII/UTF-8-compatible bytes. |
+| `cetype_ext_t::CE_ASCII` | ASCII bytes, equivalent to `Rf_charIsASCII(x)`. |
+| `cetype_ext_t::CE_NA` | Missing string. `ptr` is `NULL` and `len` is `NA_INTEGER`. |
 
 These fields carry the byte data and encoding information represented by a base
 R `CHARSXP`.
+
+### Byte views, lengths, and encodings
+
+`charport::ByteView` is the type returned by `Reader::byteview(i)` and by
+`ByteViews::operator[]`. It contains only `ptr` and `len`. Like `StrView`,
+`ptr` is not guaranteed to be null-terminated, so `len` is required for every
+byte operation.
+
+`Reader::length(i)` returns the element length in bytes without returning a
+pointer. Missing strings return `NA_INTEGER`.
+
+`Reader::encoding(i)` returns the element encoding mark without returning a
+pointer. Missing strings return `cetype_ext_t::CE_NA`.
 
 ### Reader lifetime and multithreading
 
@@ -258,16 +339,19 @@ protected and unmodified. While the `Reader` is active, do not access or modify
 the original R object. Calls such as `STRING_ELT`, `STRING_PTR_RO`, and
 `DATAPTR_RO` can invalidate the borrow.
 
-When `view_persistence()` is true, `StrView` pointers returned from the
-`Reader` remain valid after later `Reader` access, until the active borrow
-ends. This allows code to collect views on the main thread and process on
-worker threads.
+When `persistent_views()` is true, byte pointers returned from the `Reader`
+remain valid after later `Reader` access, until the active borrow ends. This
+allows code to collect views on the main thread and process on worker threads.
 
-When `thread_safe_access()` is true, `Reader` access itself may happen off the
+When `concurrent_access()` is true, `Reader` access itself may happen off the
 main thread and concurrently. `reentrant()` returns true only when both
-`view_persistence()` and `thread_safe_access()` are true.
+`persistent_views()` and `concurrent_access()` are true.
 
 The fallback `Reader` path has persistent views but is main-thread-only.
+
+Attributes are orthogonal to the `Reader` borrow. You can inspect attributes on
+the original `SEXP` while a `Reader` exists, as long as you do not force or
+modify the character data itself.
 
 ## Registering an ALTREP class {#altrep-registration}
 
@@ -280,27 +364,63 @@ The registration function has the following signature:
 ```cpp
 void charport::register_altrep(
   R_altrep_class_t cls,
-  charport_reader_init_fn reader_init,       // (SEXP x) -> void*
-  charport_reader_get_fn reader_get,         // (void* state, R_xlen_t i) -> StrView
-  charport_reader_release_fn reader_release, // (void* state) -> void
-  bool view_persistence,
-  bool thread_safe_access
+  charport_reader_state_fns state_fns,
+  charport_reader_access_fns access_fns,
+  charport_reader_capabilities capabilities
 );
 ```
 
-`reader_init(SEXP x)` starts the borrow and returns the state that
-`reader_get()` needs. When `reader_release` is `NULL`, the state is borrowed
-and must remain owned by the ALTREP object. When `reader_release` is
-non-`NULL`, the state is a per-`Reader` native context and `charport::Reader`
-releases it when the borrow ends. Returning `NULL` from `reader_init` means
-this particular vector cannot satisfy the reader contract, so `charport` falls
-back to default access using `STRING_PTR_RO`.
+The grouped structs are plain C structs:
 
-`reader_get(void * state, R_xlen_t i)` returns the view for element `i`. It
-receives only reader state and the index.
+```cpp
+struct charport_reader_state_fns {
+  charport_reader_init_fn init;
+  charport_reader_release_fn release;
+};
 
-`reader_release(void * state)` is optional. Use it when `reader_init` allocates
-a native reader context, for example to hold temporary decoded bytes.
+struct charport_reader_access_fns {
+  charport_reader_range_fn range;
+  charport_reader_index_fn index;
+};
+
+struct charport_reader_capabilities {
+  bool persistent_views;
+  bool concurrent_access;
+};
+```
+
+`init(SEXP x)` starts the borrow and returns the state that the reader
+callbacks need. When `release` is `NULL`, the state is borrowed and must remain
+owned by the ALTREP object. When `release` is non-`NULL`, the state is a
+per-`Reader` native context and `charport::Reader` releases it when the borrow
+ends.
+
+Returning `NULL` from `init` means this particular vector cannot satisfy the
+reader contract, so `charport` falls back to default access using
+`STRING_PTR_RO`.
+
+Range callbacks fill caller-owned output arrays for the 0-based interval
+`[start, start + size)`. Indexed callbacks fill caller-owned output arrays for
+the supplied 0-based indices:
+
+```cpp
+void range(void * state, R_xlen_t start, R_xlen_t size,
+           const char ** out_ptrs,
+           int * out_lens,
+           cetype_ext_t * out_encs);
+
+void index(void * state, const R_xlen_t * indices, R_xlen_t size,
+           const char ** out_ptrs,
+           int * out_lens,
+           cetype_ext_t * out_encs);
+```
+
+Any output pointer may be `NULL`; only fill arrays that were requested. Missing
+strings are reported as `ptr = nullptr`, `len = NA_INTEGER`, and `enc =
+cetype_ext_t::CE_NA`.
+
+Scalar `Reader` methods are convenience wrappers over a range request of size
+one. Registered classes do not provide separate scalar callbacks.
 
 If `cls` is already registered, `register_altrep()` throws an error. Duplicate
 registration probably means the package registered from more than one load hook
@@ -318,7 +438,10 @@ extern "C" SEXP C_register_yourpkg_altrep(void) {
     Rf_error("yourpkg was built against an incompatible charport ABI");
   }
   charport::register_altrep(
-    your_altrep, reader_init, reader_get, nullptr, true, true
+    your_altrep,
+    charport_reader_state_fns{reader_init, nullptr},
+    charport_reader_access_fns{reader_range, reader_index},
+    charport_reader_capabilities{true, true}
   );
   return R_NilValue;
 }
@@ -354,7 +477,10 @@ extern "C" void R_init_yourpkg(DllInfo * dll) {
     Rf_error("yourpkg was built against an incompatible charport ABI");
   }
   charport::register_altrep(
-    your_altrep, reader_init, reader_get, nullptr, true, true
+    your_altrep,
+    charport_reader_state_fns{reader_init, nullptr},
+    charport_reader_access_fns{reader_range, reader_index},
+    charport_reader_capabilities{true, true}
   );
 }
 
@@ -374,10 +500,10 @@ throw a C++ exception, catch it before returning through the C interface.
 Convert the failure to an R error, a `NULL` init result, or another explicit
 status before the registered function or `.Call` entry point returns.
 
-`reader_init(SEXP)` runs on the main R thread and may report failure with
-`Rf_error()`. `reader_get(state, i)` should be total for valid `i`; it must not
-call the R API and must not throw C++ exceptions. `reader_release(state)`
-should also be R-free and exception-free.
+`init(SEXP)` runs on the main R thread and may report failure with
+`Rf_error()`. Range and indexed reader callbacks should be total for valid
+indices; they must not call the R API and must not throw C++ exceptions.
+`release(state)` should also be R-free and exception-free.
 
 ## Using `charvec` directly {#charvec-direct}
 
@@ -387,20 +513,23 @@ an output representation without implementing another ALTREP backend.
 Internally, a `charvec` object owns two things:
 
 1. One or more byte slices that hold string data.
-2. A fixed array of string records.
+2. Three fixed metadata arrays: pointers, lengths, and encoding marks.
 
 The shape is roughly:
 
 ```cpp
 struct charvec_data {
-  char * slice_head;     // linked list of owned byte blocks
-  StrView records[n];    // one record per vector element
+  char * slice_head;       // linked list of owned byte blocks
+  const char ** ptrs;      // one pointer per element
+  int * lens;              // one byte length per element
+  cetype_ext_t * encs;     // one encoding mark per element
 };
 ```
 
-For non-empty strings, `records[i].ptr` points into one of the owned byte
-slices. Empty strings point at shared empty storage. Missing strings are stored
-as `{nullptr, 0, charport_enc::CE_NA}`.
+For non-empty strings, `ptrs[i]` points into one of the owned byte slices.
+Empty strings point at shared empty storage. Missing strings are stored as
+`ptrs[i] = nullptr`, `lens[i] = NA_INTEGER`, and `encs[i] =
+cetype_ext_t::CE_NA`.
 
 Starting at `slice_head`, each slice is one allocation: a pointer storing the
 next-slice address, followed by the string data bytes. When the active slice
@@ -420,20 +549,20 @@ Like the builder `to_sexp()` methods, call it on the main R thread.
 ### Constructing a `charvec` with `charvec::Builder`
 
 `charvec::Builder` builds a `charvec` serially, one string at a time. The
-constructor takes the vector length and creates an initial slice. Insert a
-string with either `set()` or `reserve()`.
+constructor takes the vector length; byte slices are allocated as strings are
+written. Insert a string with either `set()` or `reserve()`.
 
 Use `set()` to copy an existing buffer.
 
 ```cpp
 charvec::Builder b(n);
-b.set(i, ptr, len, charport_enc::CE_UTF8);
+b.set(i, ptr, len, cetype_ext_t::CE_UTF8);
 ```
 
 Use `reserve()` when the output bytes can be written directly into the store:
 
 ```cpp
-char * dst = b.reserve(i, len, charport_enc::CE_UTF8);
+char * dst = b.reserve(i, len, cetype_ext_t::CE_UTF8);
 // write to dst directly
 ```
 
@@ -447,18 +576,25 @@ b.reset(n);
 ### Constructing a `charvec` with `charvec::DirectBuilder`
 
 Use `charvec::DirectBuilder` when the total byte size is known in advance or
-the caller needs to control slice growth. It exposes slice pointers and the
-record array directly.
+the caller needs to control slice growth. It exposes slice data and metadata
+arrays directly.
 
 ```cpp
 charvec::DirectBuilder b(n, total_bytes);
 
 char * data = b.data_slice(0); // 0 is the index of the slice
-StrView * records = b.records();
+const char ** ptrs = b.ptrs();
+int * lens = b.lengths();
+cetype_ext_t * encs = b.encodings();
 
 std::memcpy(data, src, total_bytes);
-records[0] = {data + offset0, len0, charport_enc::CE_UTF8};
-records[1] = {nullptr, 0, charport_enc::CE_NA};
+ptrs[0] = data + offset0;
+lens[0] = len0;
+encs[0] = cetype_ext_t::CE_UTF8;
+
+ptrs[1] = nullptr;
+lens[1] = NA_INTEGER;
+encs[1] = cetype_ext_t::CE_NA;
 
 SEXP out = b.to_sexp();
 b.reset(n, total_bytes);
@@ -482,7 +618,7 @@ parallel_for_each_worker(worker_id, n_workers) {
   R_xlen_t end = n * (worker_id + 1) / n_workers;
 
   for(R_xlen_t i = begin; i < end; ++i) {
-    char * dst = b.reserve(worker_id, i, len[i], charport_enc::CE_UTF8);
+    char * dst = b.reserve(worker_id, i, len[i], cetype_ext_t::CE_UTF8);
     // write this worker's bytes into dst
   }
 }
@@ -497,30 +633,32 @@ SEXP out = b.to_sexp();
 1. Check `charport::check_abi()` at load time and report a mismatch before
    using the `charport` interface.
 2. Construct `Reader` objects on the main R thread.
-3. Use `Reader::read_scalar()` when you only need the first element.
-4. Respect the borrow rule: no R access to the source vector or aliases during
+3. Prefer block access for large vectors.
+4. Use scalar access only when the algorithm is naturally element-wise.
+5. Respect the borrow rule: no R access to the source vector or aliases during
    active reads.
-5. Call `Reader` access from worker threads only when
-   `r.thread_safe_access()` is true.
+6. Call `Reader` access from worker threads only when
+   `r.concurrent_access()` is true.
 
 ### Registering an ALTREP class
 
 1. Register in `R_init_yourpkg()` and unregister in `R_unload_yourpkg()`.
-2. Return `NULL` from `reader_init()` when a specific vector instance cannot
-   satisfy the `Reader` contract.
-3. Make `get` and `release` free of R API and exceptions for valid indices.
-4. Set `view_persistence = true` when returned views remain valid until
+2. Return `NULL` from `init()` when a specific vector instance cannot satisfy
+   the `Reader` contract.
+3. Make range, indexed, and release callbacks free of R API and exceptions for
+   valid indices.
+4. Set `persistent_views = true` when returned views remain valid until
    the borrow ends.
-5. Set `thread_safe_access = true` when concurrent calls are safe.
+5. Set `concurrent_access = true` when concurrent access calls are safe.
 
 ### Using `charvec` directly
 
 1. Use `charvec::build_scalar()` for one-element output.
 2. Use `charvec::Builder` for ordinary serial construction.
-3. Use `charvec::DirectBuilder` when you want to manage slices and records
+3. Use `charvec::DirectBuilder` when you want to manage slices and metadata
    directly.
 4. Use `charvec::ParallelBuilder` for parallel construction.
-5. Store missing values as `{nullptr, 0, charport_enc::CE_NA}` and set encoding
-   marks deliberately.
+5. Store missing values as `ptr = nullptr`, `len = NA_INTEGER`, and
+   `enc = cetype_ext_t::CE_NA`.
 6. Call `to_sexp()` only after all writes are complete, and on the main R
    thread.

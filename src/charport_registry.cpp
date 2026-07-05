@@ -11,11 +11,9 @@ namespace {
 
 struct altrep_entry {
   R_altrep_class_t cls;
-  charport_reader_init_fn reader_init;
-  charport_reader_get_fn reader_get;
-  charport_reader_release_fn reader_release;
-  bool view_persistence;
-  bool thread_safe_access;
+  charport_reader_state_fns state;
+  charport_reader_access_fns access;
+  charport_reader_capabilities capabilities;
 };
 
 std::vector<altrep_entry> & altrep_registry() {
@@ -23,38 +21,97 @@ std::vector<altrep_entry> & altrep_registry() {
   return reg;
 }
 
-charport_strview direct_get(void * state, R_xlen_t i) {
-  const SEXP cs = static_cast<const SEXP *>(state)[i];
+void direct_fill_one(SEXP cs, R_xlen_t out_i, const char ** out_ptrs,
+                     int * out_lens, cetype_ext_t * out_encs) {
   if(cs == NA_STRING) {
-    return make_strview(nullptr, 0, charport_enc::CE_NA);
+    if(out_ptrs != nullptr) out_ptrs[out_i] = nullptr;
+    if(out_lens != nullptr) out_lens[out_i] = NA_INTEGER;
+    if(out_encs != nullptr) out_encs[out_i] = cetype_ext_t::CE_NA;
+    return;
   }
-  return make_strview(CHAR(cs),
-                      static_cast<uint32_t>(Rf_xlength(cs)),
-                      cpi::classify_charsxp(cs));
+  if(out_ptrs != nullptr) out_ptrs[out_i] = CHAR(cs);
+  if(out_lens != nullptr) out_lens[out_i] = LENGTH(cs);
+  if(out_encs != nullptr) out_encs[out_i] = cpi::classify_charsxp(cs);
 }
 
-charport_reader direct_reader(SEXP x, const void * direct, charport_reader_kind kind) {
+void direct_range(void * state, R_xlen_t start, R_xlen_t size,
+                  const char ** out_ptrs, int * out_lens,
+                  cetype_ext_t * out_encs) {
+  const SEXP * ptr = static_cast<const SEXP *>(state);
+  for(R_xlen_t j = 0; j < size; ++j) {
+    direct_fill_one(ptr[start + j], j, out_ptrs, out_lens, out_encs);
+  }
+}
+
+void direct_index(void * state, const R_xlen_t * indices, R_xlen_t size,
+                  const char ** out_ptrs, int * out_lens,
+                  cetype_ext_t * out_encs) {
+  const SEXP * ptr = static_cast<const SEXP *>(state);
+  for(R_xlen_t j = 0; j < size; ++j) {
+    direct_fill_one(ptr[indices[j]], j, out_ptrs, out_lens, out_encs);
+  }
+}
+
+const altrep_entry * find_registered_altrep(SEXP x) {
+  for(const altrep_entry & entry : altrep_registry()) {
+    if(R_altrep_inherits(x, entry.cls) == TRUE) {
+      return &entry;
+    }
+  }
+  return nullptr;
+}
+
+charport_reader direct_reader(SEXP x, const void * direct) {
   charport_reader r;
   r.n = Rf_xlength(x);
   r.state = const_cast<void *>(direct);
-  r.get = direct_get;
   r.release = nullptr;
-  r.view_persistence = true;
-  r.thread_safe_access = false;
-  r.kind = kind;
+  r.access = charport_reader_access_fns{direct_range, direct_index};
+  r.capabilities = charport_reader_capabilities{true, false};
   return r;
+}
+
+const char * atom_string(SEXP x) {
+  if(x == R_NilValue) {
+    return nullptr;
+  }
+  switch(TYPEOF(x)) {
+  case SYMSXP:
+    return CHAR(PRINTNAME(x));
+  case CHARSXP:
+    return CHAR(x);
+  default:
+    return nullptr;
+  }
+}
+
+SEXP string_or_na(const char * x) {
+  return x == nullptr ? Rf_ScalarString(NA_STRING)
+                      : Rf_ScalarString(Rf_mkCharCE(x, CE_UTF8));
+}
+
+SEXP class_string_or_na(const char * pkg, const char * cls) {
+  if(pkg == nullptr || cls == nullptr) {
+    return Rf_ScalarString(NA_STRING);
+  }
+  const size_t pkg_len = std::strlen(pkg);
+  const size_t cls_len = std::strlen(cls);
+  char * buf = static_cast<char *>(R_alloc(pkg_len + cls_len + 3, sizeof(char)));
+  std::memcpy(buf, pkg, pkg_len);
+  std::memcpy(buf + pkg_len, "::", 2);
+  std::memcpy(buf + pkg_len + 2, cls, cls_len + 1);
+  return Rf_ScalarString(Rf_mkCharCE(buf, CE_UTF8));
 }
 
 } // namespace
 
 extern "C" void charport_register_altrep(R_altrep_class_t cls,
-                                         charport_reader_init_fn reader_init,
-                                         charport_reader_get_fn reader_get,
-                                         charport_reader_release_fn reader_release,
-                                         bool view_persistence,
-                                         bool thread_safe_access) {
-  if(R_SEXP(cls) == NULL || reader_init == NULL || reader_get == NULL) {
-    Rf_error("charport_register_altrep: cls, reader_init, and reader_get must be non-NULL");
+                                         charport_reader_state_fns state_fns,
+                                         charport_reader_access_fns access_fns,
+                                         charport_reader_capabilities capabilities) {
+  if(R_SEXP(cls) == NULL || state_fns.init == NULL ||
+     access_fns.range == NULL || access_fns.index == NULL) {
+    Rf_error("charport_register_altrep: reader callbacks must be non-NULL");
   }
   for(altrep_entry & entry : altrep_registry()) {
     if(R_SEXP(entry.cls) == R_SEXP(cls)) {
@@ -63,7 +120,7 @@ extern "C" void charport_register_altrep(R_altrep_class_t cls,
   }
   try {
     altrep_registry().push_back(altrep_entry{
-      cls, reader_init, reader_get, reader_release, view_persistence, thread_safe_access
+      cls, state_fns, access_fns, capabilities
     });
   } catch(const std::exception & e) {
     Rf_error("charport_register_altrep: %s", e.what());
@@ -85,112 +142,114 @@ extern "C" charport_reader charport_resolve(SEXP x) {
     Rf_error("charport_resolve: x must be a character vector");
   }
 
-  const bool is_altrep = ALTREP(x) == TRUE;
   if(const void * direct = DATAPTR_OR_NULL(x)) {
-    return direct_reader(x, direct,
-                         is_altrep ? charport_reader_kind::MATERIALIZED_ALTREP :
-                                      charport_reader_kind::PLAIN);
+    return direct_reader(x, direct);
   }
 
   charport_reader r;
   r.n = Rf_xlength(x);
-  for(const altrep_entry & entry : altrep_registry()) {
-    if(R_altrep_inherits(x, entry.cls) == TRUE) {
-      if(void * state = entry.reader_init(x)) {
+  if(ALTREP(x) == TRUE) {
+    if(const altrep_entry * entry = find_registered_altrep(x)) {
+      if(void * state = entry->state.init(x)) {
         r.state = state;
-        r.get = entry.reader_get;
-        r.release = entry.reader_release;
-        r.view_persistence = entry.view_persistence;
-        r.thread_safe_access = entry.thread_safe_access;
-        r.kind = charport_reader_kind::REGISTERED_ALTREP;
+        r.release = entry->state.release;
+        r.access = entry->access;
+        r.capabilities = entry->capabilities;
         return r;
       }
-      break;
     }
   }
-  return direct_reader(x, STRING_PTR_RO(x),
-                       is_altrep ? charport_reader_kind::FALLBACK_ALTREP :
-                                    charport_reader_kind::PLAIN);
-}
-
-extern "C" charport_strview charport_read_scalar(SEXP x) {
-  if(TYPEOF(x) != STRSXP) {
-    Rf_error("charport_read_scalar: x must be a character vector");
-  }
-  if(Rf_xlength(x) < 1) {
-    Rf_error("charport_read_scalar: x must have length at least 1");
-  }
-
-  if(ALTREP(x) == TRUE && DATAPTR_OR_NULL(x) == nullptr) {
-    for(const altrep_entry & entry : altrep_registry()) {
-      if(R_altrep_inherits(x, entry.cls) == TRUE) {
-        if(entry.view_persistence && entry.reader_release == nullptr) {
-          if(void * state = entry.reader_init(x)) {
-            return entry.reader_get(state, 0);
-          }
-        }
-        break;
-      }
-    }
-  }
-
-  (void)STRING_PTR_RO(x);
-  return cpi::charsxp_to_view(STRING_ELT(x, 0));
+  return direct_reader(x, STRING_PTR_RO(x));
 }
 
 extern "C" int charport_abi_version(void) {
   return CHARPORT_ABI_VERSION;
 }
 
+extern "C" charport_sexp_info charport_get_sexp_info(SEXP x) {
+  charport_sexp_info out;
+  out.is_strsxp = TYPEOF(x) == STRSXP;
+  out.length = out.is_strsxp ? Rf_xlength(x) : static_cast<R_xlen_t>(-1);
+  out.is_altrep = out.is_strsxp && ALTREP(x) == TRUE;
+  out.is_materialized = out.is_strsxp && DATAPTR_OR_NULL(x) != nullptr;
+  out.is_registered = false;
+  out.persistent_views = false;
+  out.concurrent_access = false;
+  out.stateful_reader = false;
+  out.altrep_class_name = nullptr;
+  out.altrep_class_package = nullptr;
+
+  if(!out.is_altrep) {
+    return out;
+  }
+
+#if (R_VERSION >= R_Version(4, 6, 0))
+  out.altrep_class_name = atom_string(R_altrep_class_name(x));
+  out.altrep_class_package = atom_string(R_altrep_class_package(x));
+#else
+  SEXP cls = ALTREP_CLASS(x);
+  SEXP attrs = ATTRIB(cls);
+  out.altrep_class_name = attrs == R_NilValue ? nullptr : atom_string(CAR(attrs));
+  SEXP pkg = attrs == R_NilValue ? R_NilValue : CDR(attrs);
+  out.altrep_class_package = pkg == R_NilValue ? nullptr : atom_string(CAR(pkg));
+#endif
+
+  if(const altrep_entry * entry = find_registered_altrep(x)) {
+    out.is_registered = true;
+    out.persistent_views = entry->capabilities.persistent_views;
+    out.concurrent_access = entry->capabilities.concurrent_access;
+    out.stateful_reader = entry->state.release != nullptr;
+  }
+
+  return out;
+}
+
 extern "C" SEXP C_charport_classes(void) {
   const std::vector<altrep_entry> & reg = altrep_registry();
-  const char * names[] = {"n", "view_persistence", "thread_safe_access",
+  const char * names[] = {"n", "persistent_views", "concurrent_access",
                           "reentrant", ""};
   SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
   SEXP n = PROTECT(Rf_ScalarInteger(static_cast<int>(reg.size())));
-  SEXP view_persistence = PROTECT(Rf_allocVector(LGLSXP, static_cast<R_xlen_t>(reg.size())));
-  SEXP thread_safe_access = PROTECT(Rf_allocVector(LGLSXP, static_cast<R_xlen_t>(reg.size())));
+  SEXP persistent_views = PROTECT(Rf_allocVector(LGLSXP, static_cast<R_xlen_t>(reg.size())));
+  SEXP concurrent_access = PROTECT(Rf_allocVector(LGLSXP, static_cast<R_xlen_t>(reg.size())));
   SEXP reentrant = PROTECT(Rf_allocVector(LGLSXP, static_cast<R_xlen_t>(reg.size())));
   SET_VECTOR_ELT(out, 0, n);
-  SET_VECTOR_ELT(out, 1, view_persistence);
-  SET_VECTOR_ELT(out, 2, thread_safe_access);
+  SET_VECTOR_ELT(out, 1, persistent_views);
+  SET_VECTOR_ELT(out, 2, concurrent_access);
   SET_VECTOR_ELT(out, 3, reentrant);
   for(size_t i = 0; i < reg.size(); ++i) {
-    LOGICAL(view_persistence)[i] = reg[i].view_persistence ? TRUE : FALSE;
-    LOGICAL(thread_safe_access)[i] = reg[i].thread_safe_access ? TRUE : FALSE;
+    LOGICAL(persistent_views)[i] = reg[i].capabilities.persistent_views ? TRUE : FALSE;
+    LOGICAL(concurrent_access)[i] = reg[i].capabilities.concurrent_access ? TRUE : FALSE;
     LOGICAL(reentrant)[i] =
-      (reg[i].view_persistence && reg[i].thread_safe_access) ? TRUE : FALSE;
+      (reg[i].capabilities.persistent_views && reg[i].capabilities.concurrent_access) ? TRUE : FALSE;
   }
   UNPROTECT(5);
   return out;
 }
 
-extern "C" SEXP C_charport_class_of(SEXP x) {
-  if(TYPEOF(x) != STRSXP) {
-    Rf_error("charport_class_of: x must be a character vector");
-  }
-  for(const altrep_entry & entry : altrep_registry()) {
-    if(R_altrep_inherits(x, entry.cls) == TRUE) {
-#if (R_VERSION >= R_Version(4, 6, 0))
-      SEXP cls_sexp = PROTECT(Rf_asChar(R_altrep_class_name(x)));
-      SEXP pkg_sexp = PROTECT(Rf_asChar(R_altrep_class_package(x)));
-      const char * cls_name = CHAR(cls_sexp);
-      const char * pkg_name = CHAR(pkg_sexp);
-      const size_t pkg_len = std::strlen(pkg_name);
-      const size_t cls_len = std::strlen(cls_name);
-      char * buf = static_cast<char *>(R_alloc(pkg_len + cls_len + 3, sizeof(char)));
-      std::memcpy(buf, pkg_name, pkg_len);
-      std::memcpy(buf + pkg_len, "::", 2);
-      std::memcpy(buf + pkg_len + 2, cls_name, cls_len + 1);
-      SEXP out = Rf_ScalarString(Rf_mkCharCE(buf, CE_UTF8));
-      UNPROTECT(2);
-      return out;
-#else
-      return Rf_mkString("<registered ALTREP class>");
-#endif
-    }
-  }
-  return Rf_ScalarString(NA_STRING);
+extern "C" SEXP C_charport_info(SEXP x) {
+  charport_sexp_info info = charport_get_sexp_info(x);
+  const char * names[] = {
+    "is_strsxp", "length", "is_altrep", "is_materialized", "is_registered",
+    "persistent_views", "concurrent_access", "stateful_reader", "reentrant",
+    "altrep_class_name", "altrep_class_package", "altrep_class", ""
+  };
+  SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
+  SET_VECTOR_ELT(out, 0, Rf_ScalarLogical(info.is_strsxp ? TRUE : FALSE));
+  SET_VECTOR_ELT(out, 1, Rf_ScalarReal(static_cast<double>(info.length)));
+  SET_VECTOR_ELT(out, 2, Rf_ScalarLogical(info.is_altrep ? TRUE : FALSE));
+  SET_VECTOR_ELT(out, 3, Rf_ScalarLogical(info.is_materialized ? TRUE : FALSE));
+  SET_VECTOR_ELT(out, 4, Rf_ScalarLogical(info.is_registered ? TRUE : FALSE));
+  SET_VECTOR_ELT(out, 5, Rf_ScalarLogical(info.persistent_views ? TRUE : FALSE));
+  SET_VECTOR_ELT(out, 6, Rf_ScalarLogical(info.concurrent_access ? TRUE : FALSE));
+  SET_VECTOR_ELT(out, 7, Rf_ScalarLogical(info.stateful_reader ? TRUE : FALSE));
+  SET_VECTOR_ELT(out, 8, Rf_ScalarLogical(info.reentrant() ? TRUE : FALSE));
+  SET_VECTOR_ELT(out, 9, string_or_na(info.altrep_class_name));
+  SET_VECTOR_ELT(out, 10, string_or_na(info.altrep_class_package));
+  SET_VECTOR_ELT(out, 11, class_string_or_na(info.altrep_class_package,
+                                             info.altrep_class_name));
+  UNPROTECT(1);
+  return out;
 }
 
 extern "C" SEXP C_unregister_charvec(void) {
@@ -199,12 +258,15 @@ extern "C" SEXP C_unregister_charvec(void) {
 }
 
 extern "C" SEXP C_register_charvec(void) {
-  charport_register_altrep(charvec_altrep::class_t,
-                           charvec_altrep::reader_init,
-                           charvec_altrep::reader_get,
-                           nullptr,
-                           true,
-                           true);
+  charport_register_altrep(
+    charvec_altrep::class_t,
+    charport_reader_state_fns{charvec_altrep::reader_init, nullptr},
+    charport_reader_access_fns{
+      charvec_altrep::reader_range,
+      charvec_altrep::reader_index
+    },
+    charport_reader_capabilities{true, true}
+  );
   return R_NilValue;
 }
 
@@ -215,8 +277,8 @@ extern "C" void charport_registry_init(DllInfo * dll) {
                       reinterpret_cast<DL_FUNC>(&charport_unregister_altrep));
   R_RegisterCCallable("charport", "charport_resolve",
                       reinterpret_cast<DL_FUNC>(&charport_resolve));
-  R_RegisterCCallable("charport", "charport_read_scalar",
-                      reinterpret_cast<DL_FUNC>(&charport_read_scalar));
+  R_RegisterCCallable("charport", "charport_sexp_info",
+                      reinterpret_cast<DL_FUNC>(&charport_get_sexp_info));
   R_RegisterCCallable("charport", "charport_abi_version",
                       reinterpret_cast<DL_FUNC>(&charport_abi_version));
   R_RegisterCCallable("charport", "charport_charvec_wrap",

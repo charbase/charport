@@ -10,6 +10,9 @@
 ^benchmark_results$
 ^LICENSE\.md$
 ^Makefile$
+^inst/extra/benchmark\.R$
+^inst/extra/benchmark\.cpp$
+^inst/extra/benchmark-table\.csv$
 ^inst/extra$
 ^scratch$
 ^tools$

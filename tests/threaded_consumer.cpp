@@ -65,8 +65,14 @@ SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
       std::string * err = &worker_errors[static_cast<size_t>(j)];
       threads.emplace_back([&b, &r, shard, lo, hi, err]() {
         try {
+          const R_xlen_t m = hi - lo;
+          charport::StrViews views(m);
+          if(m > 0) {
+            r.views(lo, m, views);
+          }
           for(R_xlen_t i = lo; i < hi; ++i) {
-            b.set(shard, i, r[i]);  // distinct shard per worker -> no sync
+            const size_t j = static_cast<size_t>(i - lo);
+            b.set(shard, i, views[static_cast<R_xlen_t>(j)]);
           }
         } catch(const std::exception & e) {
           *err = e.what();
@@ -103,7 +109,7 @@ SEXP C_consumer_worker_throws(void) {
           if(j == 1) {
             throw std::runtime_error("injected worker failure");
           }
-          b.set(static_cast<size_t>(j), j, "ok", 2, charport_enc::CE_ASCII);
+          b.set(static_cast<size_t>(j), j, "ok", 2, cetype_ext_t::CE_ASCII);
         } catch(const std::exception & e) {
           *err = e.what();
         }

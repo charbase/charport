@@ -1,0 +1,124 @@
+---
+title: "Design rationale"
+output:
+  html_vignette:
+    css: !expr if (identical(Sys.getenv("IN_PKGDOWN"), "true")) NULL else "charport-vignette.css"
+vignette: >
+  %\VignetteIndexEntry{Design rationale}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+`charport` defines a boundary between packages that produce ALTREP strings and
+packages that consume them. This document describes the guarantees at that
+boundary and which package owns each responsibility.
+
+## What `charport` does not do
+
+`charport` is not a string API. It does not define matching, collation,
+normalization, locale behavior, recycling rules, or missing-value policy beyond
+representing a missing string view.
+
+It also does not try to own every ALTREP string representation. Existing
+packages can keep their storage layout, construction path, and user-facing
+semantics. `charport` only gives those packages a way to answer read requests
+with byte views when doing so is safe.
+
+## Why the contract is narrow
+
+The interface exposes byte views, reader capabilities, and lifetime rules.
+ALTREP producers do not need to adopt another storage model, and consumers do
+not need class-specific code. If a vector cannot satisfy the direct-read
+contract, `charport::Reader` falls back to ordinary R character-vector access.
+
+## Plain data at the boundary
+
+The public boundary is a C ABI made from plain data: function pointers,
+booleans, lengths, `SEXP`, and small structs such as `charport_strview`,
+`charport_byteview`, and `charport_reader`.
+
+This avoids binding downstream packages to a C++ object layout, exception
+model, or framework dependency. C++ users still get a wrapper API in
+`charport.h`, while the package boundary remains plain C data.
+
+## Borrowed views and materialization
+
+A `charport::Reader` is an active borrow of a character vector's current string
+storage. During that borrow, code should avoid accessing or modifying the same
+R object through other R APIs, because ALTREP methods may materialize, cache,
+or replace internal storage.
+
+The strict borrow follows from the ALTREP contract: another ALTREP class may
+materialize, cache, or replace its internal storage during ordinary R access.
+Direct views remain valid under the reader contract, and ordinary R access is
+the fallback when that contract is unavailable.
+
+## Reader capabilities and diagnostics
+
+`Reader::persistent_views()` means returned byte pointers remain valid for the
+lifetime of the `Reader`, even after later reader access. This supports
+patterns such as collecting views on the main thread and processing those views
+later while the borrow is active.
+
+`Reader::concurrent_access()` means reader access calls may be made from worker
+threads and from multiple threads at once. `Reader::reentrant()` is a
+convenience check that returns true only when both guarantees are true.
+
+The primary read path is block access: consumers ask for ranges or indexed
+selections of byte views, lengths, or encodings. Scalar access remains
+available for element-wise code, while block access avoids a callback for each
+element.
+
+For diagnostics, `charport::sexp_info(x)` and `charport_info(x)` inspect a
+vector without forcing it. They report whether the object is a character
+vector, whether it is ALTREP, whether ordinary string pointer storage is
+already available, whether a registered ALTREP class matches, the reader
+capability flags, and whether a registered reader would own per-reader state.
+
+These helpers are for development, debugging, and preflight checks. Ordinary
+read logic constructs a `Reader` and uses its reported capabilities. The C ABI
+reports ALTREP class and package names as borrowed `const char *` pointers so
+the diagnostic struct remains plain C data.
+
+## Errors and unwinding
+
+`charport` crosses package boundaries. At those boundaries, the common error
+mechanism is R's condition system, not a particular C++ exception type.
+
+Registered callbacks and `.Call` entry points must not let C++ exceptions
+return through a C ABI or R API boundary. If C++ code can throw, catch the
+exception inside the package that owns that code and convert it to an R error,
+a `NULL` reader init result, or another explicit status.
+
+R errors can long-jump. Code that calls R APIs must account for that behavior,
+especially around ownership transfer and cleanup.
+
+## Encoding policy
+
+`charport` carries encoding marks, but it does not translate, normalize, or
+reinterpret strings. `StrView` reports bytes, length, and an encoding mark;
+`ByteView`, `length()`, and `encoding()` expose smaller pieces of the same
+low-level contract. Block access uses caller-owned pointer, length, and
+encoding arrays so consumers can work without allocating one wrapper object per
+element.
+
+Packages that need normalization or locale-aware behavior implement that policy
+above the byte-view layer.
+
+## C++11 and framework independence
+
+`charport` is intended to be a low-level dependency for other packages.
+Requiring Rcpp, cpp11, or another C++ framework would make that dependency
+heavier and would force a framework choice on packages that may already have
+one.
+
+The installed header therefore uses ordinary C and C++11. Packages that use
+Rcpp or cpp11 can still integrate naturally through their init hooks and
+compiled code, but `charport` itself does not require them.

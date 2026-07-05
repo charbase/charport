@@ -8,9 +8,9 @@ charport_classes()
 }
 \value{
 A list with elements `n` (integer: number of registered
-  classes), `view_persistence` (logical vector: whether returned byte
-  views remain valid until the reader borrow ends), `thread_safe_access`
-  (logical vector: whether the reader accessor may be called concurrently),
+  classes), `persistent_views` (logical vector: whether returned byte
+  views remain valid until the reader borrow ends), `concurrent_access`
+  (logical vector: whether reader access calls may run concurrently),
   and `reentrant` (logical vector: whether both capabilities are true).
 }
 \description{

@@ -28,31 +28,33 @@ public:
     if(n < 0) {
       throw std::runtime_error("charvec builder: negative length");
     }
-    records_ = internal::strview_array(static_cast<size_t>(n));
+    records_ = internal::charvec_records(static_cast<size_t>(n));
     shard_ = internal::charvec_shard();
   }
 
-  void set(R_xlen_t i, const char * ptr, size_t len, charport_enc enc) {
-    if(ptr == nullptr || enc == charport_enc::CE_NA) {
-      internal::copy_record(shard_, records_.data(), records_.size(),
-                            static_cast<size_t>(i), nullptr, 0, charport_enc::CE_NA);
+  void set(R_xlen_t i, const char * ptr, size_t len, cetype_ext_t enc) {
+    if(ptr == nullptr || enc == cetype_ext_t::CE_NA) {
+      internal::copy_record(shard_, records_,
+                            static_cast<size_t>(i), nullptr, 0, cetype_ext_t::CE_NA);
       return;
     }
-    internal::copy_record(shard_, records_.data(), records_.size(),
-                          static_cast<size_t>(i), ptr, len, enc);
+    internal::copy_record(shard_, records_, static_cast<size_t>(i), ptr, len, enc);
   }
 
   void set(R_xlen_t i, const StrView & value) {
+    if(value.is_na()) {
+      set_na(i);
+      return;
+    }
     set(i, value.ptr, static_cast<size_t>(value.len), value.enc);
   }
 
   void set_na(R_xlen_t i) {
-    set(i, nullptr, 0, charport_enc::CE_NA);
+    set(i, nullptr, 0, cetype_ext_t::CE_NA);
   }
 
-  char * reserve(R_xlen_t i, size_t len, charport_enc enc) {
-    return internal::fill_record(shard_, records_.data(), records_.size(),
-                                 static_cast<size_t>(i), len, enc);
+  char * reserve(R_xlen_t i, size_t len, cetype_ext_t enc) {
+    return internal::fill_record(shard_, records_, static_cast<size_t>(i), len, enc);
   }
 
   std::unique_ptr<internal::charvec_data> release_store() {
@@ -72,16 +74,16 @@ public:
     if(n < 0) {
       throw std::runtime_error("charvec builder: negative length");
     }
-    internal::strview_array records(static_cast<size_t>(n));
+    internal::charvec_records records(static_cast<size_t>(n));
     internal::charvec_shard shard;
-    fill(shard, records.data(), records.size());
+    fill(shard, records);
     auto store = internal::make_unique<internal::charvec_data>(std::move(records));
     store->adopt_chain(shard);
     return store;
   }
 
 private:
-  internal::strview_array records_;
+  internal::charvec_records records_;
   internal::charvec_shard shard_;
 };
 
@@ -100,19 +102,35 @@ public:
     if(n < 0) {
       throw std::runtime_error("charvec builder: negative length");
     }
-    records_ = internal::strview_array(static_cast<size_t>(n));
+    records_ = internal::charvec_records(static_cast<size_t>(n));
     shard_ = internal::charvec_shard();
     if(total_bytes > 0) {
       allocate_next_slice(total_bytes);
     }
   }
 
-  StrView * records() noexcept {
-    return records_.data();
+  const char ** ptrs() noexcept {
+    return records_.ptrs();
   }
 
-  const StrView * records() const noexcept {
-    return records_.data();
+  int * lengths() noexcept {
+    return records_.lengths();
+  }
+
+  cetype_ext_t * encodings() noexcept {
+    return records_.encodings();
+  }
+
+  const char * const * ptrs() const noexcept {
+    return records_.ptrs();
+  }
+
+  const int * lengths() const noexcept {
+    return records_.lengths();
+  }
+
+  const cetype_ext_t * encodings() const noexcept {
+    return records_.encodings();
   }
 
   char * data_slice(size_t i = 0) {
@@ -140,7 +158,7 @@ public:
   }
 
 private:
-  internal::strview_array records_;
+  internal::charvec_records records_;
   internal::charvec_shard shard_;
 };
 
@@ -162,7 +180,7 @@ public:
     if(n_shards == 0) {
       throw std::runtime_error("charvec builder: n_shards must be >= 1");
     }
-    records_ = internal::strview_array(static_cast<size_t>(n));
+    records_ = internal::charvec_records(static_cast<size_t>(n));
     shards_.clear();
     shards_.reserve(n_shards);
     for(size_t i = 0; i < n_shards; ++i) {
@@ -172,28 +190,30 @@ public:
 
   size_t n_shards() const noexcept { return shards_.size(); }
 
-  void set(size_t shard, R_xlen_t i, const char * ptr, size_t len, charport_enc enc) {
+  void set(size_t shard, R_xlen_t i, const char * ptr, size_t len, cetype_ext_t enc) {
     internal::charvec_shard & s = shard_at(shard);
-    if(ptr == nullptr || enc == charport_enc::CE_NA) {
-      internal::copy_record(s, records_.data(), records_.size(),
-                            static_cast<size_t>(i), nullptr, 0, charport_enc::CE_NA);
+    if(ptr == nullptr || enc == cetype_ext_t::CE_NA) {
+      internal::copy_record(s, records_,
+                            static_cast<size_t>(i), nullptr, 0, cetype_ext_t::CE_NA);
       return;
     }
-    internal::copy_record(s, records_.data(), records_.size(),
-                          static_cast<size_t>(i), ptr, len, enc);
+    internal::copy_record(s, records_, static_cast<size_t>(i), ptr, len, enc);
   }
 
   void set(size_t shard, R_xlen_t i, const StrView & value) {
+    if(value.is_na()) {
+      set_na(shard, i);
+      return;
+    }
     set(shard, i, value.ptr, static_cast<size_t>(value.len), value.enc);
   }
 
   void set_na(size_t shard, R_xlen_t i) {
-    set(shard, i, nullptr, 0, charport_enc::CE_NA);
+    set(shard, i, nullptr, 0, cetype_ext_t::CE_NA);
   }
 
-  char * reserve(size_t shard, R_xlen_t i, size_t len, charport_enc enc) {
-    return internal::fill_record(shard_at(shard), records_.data(), records_.size(),
-                                 static_cast<size_t>(i), len, enc);
+  char * reserve(size_t shard, R_xlen_t i, size_t len, cetype_ext_t enc) {
+    return internal::fill_record(shard_at(shard), records_, static_cast<size_t>(i), len, enc);
   }
 
   std::unique_ptr<internal::charvec_data> release_store() {
@@ -219,7 +239,7 @@ private:
     return shards_[shard];
   }
 
-  internal::strview_array records_;
+  internal::charvec_records records_;
   std::vector<internal::charvec_shard> shards_;
 };
 

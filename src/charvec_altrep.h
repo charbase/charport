@@ -26,16 +26,16 @@ inline bool charsxp_is_ascii(SEXP x) {
 #endif
 }
 
-inline cetype_t to_base_encoding(charport_enc enc) noexcept {
+inline cetype_t to_base_encoding(cetype_ext_t enc) noexcept {
   switch(enc) {
-  case charport_enc::CE_ASCII:
+  case cetype_ext_t::CE_ASCII:
     return CE_NATIVE;
-  case charport_enc::CE_UTF8:
-  case charport_enc::CE_ASCII_OR_UTF8:
+  case cetype_ext_t::CE_UTF8:
+  case cetype_ext_t::CE_ASCII_OR_UTF8:
     return CE_UTF8;
-  case charport_enc::CE_LATIN1:
+  case cetype_ext_t::CE_LATIN1:
     return CE_LATIN1;
-  case charport_enc::CE_BYTES:
+  case cetype_ext_t::CE_BYTES:
     return CE_BYTES;
   default:
     return CE_NATIVE;
@@ -52,25 +52,25 @@ inline SEXP make_charsxp(const charport_strview & view) {
   return Rf_mkCharLenCE(view.ptr, static_cast<int>(view.len), to_base_encoding(view.enc));
 }
 
-inline charport_enc classify_charsxp(SEXP x) {
+inline cetype_ext_t classify_charsxp(SEXP x) {
   switch(Rf_getCharCE(x)) {
   case CE_UTF8:
-    return charport_enc::CE_UTF8;
+    return cetype_ext_t::CE_UTF8;
   case CE_LATIN1:
-    return charport_enc::CE_LATIN1;
+    return cetype_ext_t::CE_LATIN1;
   case CE_BYTES:
-    return charport_enc::CE_BYTES;
+    return cetype_ext_t::CE_BYTES;
   default:
-    return charsxp_is_ascii(x) ? charport_enc::CE_ASCII
-                               : charport_enc::CE_NATIVE;
+    return charsxp_is_ascii(x) ? cetype_ext_t::CE_ASCII
+                               : cetype_ext_t::CE_NATIVE;
   }
 }
 
 inline charport_strview charsxp_to_view(SEXP x) {
   if(x == NA_STRING) {
-    return make_strview(nullptr, 0, charport_enc::CE_NA);
+    return make_strview(nullptr, NA_INTEGER, cetype_ext_t::CE_NA);
   }
-  return make_strview(CHAR(x), static_cast<uint32_t>(Rf_xlength(x)), classify_charsxp(x));
+  return make_strview(CHAR(x), LENGTH(x), classify_charsxp(x));
 }
 
 } // namespace internal
@@ -284,7 +284,7 @@ struct charvec_altrep {
     if(data2 != R_NilValue) {
       return Rf_xlength(data2);
     }
-    return static_cast<R_xlen_t>(Get(vec).records.size());
+    return static_cast<R_xlen_t>(Get(vec).size());
   }
 
   static Rboolean Inspect(SEXP x, int /* pre */, int /* deep */, int /* pvec */,
@@ -298,20 +298,17 @@ struct charvec_altrep {
   }
 
   // Full materialization, cached in data2. The store is freed afterwards
-  // (records would be a redundant copy of the payload), so record pointers
-  // handed out before materialization are invalidated. This is the concrete
-  // reason the reader contract is a borrow: while a reader/view is live, the
-  // consumer must ensure the vector is not touched through R or aliases.
+  // because records would duplicate the cached R strings.
   static SEXP Materialize(SEXP vec) {
     SEXP data2 = R_altrep_data2(vec);
     if(data2 != R_NilValue) {
       return data2;
     }
     auto & data1 = Get(vec);
-    const R_xlen_t n = static_cast<R_xlen_t>(data1.records.size());
+    const R_xlen_t n = static_cast<R_xlen_t>(data1.size());
     data2 = PROTECT(Rf_allocVector(STRSXP, n));
     for(R_xlen_t i = 0; i < n; ++i) {
-      SET_STRING_ELT(data2, i, cpi::make_charsxp(data1.records[static_cast<size_t>(i)]));
+      SET_STRING_ELT(data2, i, cpi::make_charsxp(data1.view(static_cast<size_t>(i))));
     }
     R_set_altrep_data2(vec, data2);
     Finalize(R_altrep_data1(vec));
@@ -321,17 +318,18 @@ struct charvec_altrep {
 
   static SEXP DuplicateEX(SEXP vec, Rboolean /* deep */) {
     return charport_sexp_guard("charvec Duplicate", [&]() -> SEXP {
-      SEXP data2 = R_altrep_data2(vec);
-      if(data2 != R_NilValue) {
-        const R_xlen_t n = Rf_xlength(data2);
-        auto out = charport::charvec::Builder::build_store(static_cast<size_t>(n),
-          [&](cpi::charvec_shard & sh, charport_strview * rec, size_t nn) {
-            for(R_xlen_t i = 0; i < n; ++i) {
-              cpi::copy_record(sh, rec, nn, static_cast<size_t>(i),
-                               cpi::charsxp_to_view(STRING_ELT(data2, i)));
-            }
-          });
-        return MakeOwned(out.release());
+    SEXP data2 = R_altrep_data2(vec);
+    if(data2 != R_NilValue) {
+      const R_xlen_t n = Rf_xlength(data2);
+      const SEXP * ptr = STRING_PTR_RO(data2);
+      auto out = charport::charvec::Builder::build_store(static_cast<size_t>(n),
+        [&](cpi::charvec_shard & sh, cpi::charvec_records & rec) {
+          for(R_xlen_t i = 0; i < n; ++i) {
+            cpi::copy_record(sh, rec, static_cast<size_t>(i),
+                             cpi::charsxp_to_view(ptr[i]));
+          }
+        });
+      return MakeOwned(out.release());
       }
       auto * out = new cpi::charvec_data(Get(vec));
       return MakeOwned(out);
@@ -366,7 +364,7 @@ struct charvec_altrep {
       return STRING_ELT(data2, i);
     }
     return charport_sexp_guard("charvec Elt", [&]() -> SEXP {
-      return cpi::make_charsxp(Get(vec).records[static_cast<size_t>(i)]);
+      return cpi::make_charsxp(Get(vec).view(static_cast<size_t>(i)));
     });
   }
 
@@ -394,8 +392,8 @@ struct charvec_altrep {
       return 1;
     }
     auto & data1 = Get(vec);
-    for(size_t i = 0; i < data1.records.size(); ++i) {
-      if(data1.records[i].is_na()) {
+    for(size_t i = 0; i < data1.size(); ++i) {
+      if(data1.view(i).is_na()) {
         return 0;
       }
     }
@@ -408,25 +406,24 @@ struct charvec_altrep {
     return charport_sexp_guard("charvec Extract_subset", [&]() -> SEXP {
       (void)call;
       SEXP data2 = R_altrep_data2(x);
+      const SEXP * data2_ptr =
+        data2 == R_NilValue ? nullptr : STRING_PTR_RO(data2);
       const R_xlen_t xlen = data2 != R_NilValue
         ? Rf_xlength(data2)
-        : static_cast<R_xlen_t>(Get(x).records.size());
+        : static_cast<R_xlen_t>(Get(x).size());
 
-      // out-of-range and NA subscripts produce NA elements; out records start
-      // NA, so only valid subscripts need a write. Builds go through a transient
-      // shard context (one bump-packed chain) rather than the store directly.
-      auto copy_element = [&](cpi::charvec_shard & sh, charport_strview * recs, size_t n,
+      auto copy_element = [&](cpi::charvec_shard & sh, cpi::charvec_records & recs,
                               size_t out_i, R_xlen_t zero_based) {
         if(zero_based < 0 || zero_based >= xlen) {
           return;
         }
-        if(data2 != R_NilValue) {
-          cpi::copy_record(sh, recs, n, out_i, cpi::charsxp_to_view(STRING_ELT(data2, zero_based)));
+        if(data2_ptr != nullptr) {
+          cpi::copy_record(sh, recs, out_i, cpi::charsxp_to_view(data2_ptr[zero_based]));
           return;
         }
-        const charport_strview & rec = Get(x).view(static_cast<size_t>(zero_based));
+        const charport_strview rec = Get(x).view(static_cast<size_t>(zero_based));
         if(!rec.is_na()) {
-          cpi::copy_record(sh, recs, n, out_i, rec);
+          cpi::copy_record(sh, recs, out_i, rec);
         }
       };
 
@@ -446,12 +443,12 @@ struct charvec_altrep {
         }
 
         auto out = charport::charvec::Builder::build_store(static_cast<size_t>(out_len),
-          [&](cpi::charvec_shard & sh, charport_strview * rec, size_t nn) {
+          [&](cpi::charvec_shard & sh, cpi::charvec_records & rec) {
             R_xlen_t out_i = 0;
             for(R_xlen_t i = 0; i < xlen; ++i) {
               const int idx_i = idx[i % idx_len];
               if(idx_i == TRUE) {
-                copy_element(sh, rec, nn, static_cast<size_t>(out_i++), i);
+                copy_element(sh, rec, static_cast<size_t>(out_i++), i);
               } else if(idx_i == NA_LOGICAL) {
                 ++out_i;  // stays NA
               }
@@ -465,19 +462,19 @@ struct charvec_altrep {
       }
       const R_xlen_t len = Rf_xlength(indx);
       auto out = charport::charvec::Builder::build_store(static_cast<size_t>(len),
-        [&](cpi::charvec_shard & sh, charport_strview * rec, size_t nn) {
+        [&](cpi::charvec_shard & sh, cpi::charvec_records & rec) {
           if(TYPEOF(indx) == INTSXP) {
             const int * idx = INTEGER(indx);
             for(R_xlen_t i = 0; i < len; ++i) {
               if(idx[i] != NA_INTEGER) {
-                copy_element(sh, rec, nn, static_cast<size_t>(i), static_cast<R_xlen_t>(idx[i]) - 1);
+                copy_element(sh, rec, static_cast<size_t>(i), static_cast<R_xlen_t>(idx[i]) - 1);
               }
             }
           } else {
             const double * idx = REAL(indx);
             for(R_xlen_t i = 0; i < len; ++i) {
               if(!ISNAN(idx[i])) {
-                copy_element(sh, rec, nn, static_cast<size_t>(i), static_cast<R_xlen_t>(idx[i]) - 1);
+                copy_element(sh, rec, static_cast<size_t>(i), static_cast<R_xlen_t>(idx[i]) - 1);
               }
             }
           }
@@ -494,11 +491,12 @@ struct charvec_altrep {
         return data2;
       }
       auto & data1 = Get(vec);
-      const size_t n = data1.records.size();
+      const size_t n = data1.size();
       size_t total_size = 0;
       for(size_t i = 0; i < n; ++i) {
+        const int len = data1.length(i);
         total_size = cpi::checked_add_size(
-          total_size, static_cast<size_t>(data1.records[i].len), "serialized_state payload");
+          total_size, len < 0 ? 0 : static_cast<size_t>(len), "serialized_state payload");
       }
       const size_t total_bytes = charvec_serialized_length(n, total_size);
       SEXP serialized_state = Rf_allocVector(RAWSXP, static_cast<R_xlen_t>(total_bytes));
@@ -514,19 +512,20 @@ struct charvec_altrep {
         serialized_ptr + charvec_serialized_prefix_bytes() + sizeof(uint64_t);
 
       for(size_t i = 0; i < n; ++i) {
-        const uint32_t size = data1.records[i].len;
+        const int len = data1.length(i);
+        const uint32_t size = len < 0 ? 0U : static_cast<uint32_t>(len);
         std::memcpy(current_offset, &size, sizeof(uint32_t));
         current_offset += sizeof(uint32_t);
       }
 
       for(size_t i = 0; i < n; ++i) {
-        const uint8_t encoding = static_cast<uint8_t>(data1.records[i].enc);
+        const uint8_t encoding = static_cast<uint8_t>(data1.encoding(i));
         std::memcpy(current_offset, &encoding, sizeof(uint8_t));
         current_offset += sizeof(uint8_t);
       }
 
       for(size_t i = 0; i < n; ++i) {
-        const charport_strview & rec = data1.records[i];
+        const charport_strview rec = data1.view(i);
         if(rec.len > 0) {
           std::memcpy(current_offset, rec.ptr, static_cast<size_t>(rec.len));
           current_offset += static_cast<size_t>(rec.len);
@@ -549,32 +548,32 @@ struct charvec_altrep {
       const unsigned char * data_offset = layout.data_offset;
 
       auto ret = charport::charvec::Builder::build_store(static_cast<R_xlen_t>(layout.n),
-        [&](cpi::charvec_shard & sh, charport_strview * rec, size_t nn) {
+        [&](cpi::charvec_shard & sh, cpi::charvec_records & rec) {
           for(size_t i = 0; i < layout.n; ++i) {
             const uint32_t size = charvec_read_u32_advance(size_offset, layout.swap);
             if(!cpi::check_r_string_len(size)) {
               throw std::runtime_error("serialized string size exceeds R string size");
             }
-            const charport_enc encoding = static_cast<charport_enc>(*enc_offset++);
+            const cetype_ext_t encoding = static_cast<cetype_ext_t>(*enc_offset++);
             const size_t stored_len = static_cast<size_t>(size);
             const char * payload = charvec_serialized_payload(data_offset, layout.data_end, stored_len);
             // Untrusted input: accept every encoding a record can legitimately
             // hold (the store keeps encodings verbatim, so any of these can have
             // been serialized) and reject only an out-of-range encoding byte.
             switch(encoding) {
-            case charport_enc::CE_ASCII:
-            case charport_enc::CE_UTF8:
-            case charport_enc::CE_ASCII_OR_UTF8:
-            case charport_enc::CE_LATIN1:
-            case charport_enc::CE_NATIVE:
-            case charport_enc::CE_BYTES:
-              cpi::copy_record(sh, rec, nn, i, payload, stored_len, encoding);
+            case cetype_ext_t::CE_ASCII:
+            case cetype_ext_t::CE_UTF8:
+            case cetype_ext_t::CE_ASCII_OR_UTF8:
+            case cetype_ext_t::CE_LATIN1:
+            case cetype_ext_t::CE_NATIVE:
+            case cetype_ext_t::CE_BYTES:
+              cpi::copy_record(sh, rec, i, payload, stored_len, encoding);
               break;
-            case charport_enc::CE_NA:
+            case cetype_ext_t::CE_NA:
               if(stored_len != 0) {
                 throw std::runtime_error("serialized NA string must have zero length");
               }
-              cpi::copy_record(sh, rec, nn, i, nullptr, 0, charport_enc::CE_NA);
+              cpi::copy_record(sh, rec, i, nullptr, 0, cetype_ext_t::CE_NA);
               break;
             default:
               throw std::runtime_error("invalid string encoding in serialized_state");
@@ -600,9 +599,36 @@ struct charvec_altrep {
     return Ptr(x);
   }
 
-  // Pure state read: no R, no allocation, no mutation, persistent records.
-  static charport_strview reader_get(void * state, R_xlen_t i) {
-    return static_cast<cpi::charvec_data *>(state)->records[static_cast<size_t>(i)];
+  static void reader_range(void * state, R_xlen_t start, R_xlen_t size,
+                           const char ** out_ptrs, int * out_lens,
+                           cetype_ext_t * out_encs) {
+    const cpi::charvec_data * data = static_cast<cpi::charvec_data *>(state);
+    const size_t offset = static_cast<size_t>(start);
+    const size_t count = static_cast<size_t>(size);
+    if(out_ptrs != nullptr) {
+      std::memcpy(out_ptrs, data->records.ptrs() + offset,
+                  count * sizeof(const char *));
+    }
+    if(out_lens != nullptr) {
+      std::memcpy(out_lens, data->records.lengths() + offset,
+                  count * sizeof(int));
+    }
+    if(out_encs != nullptr) {
+      std::memcpy(out_encs, data->records.encodings() + offset,
+                  count * sizeof(cetype_ext_t));
+    }
+  }
+
+  static void reader_index(void * state, const R_xlen_t * indices,
+                           R_xlen_t size, const char ** out_ptrs,
+                           int * out_lens, cetype_ext_t * out_encs) {
+    const cpi::charvec_data * data = static_cast<cpi::charvec_data *>(state);
+    for(R_xlen_t j = 0; j < size; ++j) {
+      const size_t i = static_cast<size_t>(indices[j]);
+      if(out_ptrs != nullptr) out_ptrs[j] = data->records.ptrs()[i];
+      if(out_lens != nullptr) out_lens[j] = data->records.lengths()[i];
+      if(out_encs != nullptr) out_encs[j] = data->records.encodings()[i];
+    }
   }
 
   static void Init(DllInfo * dll) {

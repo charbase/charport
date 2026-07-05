@@ -1,18 +1,24 @@
-// Benchmark kernels, compiled at bench time with R CMD SHLIB (see
-// benchmark.R). Each read kernel returns an FNV-1a hash of everything it
-// read so results can be cross-checked between paths and the work cannot
-// be optimized away. Timing happens in R around the .Call; one call per
-// run makes the .Call overhead negligible against millions of elements.
+// Benchmark kernels, compiled at bench time with R CMD SHLIB.
 
 #include "charport.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
 
-static inline uint64_t fnv1a(const char * p, uint32_t n, uint64_t h) {
+namespace {
+
+std::vector<std::string> corpus_lines;
+bool corpus_ready = false;
+
+static inline uint64_t fnv1a_string(const char * p, uint32_t n) {
+  uint64_t h = 14695981039346656037ULL;
   for(uint32_t i = 0; i < n; ++i) {
     h ^= static_cast<unsigned char>(p[i]);
     h *= 1099511628211ULL;
@@ -27,86 +33,230 @@ static SEXP hash_to_sexp(uint64_t h, R_xlen_t n_na) {
   return out;
 }
 
-// Ingest a text file straight into a charvec: file bytes -> line views ->
-// Builder. This path creates no CHARSXP. Rf_mkCharLenCE interns every string
-// in R's global string cache, and an interned string costs a hash lookup
-// instead of an allocation. Reading the corpus with readLines() first would
-// give the construction baseline cache hits and understate fresh allocation
-// cost. Ingesting in C keeps the cache cold.
-// Every na_every-th line is stored as NA to exercise the NA paths.
-extern "C" SEXP C_bench_read_lines_charvec(SEXP path_, SEXP na_every_) {
+static size_t reader_block_size() noexcept {
+  return 8192;
+}
+
+static void require_corpus() {
+  if(!corpus_ready) {
+    throw std::runtime_error("corpus is not loaded");
+  }
+}
+
+static SEXP corpus_hash() {
+  require_corpus();
+  uint64_t h = 0;
+  for(const std::string & s : corpus_lines) {
+    h ^= fnv1a_string(s.data(), static_cast<uint32_t>(s.size()));
+  }
+  return hash_to_sexp(h, 0);
+}
+
+static double corpus_total_bytes() {
+  require_corpus();
+  double total = 0;
+  for(const std::string & s : corpus_lines) {
+    total += static_cast<double>(s.size());
+  }
+  return total;
+}
+
+static SEXP corpus_info() {
+  require_corpus();
+  const char * names[] = {"n", "total_bytes", "hash", ""};
+  SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
+  SEXP hash = PROTECT(corpus_hash());
+  SET_VECTOR_ELT(out, 0, Rf_ScalarReal(static_cast<double>(corpus_lines.size())));
+  SET_VECTOR_ELT(out, 1, Rf_ScalarReal(corpus_total_bytes()));
+  SET_VECTOR_ELT(out, 2, hash);
+  UNPROTECT(2);
+  return out;
+}
+
+static SEXP build_charvec_serial() {
+  require_corpus();
+  const R_xlen_t n = static_cast<R_xlen_t>(corpus_lines.size());
+
+  charport::charvec::Builder b(n);
+  for(R_xlen_t i = 0; i < n; ++i) {
+    const std::string & s = corpus_lines[static_cast<size_t>(i)];
+    b.set(i, s.data(), s.size(), cetype_ext_t::CE_UTF8);
+  }
+  return b.to_sexp();
+}
+
+static SEXP build_charvec_parallel(int n_threads) {
+  require_corpus();
+  const R_xlen_t n = static_cast<R_xlen_t>(corpus_lines.size());
+
+  charport::charvec::ParallelBuilder b(n, static_cast<size_t>(n_threads));
+  std::vector<std::thread> workers;
+  std::vector<std::string> errors(static_cast<size_t>(n_threads));
+  for(int t = 0; t < n_threads; ++t) {
+    const R_xlen_t lo = n * t / n_threads;
+    const R_xlen_t hi = n * (t + 1) / n_threads;
+    workers.emplace_back([&, t, lo, hi]() {
+      try {
+        const size_t shard = static_cast<size_t>(t);
+        for(R_xlen_t i = lo; i < hi; ++i) {
+          const std::string & s = corpus_lines[static_cast<size_t>(i)];
+          b.set(shard, i, s.data(), s.size(), cetype_ext_t::CE_UTF8);
+        }
+      } catch(const std::exception & e) {
+        errors[static_cast<size_t>(t)] = e.what();
+      }
+    });
+  }
+  for(std::thread & w : workers) { w.join(); }
+  for(const std::string & e : errors) {
+    if(!e.empty()) { throw std::runtime_error(e); }
+  }
+  return b.to_sexp();
+}
+
+} // namespace
+
+extern "C" SEXP C_prepare_data_for_benchmark(SEXP path_) {
   try {
     const char * path = CHAR(STRING_ELT(path_, 0));
-    const int na_every = Rf_asInteger(na_every_);
 
     std::FILE * f = std::fopen(path, "rb");
-    if(f == nullptr) { Rf_error("cannot open %s", path); }
+    if(f == nullptr) {
+      throw std::runtime_error(std::string("cannot open ") + path);
+    }
     std::fseek(f, 0, SEEK_END);
     const long fsize = std::ftell(f);
     std::fseek(f, 0, SEEK_SET);
+    if(fsize < 0) {
+      std::fclose(f);
+      throw std::runtime_error(std::string("cannot size ") + path);
+    }
     std::unique_ptr<char[]> buf(new char[static_cast<size_t>(fsize)]);
     const size_t got = std::fread(buf.get(), 1, static_cast<size_t>(fsize), f);
     std::fclose(f);
-    if(got != static_cast<size_t>(fsize)) { Rf_error("short read on %s", path); }
+    if(got != static_cast<size_t>(fsize)) {
+      throw std::runtime_error(std::string("short read on ") + path);
+    }
 
-    R_xlen_t n = 0;
+    size_t n = 0;
     for(size_t i = 0; i < got; ++i) {
       if(buf[i] == '\n') { ++n; }
     }
     if(got > 0 && buf[got - 1] != '\n') { ++n; }
 
-    charport::charvec::Builder b(n);
+    corpus_ready = false;
+    corpus_lines.clear();
+    corpus_lines.reserve(n);
+
     size_t start = 0;
-    for(R_xlen_t line = 0; line < n; ++line) {
+    for(size_t line = 0; line < n; ++line) {
       size_t end = start;
       while(end < got && buf[end] != '\n') { ++end; }
-      if(na_every > 0 && (line + 1) % na_every == 0) {
-        b.set_na(line);
-      } else {
-        const size_t len = end - start;
-        const charport_enc enc =
-          charport::internal::check_ascii(buf.get() + start, len)
-            ? charport_enc::CE_ASCII : charport_enc::CE_UTF8;
-        b.set(line, buf.get() + start, len, enc);
-      }
+      corpus_lines.emplace_back(buf.get() + start, end - start);
       start = end + 1;
     }
-    return b.to_sexp();
+
+    corpus_ready = true;
+    return corpus_info();
   } catch(const std::exception & e) {
-    Rf_error("read_lines_charvec: %s", e.what());
+    Rf_error("prepare_data_for_benchmark: %s", e.what());
   }
 }
 
-// The conventional consumer loop: STRING_ELT + R_CHAR + Rf_xlength per
-// element. On ALTREP input, STRING_ELT goes through the Elt method.
-extern "C" SEXP C_bench_string_elt(SEXP x) {
+extern "C" SEXP C_bench_SET_STRING_ELT(void) {
+  try {
+    require_corpus();
+    SEXP out = PROTECT(Rf_allocVector(STRSXP, static_cast<R_xlen_t>(corpus_lines.size())));
+    for(size_t i = 0; i < corpus_lines.size(); ++i) {
+      const std::string & s = corpus_lines[i];
+      if(s.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        throw std::runtime_error("string size exceeds R string size");
+      }
+      SET_STRING_ELT(out, static_cast<R_xlen_t>(i),
+                     Rf_mkCharLenCE(s.data(), static_cast<int>(s.size()), CE_UTF8));
+    }
+    UNPROTECT(1);
+    return out;
+  } catch(const std::exception & e) {
+    Rf_error("SET_STRING_ELT: %s", e.what());
+  }
+}
+
+extern "C" SEXP C_bench_charvec_Builder(void) {
+  try {
+    return build_charvec_serial();
+  } catch(const std::exception & e) {
+    Rf_error("charvec_Builder: %s", e.what());
+  }
+}
+
+extern "C" SEXP C_bench_charvec_ParallelBuilder(SEXP n_threads_) {
+  try {
+    return build_charvec_parallel(Rf_asInteger(n_threads_));
+  } catch(const std::exception & e) {
+    Rf_error("charvec_ParallelBuilder: %s", e.what());
+  }
+}
+
+extern "C" SEXP C_bench_STRING_PTR_RO_hash(SEXP x) {
   const R_xlen_t n = Rf_xlength(x);
-  uint64_t h = 14695981039346656037ULL;
+  const SEXP * ptr = STRING_PTR_RO(x);
+  uint64_t h = 0;
   R_xlen_t n_na = 0;
   for(R_xlen_t i = 0; i < n; ++i) {
-    SEXP cs = STRING_ELT(x, i);
+    SEXP cs = ptr[i];
     if(cs == NA_STRING) { ++n_na; continue; }
-    h = fnv1a(R_CHAR(cs), static_cast<uint32_t>(Rf_xlength(cs)), h);
+    h ^= fnv1a_string(R_CHAR(cs), static_cast<uint32_t>(Rf_xlength(cs)));
   }
   return hash_to_sexp(h, n_na);
 }
 
-// The charport loop: one resolve, then get(state, i) per element.
-extern "C" SEXP C_bench_reader(SEXP x) {
+extern "C" SEXP C_bench_charport_Reader_hash(SEXP x) {
   charport::Reader r(x);
-  uint64_t h = 14695981039346656037ULL;
+  uint64_t h = 0;
   R_xlen_t n_na = 0;
-  for(charport::StrView v : r) {
-    if(v.is_na()) { ++n_na; continue; }
-    h = fnv1a(v.ptr, v.len, h);
+  charport::ByteViews byteviews(reader_block_size());
+  for(R_xlen_t start = 0; start < r.size(); start += static_cast<R_xlen_t>(byteviews.size())) {
+    const R_xlen_t m = std::min<R_xlen_t>(
+      static_cast<R_xlen_t>(byteviews.size()), r.size() - start);
+    r.byteviews(start, m, byteviews);
+    for(R_xlen_t j = 0; j < m; ++j) {
+      const charport::ByteView v = byteviews[j];
+      if(v.is_na()) { ++n_na; continue; }
+      h ^= fnv1a_string(v.ptr, static_cast<uint32_t>(v.len));
+    }
   }
   return hash_to_sexp(h, n_na);
 }
 
-// Reader split across threads: workers share a reentrant Reader by reference
-// and hash their own contiguous ranges; hashes combine by XOR so the result is
-// order-independent (not comparable to the serial hash).
-extern "C" SEXP C_bench_reader_threaded(SEXP x, SEXP n_threads_) {
+extern "C" SEXP C_bench_charport_Reader_hash_scalar(SEXP x) {
+  charport::Reader r(x);
+  uint64_t h = 0;
+  R_xlen_t n_na = 0;
+  for(R_xlen_t i = 0; i < r.size(); ++i) {
+    charport::ByteView v = r.byteview(i);
+    if(v.is_na()) { ++n_na; continue; }
+    h ^= fnv1a_string(v.ptr, static_cast<uint32_t>(v.len));
+  }
+  return hash_to_sexp(h, n_na);
+}
+
+extern "C" SEXP C_bench_charport_Reader_hash_block1(SEXP x) {
+  charport::Reader r(x);
+  uint64_t h = 0;
+  R_xlen_t n_na = 0;
+  const char * ptr = nullptr;
+  int len = NA_INTEGER;
+  for(R_xlen_t i = 0; i < r.size(); ++i) {
+    r.byteviews(i, 1, &ptr, &len);
+    const charport::ByteView v = make_byteview(ptr, len);
+    if(v.is_na()) { ++n_na; continue; }
+    h ^= fnv1a_string(v.ptr, static_cast<uint32_t>(v.len));
+  }
+  return hash_to_sexp(h, n_na);
+}
+
+extern "C" SEXP C_bench_charport_Reader_hash_threads(SEXP x, SEXP n_threads_) {
   charport::Reader r(x);
   if(!r.reentrant()) Rf_error("reader is not reentrant");
   const int k = Rf_asInteger(n_threads_);
@@ -117,12 +267,18 @@ extern "C" SEXP C_bench_reader_threaded(SEXP x, SEXP n_threads_) {
   for(int t = 0; t < k; ++t) {
     const R_xlen_t lo = n * t / k, hi = n * (t + 1) / k;
     workers.emplace_back([&, t, lo, hi]() {
-      uint64_t h = 14695981039346656037ULL;
+      uint64_t h = 0;
       R_xlen_t n_na = 0;
-      for(R_xlen_t i = lo; i < hi; ++i) {
-        charport::StrView v = r[i];
-        if(v.is_na()) { ++n_na; continue; }
-        h = fnv1a(v.ptr, v.len, h);
+      charport::ByteViews byteviews(reader_block_size());
+      for(R_xlen_t start = lo; start < hi; start += static_cast<R_xlen_t>(byteviews.size())) {
+        const R_xlen_t m = std::min<R_xlen_t>(
+          static_cast<R_xlen_t>(byteviews.size()), hi - start);
+        r.byteviews(start, m, byteviews);
+        for(R_xlen_t j = 0; j < m; ++j) {
+          const charport::ByteView v = byteviews[j];
+          if(v.is_na()) { ++n_na; continue; }
+          h ^= fnv1a_string(v.ptr, static_cast<uint32_t>(v.len));
+        }
       }
       hashes[static_cast<size_t>(t)] = h;
       nas[static_cast<size_t>(t)] = n_na;
@@ -138,86 +294,50 @@ extern "C" SEXP C_bench_reader_threaded(SEXP x, SEXP n_threads_) {
   return hash_to_sexp(h, n_na);
 }
 
-// Length-sum kernels do very little per element, exposing the cost of the
-// access path rather than work done on the bytes.
-extern "C" SEXP C_bench_sumlen_elt(SEXP x) {
+extern "C" SEXP C_probe_STRING_PTR_RO_length_sum(SEXP x) {
   const R_xlen_t n = Rf_xlength(x);
+  const SEXP * ptr = STRING_PTR_RO(x);
   double total = 0;
   for(R_xlen_t i = 0; i < n; ++i) {
-    SEXP cs = STRING_ELT(x, i);
+    SEXP cs = ptr[i];
     if(cs != NA_STRING) total += static_cast<double>(Rf_xlength(cs));
   }
   return Rf_ScalarReal(total);
 }
 
-extern "C" SEXP C_bench_sumlen_reader(SEXP x) {
+extern "C" SEXP C_probe_charport_Reader_length_sum(SEXP x) {
   charport::Reader r(x);
   double total = 0;
-  for(charport::StrView v : r) {
-    if(!v.is_na()) total += v.len;
+  for(R_xlen_t i = 0; i < r.size(); ++i) {
+    const int len = r.length(i);
+    if(len >= 0) total += static_cast<double>(len);
   }
   return Rf_ScalarReal(total);
 }
 
-// Construction baseline: mkCharLenCE + SET_STRING_ELT into a fresh STRSXP.
-// Input comes through a reader so all construction benches read identically.
-// This timing is comparable only while the strings are not already interned
-// in R's string cache. benchmark.R runs each repetition in a fresh R session
-// (gc alone is not enough: the cache keeps its grown table afterwards).
-extern "C" SEXP C_bench_build_strsxp(SEXP x) {
+extern "C" SEXP C_probe_charport_Reader_length_sum_block1(SEXP x) {
   charport::Reader r(x);
-  SEXP out = PROTECT(Rf_allocVector(STRSXP, r.size()));
+  double total = 0;
+  int len;
   for(R_xlen_t i = 0; i < r.size(); ++i) {
-    charport::StrView v = r[i];
-    if(v.is_na()) { SET_STRING_ELT(out, i, NA_STRING); continue; }
-    const cetype_t ce = v.enc == charport_enc::CE_BYTES ? CE_BYTES : CE_UTF8;
-    SET_STRING_ELT(out, i, Rf_mkCharLenCE(v.ptr, static_cast<int>(v.len), ce));
+    r.lengths(i, 1, &len);
+    if(len >= 0) total += static_cast<double>(len);
   }
-  UNPROTECT(1);
-  return out;
+  return Rf_ScalarReal(total);
 }
 
-// Construction via the charvec builder; n_threads == 0 means the serial
-// convenience path, otherwise one shard per thread over contiguous ranges.
-// The builder never touches the string cache (no CHARSXPs), so cache state
-// is irrelevant to these timings.
-extern "C" SEXP C_bench_build_charvec(SEXP x, SEXP n_threads_) {
+extern "C" SEXP C_probe_charport_Reader_length_sum_range(SEXP x) {
   charport::Reader r(x);
-  const int k = Rf_asInteger(n_threads_);
-  const R_xlen_t n = r.size();
-  try {
-    if(k == 0) {
-      charport::charvec::Builder b(n);
-      for(R_xlen_t i = 0; i < n; ++i) {
-        charport::StrView v = r[i];
-        if(v.is_na()) b.set_na(i); else b.set(i, v);
-      }
-      return b.to_sexp();
+  double total = 0;
+  std::vector<int> len(reader_block_size());
+  for(R_xlen_t start = 0; start < r.size(); start += static_cast<R_xlen_t>(len.size())) {
+    const R_xlen_t m = std::min<R_xlen_t>(
+      static_cast<R_xlen_t>(len.size()), r.size() - start);
+    r.lengths(start, m, len.data());
+    for(R_xlen_t j = 0; j < m; ++j) {
+      const int x = len[static_cast<size_t>(j)];
+      if(x >= 0) total += static_cast<double>(x);
     }
-    if(!r.reentrant()) Rf_error("reader is not reentrant");
-    charport::charvec::ParallelBuilder b(n, static_cast<size_t>(k));
-    std::vector<std::thread> workers;
-    std::vector<std::string> errors(static_cast<size_t>(k));
-    for(int t = 0; t < k; ++t) {
-      const R_xlen_t lo = n * t / k, hi = n * (t + 1) / k;
-      workers.emplace_back([&, t, lo, hi]() {
-        try {
-          const size_t shard = static_cast<size_t>(t);
-          for(R_xlen_t i = lo; i < hi; ++i) {
-            charport::StrView v = r[i];
-            if(v.is_na()) b.set_na(shard, i); else b.set(shard, i, v);
-          }
-        } catch(const std::exception & e) {
-          errors[static_cast<size_t>(t)] = e.what();
-        }
-      });
-    }
-    for(std::thread & w : workers) w.join();
-    for(const std::string & e : errors) {
-      if(!e.empty()) Rf_error("worker: %s", e.c_str());
-    }
-    return b.to_sexp();
-  } catch(const std::exception & e) {
-    Rf_error("build_charvec: %s", e.what());
   }
+  return Rf_ScalarReal(total);
 }

@@ -86,9 +86,10 @@ vignette:
 	Rscript -e "rmarkdown::render(input='vignettes/charport.Rmd', output_format='html_vignette')"
 	IS_GITHUB=Yes Rscript -e "rmarkdown::render(input='vignettes/charport.Rmd', output_file='../README.md', output_format=rmarkdown::github_document(html_preview=FALSE))"; unset IS_GITHUB
 	Rscript -e "rmarkdown::render(input='vignettes/developer-guide.Rmd', output_format='html_vignette')"
+	Rscript -e "rmarkdown::render(input='vignettes/design-rationale.Rmd', output_format='html_vignette')"
 
 reflow-docs:
-	Rscript tools/reflow-rmd.R --width 80 vignettes/charport.Rmd vignettes/developer-guide.Rmd
+	Rscript tools/reflow-rmd.R --width 80 vignettes/charport.Rmd vignettes/developer-guide.Rmd vignettes/design-rationale.Rmd
 
 pkgdown: clean-native clean-pkgdown doc
 	$(MAKE) pkgdown-index

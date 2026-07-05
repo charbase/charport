@@ -10,9 +10,8 @@ charport_class_of(x)
 \item{x}{a character vector.}
 }
 \value{
-`"package::class"` for a registered class match (on R < 4.6.0,
-  where class names cannot be queried, a placeholder string); otherwise
-  `NA_character_` (plain vectors and unregistered ALTREP classes).
+`"package::class"` for a registered class match when class metadata
+  is available; otherwise `NA_character_`.
 }
 \description{
 Identifies whether a registered ALTREP class claims `x`. This is a

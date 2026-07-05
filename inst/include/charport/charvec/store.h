@@ -49,11 +49,18 @@ inline const char * empty_data() noexcept {
 }
 
 inline charport_strview na_record() noexcept {
-  return make_strview(nullptr, 0, charport_enc::CE_NA);
+  return make_strview(nullptr, NA_INTEGER, cetype_ext_t::CE_NA);
 }
 
-inline charport_strview empty_record(charport_enc enc) noexcept {
+inline charport_strview empty_record(cetype_ext_t enc) noexcept {
   return make_strview(empty_data(), 0, enc);
+}
+
+inline int checked_string_size(size_t len, const char * what = "string length") {
+  if(!check_r_string_len(len)) {
+    throw std::runtime_error(std::string(what) + " exceeds R string size");
+  }
+  return static_cast<int>(len);
 }
 
 inline size_t initial_slice_heuristic(size_t vector_len) noexcept {
@@ -64,49 +71,87 @@ inline size_t initial_slice_heuristic(size_t vector_len) noexcept {
   return std::min(std::max(min_multi_string_slice_bytes(), scaled), max_initial_slice_bytes());
 }
 
-struct strview_array {
-  std::unique_ptr<charport_strview[]> data_;
+struct charvec_records {
+  std::unique_ptr<const char *[]> ptrs_;
+  std::unique_ptr<int[]> lens_;
+  std::unique_ptr<cetype_ext_t[]> encs_;
   size_t n_;
 
-  strview_array() noexcept : data_(), n_(0) {}
+  charvec_records() noexcept : ptrs_(), lens_(), encs_(), n_(0) {}
 
-  explicit strview_array(size_t n) : data_(n ? new charport_strview[n] : nullptr), n_(n) {
+  explicit charvec_records(size_t n)
+    : ptrs_(n ? new const char *[n] : nullptr),
+      lens_(n ? new int[n] : nullptr),
+      encs_(n ? new cetype_ext_t[n] : nullptr),
+      n_(n) {
     for(size_t i = 0; i < n; ++i) {
-      data_[i] = na_record();
+      set_na(i);
     }
   }
 
-  strview_array(const strview_array & other)
-    : data_(other.n_ ? new charport_strview[other.n_] : nullptr), n_(other.n_) {
-    std::copy(other.data_.get(), other.data_.get() + n_, data_.get());
+  charvec_records(const charvec_records & other)
+    : ptrs_(other.n_ ? new const char *[other.n_] : nullptr),
+      lens_(other.n_ ? new int[other.n_] : nullptr),
+      encs_(other.n_ ? new cetype_ext_t[other.n_] : nullptr),
+      n_(other.n_) {
+    if(n_ > 0) {
+      std::copy(other.ptrs_.get(), other.ptrs_.get() + n_, ptrs_.get());
+      std::copy(other.lens_.get(), other.lens_.get() + n_, lens_.get());
+      std::copy(other.encs_.get(), other.encs_.get() + n_, encs_.get());
+    }
   }
 
-  strview_array & operator=(const strview_array & other) {
-    strview_array tmp(other);
+  charvec_records & operator=(const charvec_records & other) {
+    charvec_records tmp(other);
     *this = std::move(tmp);
     return *this;
   }
 
-  strview_array(strview_array && other) noexcept : data_(std::move(other.data_)), n_(other.n_) {
+  charvec_records(charvec_records && other) noexcept
+    : ptrs_(std::move(other.ptrs_)),
+      lens_(std::move(other.lens_)),
+      encs_(std::move(other.encs_)),
+      n_(other.n_) {
     other.n_ = 0;
   }
 
-  strview_array & operator=(strview_array && other) noexcept {
-    data_ = std::move(other.data_);
+  charvec_records & operator=(charvec_records && other) noexcept {
+    ptrs_ = std::move(other.ptrs_);
+    lens_ = std::move(other.lens_);
+    encs_ = std::move(other.encs_);
     n_ = other.n_;
     other.n_ = 0;
     return *this;
   }
 
   size_t size() const noexcept { return n_; }
-  charport_strview * data() noexcept { return data_.get(); }
-  const charport_strview * data() const noexcept { return data_.get(); }
-  charport_strview & operator[](size_t i) noexcept { return data_[i]; }
-  const charport_strview & operator[](size_t i) const noexcept { return data_[i]; }
-  charport_strview * begin() noexcept { return data_.get(); }
-  charport_strview * end() noexcept { return data_.get() + n_; }
-  const charport_strview * begin() const noexcept { return data_.get(); }
-  const charport_strview * end() const noexcept { return data_.get() + n_; }
+  const char ** ptrs() noexcept { return ptrs_.get(); }
+  const char * const * ptrs() const noexcept { return ptrs_.get(); }
+  int * lengths() noexcept { return lens_.get(); }
+  const int * lengths() const noexcept { return lens_.get(); }
+  cetype_ext_t * encodings() noexcept { return encs_.get(); }
+  const cetype_ext_t * encodings() const noexcept { return encs_.get(); }
+
+  charport_byteview byteview(size_t i) const noexcept {
+    return make_byteview(ptrs_[i], lens_[i]);
+  }
+
+  charport_strview view(size_t i) const noexcept {
+    return make_strview(ptrs_[i], lens_[i], encs_[i]);
+  }
+
+  int length(size_t i) const noexcept { return lens_[i]; }
+  cetype_ext_t encoding(size_t i) const noexcept { return encs_[i]; }
+
+  void set(size_t i, const char * ptr, int len, cetype_ext_t enc) noexcept {
+    ptrs_[i] = ptr;
+    lens_[i] = len;
+    encs_[i] = enc;
+  }
+
+  void set_na(size_t i) noexcept {
+    set(i, nullptr, NA_INTEGER, cetype_ext_t::CE_NA);
+  }
 };
 
 struct charvec_shard {
@@ -189,54 +234,50 @@ inline char * shard_data_slice(charvec_shard & shard, size_t idx) noexcept {
   return block == nullptr ? nullptr : slice_payload(block);
 }
 
-inline char * fill_record(charvec_shard & shard, charport_strview * records, size_t n,
-                          size_t idx, size_t len, charport_enc enc) {
-  if(records == nullptr) {
-    throw std::runtime_error("charvec builder: no records");
-  }
+inline char * fill_record(charvec_shard & shard, charvec_records & records,
+                          size_t idx, size_t len, cetype_ext_t enc) {
+  const size_t n = records.size();
   if(idx >= n) {
     throw std::runtime_error("charvec builder: assignment out of bounds");
   }
-  if(!check_r_string_len(len)) {
-    throw std::runtime_error("stored string length exceeds R string size");
-  }
-  const uint32_t stored_len = static_cast<uint32_t>(len);
-  if(enc == charport_enc::CE_NA) {
-    records[idx] = na_record();
+  const int stored_len = checked_string_size(len, "stored string length");
+  if(enc == cetype_ext_t::CE_NA) {
+    records.set_na(idx);
     return nullptr;
   }
   if(stored_len == 0) {
-    records[idx] = empty_record(enc);
+    records.set(idx, empty_data(), 0, enc);
     return const_cast<char*>(empty_data());
   }
-  char * dest = shard_allocate_bytes(shard, stored_len, n);
-  records[idx] = make_strview(dest, stored_len, enc);
+  char * dest = shard_allocate_bytes(shard, static_cast<uint32_t>(stored_len), n);
+  records.set(idx, dest, stored_len, enc);
   return dest;
 }
 
-inline void copy_record(charvec_shard & shard, charport_strview * records, size_t n,
-                        size_t idx, const char * ptr, size_t len, charport_enc enc) {
-  if(enc != charport_enc::CE_NA && ptr == nullptr && len > 0) {
+inline void copy_record(charvec_shard & shard, charvec_records & records,
+                        size_t idx, const char * ptr, size_t len, cetype_ext_t enc) {
+  if(enc != cetype_ext_t::CE_NA && ptr == nullptr && len > 0) {
     throw std::runtime_error("cannot assign non-NA null bytes");
   }
-  char * dest = fill_record(shard, records, n, idx, len, enc);
+  char * dest = fill_record(shard, records, idx, len, enc);
   if(dest != nullptr && len > 0) {
     std::memcpy(dest, ptr, len);
   }
 }
 
-inline void copy_record(charvec_shard & shard, charport_strview * records, size_t n,
+inline void copy_record(charvec_shard & shard, charvec_records & records,
                         size_t idx, const charport_strview & value) {
-  copy_record(shard, records, n, idx, value.ptr, static_cast<size_t>(value.len), value.enc);
+  const size_t len = value.is_na() ? 0 : static_cast<size_t>(value.len);
+  copy_record(shard, records, idx, value.ptr, len, value.enc);
 }
 
 struct charvec_data {
   char * slice_head;
-  strview_array records;
+  charvec_records records;
 
   charvec_data() noexcept : slice_head(nullptr), records() {}
   explicit charvec_data(size_t len) : slice_head(nullptr), records(len) {}
-  explicit charvec_data(strview_array && recs) noexcept
+  explicit charvec_data(charvec_records && recs) noexcept
     : slice_head(nullptr), records(std::move(recs)) {}
 
   charvec_data(const charvec_data & other) : slice_head(nullptr), records() {
@@ -268,7 +309,10 @@ struct charvec_data {
   ~charvec_data() { free_slices(); }
 
   size_t size() const noexcept { return records.size(); }
-  const charport_strview & view(size_t idx) const { return records[idx]; }
+  charport_strview view(size_t idx) const noexcept { return records.view(idx); }
+  charport_byteview byteview(size_t idx) const noexcept { return records.byteview(idx); }
+  int length(size_t idx) const noexcept { return records.length(idx); }
+  cetype_ext_t encoding(size_t idx) const noexcept { return records.encoding(idx); }
 
   void free_slices() noexcept {
     free_slice_chain(slice_head);
@@ -306,42 +350,42 @@ struct charvec_data {
 
   void clear() {
     free_slices();
-    records = strview_array();
+    records = charvec_records();
   }
 
   void compact() {
     rebuild_from(records);
   }
 
-  char * reserve(size_t idx, size_t len, charport_enc enc) {
+  char * reserve(size_t idx, size_t len, cetype_ext_t enc) {
     if(!check_r_string_len(len)) {
       throw std::runtime_error("stored string length exceeds R string size");
     }
-    const uint32_t stored_len = static_cast<uint32_t>(len);
+    const int stored_len = checked_string_size(len, "stored string length");
     if(idx >= records.size()) {
       throw std::runtime_error("charvec store assignment out of bounds");
     }
 
-    const charport_strview current = records[idx];
-    if(enc == charport_enc::CE_NA) {
-      records[idx] = na_record();
+    const charport_strview current = records.view(idx);
+    if(enc == cetype_ext_t::CE_NA) {
+      records.set_na(idx);
       return nullptr;
     }
     if(stored_len == 0) {
-      records[idx] = empty_record(enc);
+      records.set(idx, empty_data(), 0, enc);
       return const_cast<char*>(empty_data());
     }
     if(!current.is_na() && current.len >= stored_len) {
-      records[idx] = make_strview(current.ptr, stored_len, enc);
+      records.set(idx, current.ptr, stored_len, enc);
       return const_cast<char*>(current.ptr);
     }
-    char * dest = push_slice(stored_len);
-    records[idx] = make_strview(dest, stored_len, enc);
+    char * dest = push_slice(static_cast<uint32_t>(stored_len));
+    records.set(idx, dest, stored_len, enc);
     return dest;
   }
 
-  void assign(size_t idx, const char * ptr, size_t len, charport_enc enc) {
-    if(enc != charport_enc::CE_NA && ptr == nullptr && len > 0) {
+  void assign(size_t idx, const char * ptr, size_t len, cetype_ext_t enc) {
+    if(enc != cetype_ext_t::CE_NA && ptr == nullptr && len > 0) {
       throw std::runtime_error("cannot assign non-NA null bytes");
     }
     char * dest = reserve(idx, len, enc);
@@ -351,12 +395,13 @@ struct charvec_data {
   }
 
   void assign(size_t idx, const charport_strview & value) {
-    assign(idx, value.ptr, static_cast<size_t>(value.len), value.enc);
+    const size_t len = value.is_na() ? 0 : static_cast<size_t>(value.len);
+    assign(idx, value.ptr, len, value.enc);
   }
 
-  void rebuild_from(const strview_array & source) {
+  void rebuild_from(const charvec_records & source) {
     std::vector<std::unique_ptr<char[]>> blocks;
-    strview_array out(source.size());
+    charvec_records out(source.size());
     const size_t max_block = static_cast<size_t>(std::numeric_limits<uint32_t>::max());
     size_t i = 0;
 
@@ -364,7 +409,7 @@ struct charvec_data {
       size_t block_bytes = 0;
       size_t j = i;
       while(j < source.size()) {
-        const charport_strview & rec = source[j];
+        const charport_strview rec = source.view(j);
         const size_t len = rec.is_na() ? 0 : static_cast<size_t>(rec.len);
         if(len > max_block - block_bytes) {
           break;
@@ -377,24 +422,24 @@ struct charvec_data {
         std::unique_ptr<char[]> block(new char[slice_header_bytes() + block_bytes]);
         char * write_ptr = slice_payload(block.get());
         for(size_t k = i; k < j; ++k) {
-          const charport_strview & rec = source[k];
+          const charport_strview rec = source.view(k);
           if(rec.is_na()) {
             continue;
           }
           if(rec.len == 0) {
-            out[k] = empty_record(rec.enc);
+            out.set(k, empty_data(), 0, rec.enc);
             continue;
           }
           std::memcpy(write_ptr, rec.ptr, static_cast<size_t>(rec.len));
-          out[k] = make_strview(write_ptr, rec.len, rec.enc);
+          out.set(k, write_ptr, rec.len, rec.enc);
           write_ptr += rec.len;
         }
         blocks.push_back(std::move(block));
       } else {
         for(size_t k = i; k < j; ++k) {
-          const charport_strview & rec = source[k];
+          const charport_strview rec = source.view(k);
           if(!rec.is_na() && rec.len == 0) {
-            out[k] = empty_record(rec.enc);
+            out.set(k, empty_data(), 0, rec.enc);
           }
         }
       }

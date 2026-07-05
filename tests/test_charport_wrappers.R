@@ -21,6 +21,12 @@ dll <- compile_test_dso("charport_consumer.cpp", skip_label = "charport wrapper 
 stats     <- charvec_stats
 consumer_symbol <- function(name) getNativeSymbolInfo(name, PACKAGE = dll[["name"]])
 roundtrip <- function(x) .Call(consumer_symbol("C_consumer_reader_roundtrip"), x)
+range_roundtrip <- function(x) {
+  .Call(consumer_symbol("C_consumer_reader_range_roundtrip"), x)
+}
+index_roundtrip <- function(x) {
+  .Call(consumer_symbol("C_consumer_reader_index_roundtrip"), x)
+}
 rebuild <- function(x, n_shards = 1L) {
   .Call(consumer_symbol("C_consumer_builder_from_reader"), x, as.integer(n_shards))
 }
@@ -31,6 +37,13 @@ direct_build <- function() .Call(consumer_symbol("C_consumer_builder_direct"))
 builder_errors <- function() .Call(consumer_symbol("C_consumer_builder_errors"))
 read_scalar <- function(x) .Call(consumer_symbol("C_consumer_read_scalar"), x)
 build_scalar <- function(x) .Call(consumer_symbol("C_consumer_build_scalar"), x)
+reader_lengths <- function(x) .Call(consumer_symbol("C_consumer_reader_lengths"), x)
+reader_range_lengths <- function(x) .Call(consumer_symbol("C_consumer_reader_range_lengths"), x)
+reader_index_lengths <- function(x) .Call(consumer_symbol("C_consumer_reader_index_lengths"), x)
+reader_byte_lengths <- function(x) {
+  .Call(consumer_symbol("C_consumer_reader_byte_lengths"), x)
+}
+reader_encodings <- function(x) .Call(consumer_symbol("C_consumer_reader_encodings"), x)
 
 marks_identical <- function(x, y) {
   x <- as.character(x)
@@ -63,6 +76,14 @@ x <- as_charvec(c("m", NA)); charport_materialize(x)
 inputs <- c(inputs, list(x))
 for (input in inputs) {
   stopifnot(marks_identical(roundtrip(input), as.character(input)))
+  stopifnot(marks_identical(range_roundtrip(input), as.character(input)))
+  stopifnot(marks_identical(index_roundtrip(input), rev(as.character(input))))
+  expected_lengths <- nchar(as.character(input), type = "bytes", allowNA = TRUE)
+  stopifnot(identical(reader_lengths(input), expected_lengths))
+  stopifnot(identical(reader_range_lengths(input), expected_lengths))
+  stopifnot(identical(reader_index_lengths(input), rev(expected_lengths)))
+  stopifnot(identical(reader_byte_lengths(input), expected_lengths))
+  stopifnot(length(reader_encodings(input)) == length(input))
 }
 expect_error_matching(roundtrip(1:3), "character")
 
@@ -74,14 +95,14 @@ out <- build_scalar(c(NA_character_, "tail"))
 stopifnot(is_charvec(out), length(out) == 1L, is.na(out))
 expect_error_matching(read_scalar(character(0)), "length at least 1")
 
-catn("read_scalar does not borrow state-owning registered ALTREP classes")
+catn("scalar helpers release state-owning registered ALTREP classes")
 release_test_count <- function() .Call(consumer_symbol("C_consumer_release_test_count"))
 release_test_vector <- function() .Call(consumer_symbol("C_consumer_release_test_vector"))
 invisible(.Call(consumer_symbol("C_consumer_register_release_test")))
 on.exit(.Call(consumer_symbol("C_consumer_unregister_release_test")), add = TRUE)
 before <- release_test_count()
-expect_error_matching(read_scalar(release_test_vector()), "data pointer")
-stopifnot(identical(release_test_count(), before))
+stopifnot(identical(read_scalar(release_test_vector()), "alpha"))
+stopifnot(identical(release_test_count(), before + 1L))
 
 catn("builder rebuilds a charvec input across shard counts")
 input <- c(w_utf8[1:40], NA, "", w_latin1[41:80], b, NA)

@@ -1,39 +1,16 @@
-# Read/build benchmarks for charport. Run from the package root with the
-# package installed (`make bench`). Optional argument: number of repetitions
-# per timing (default 5). Writes the plot to man/figures/bench.png.
-#
-# Corpus: enwik8 (first 1e8 bytes of English Wikipedia XML; the standard
-# Hutter Prize dataset), split into lines: ~1.1M strings, ~94 MB. Too big to
-# ship in the package, so it is downloaded once and cached in local/ (git-
-# and Rbuildignored).
-#
-# String-cache handling: Rf_mkCharLenCE interns every string in R's global
-# string cache, and an already-interned string costs a hash lookup instead
-# of an allocation. So if the corpus were read with readLines() first, the
-# construction baseline would get cache hits and look much faster than real
-# fresh-string ingest. gc() between repetitions is not enough to undo that:
-# collected CHARSXPs leave the cache, but the cache's grown table stays, so
-# the session no longer looks like a fresh user session. The benchmark avoids
-# this in three ways:
-# (1) the corpus is ingested in C, file -> charvec, so no CHARSXP is created
-# in the parent session; (2) every repetition of the mkCharLenCE baseline
-# runs in its own fresh R session (a worker script that ingests in C and
-# times exactly one build); (3) every repetition of the STRING_ELT
-# materialization read baseline also runs in a fresh R session. charvec does
-# not use the string cache, so the builder and charport::Reader timings are
-# run normally, in-session.
+# Run from the package root with the package installed (`make bench`).
+# Optional argument: number of repetitions. The enwik8 corpus is cached in
+# local/ and loaded in C++ into a static std::vector<std::string>. Fresh R
+# workers are used for paths that create CHARSXPs so R's string cache starts
+# cold for each repetition.
 
 args <- commandArgs(trailingOnly = TRUE)
 reps <- if (length(args) >= 1) as.integer(args[1]) else 5L
 n_threads <- 4L
 
 suppressMessages(library(charport))
-charport_native_symbol <- function(name) {
-  get(name, envir = asNamespace("charport"), inherits = FALSE)
-}
-invisible(.Call(charport_native_symbol("C_register_charvec")))
 
-# --- corpus file ------------------------------------------------------------
+# Corpus ---------------------------------------------------------------
 
 dir.create("local", showWarnings = FALSE)
 enwik8_txt <- file.path("local", "enwik8")
@@ -42,12 +19,9 @@ if (!file.exists(enwik8_txt)) {
   download.file("https://mattmahoney.net/dc/enwik8.zip", zip_path, mode = "wb")
   unzip(zip_path, exdir = "local")
   file.remove(zip_path)
-  if (!file.exists(enwik8_txt)) {
-    stop("enwik8 download completed, but local/enwik8 was not created")
-  }
 }
 
-# --- compile the kernels against the installed headers ----------------------
+# Compile kernels ------------------------------------------------------
 
 include_dir <- system.file("include", package = "charport")
 build_dir <- file.path(tempdir(), "charport-bench")
@@ -60,82 +34,83 @@ writeLines(c(
 ), file.path(build_dir, "Makevars"))
 
 owd <- setwd(build_dir)
-status <- system2(file.path(R.home("bin"), "R"), c("CMD", "SHLIB", "benchmark.cpp"),
-                  stdout = TRUE, stderr = TRUE)
+system2(file.path(R.home("bin"), "R"), c("CMD", "SHLIB", "benchmark.cpp"))
 setwd(owd)
 so <- file.path(build_dir, paste0("benchmark", .Platform$dynlib.ext))
-if (!file.exists(so)) stop(paste(status, collapse = "\n"))
 dyn.load(so)
 
-# --- corpus as a file, ingested in C (no CHARSXPs in this session) ----------
+# Load corpus ----------------------------------------------------------
 
 corpus_name <- "enwik8 lines"
 corpus_file <- enwik8_txt
-cvec <- .Call("C_bench_read_lines_charvec", corpus_file, 1000L)
+info <- .Call("C_prepare_data_for_benchmark", corpus_file)
 
-ref <- .Call("C_bench_reader", cvec)   # reference hash + NA count
-total_bytes <- .Call("C_bench_sumlen_reader", cvec)
-cat(sprintf("corpus: %s\n%s strings, %.1f MB, %d NA, %d reps\n\n",
-            corpus_name, format(length(cvec), big.mark = ","),
-            total_bytes / 2^20, as.integer(ref[2]), reps))
+ref <- info$hash
+total_bytes <- info$total_bytes
+cvec <- .Call("C_bench_charvec_Builder")
+cat(sprintf("corpus: %s\n%s strings, %.1f MB, %d reps\n\n",
+            corpus_name, format(info$n, big.mark = ","),
+            total_bytes / 2^20, reps))
 
-# --- timing ----------------------------------------------------------------
+# Timing helpers -------------------------------------------------------
 
 ms <- function(thunk) {
   t <- vapply(seq_len(reps), function(i) {
     gc(FALSE)
-    unname(system.time(thunk())["elapsed"])
+    start <- Sys.time()
+    thunk()
+    as.numeric(difftime(Sys.time(), start, units = "secs"))
   }, numeric(1))
   median(t) * 1000
 }
 
-# One fresh R session per repetition: ingest in C, time exactly one build.
-# A fresh session keeps the mkCharLenCE benchmark on new strings. Even after
-# gc(), the string cache retains its grown table, so later repetitions in one
-# session would measure a different cache state.
-worker_script <- file.path(build_dir, "worker_build_strsxp.R")
+# SET_STRING_ELT (baseline) -------------------------------------------
+
+worker_SET_STRING_ELT_baseline <- file.path(build_dir, "worker_SET_STRING_ELT_baseline.R")
 writeLines(c(
   'args <- commandArgs(trailingOnly = TRUE)',
   'suppressMessages(library(charport))',
-  'charport_native_symbol <- function(name) get(name, envir = asNamespace("charport"), inherits = FALSE)',
-  'invisible(.Call(charport_native_symbol("C_register_charvec")))',
   'dyn.load(args[1])',
-  'cvec <- .Call("C_bench_read_lines_charvec", args[2], 1000L)',
-  't <- system.time(.Call("C_bench_build_strsxp", cvec))[["elapsed"]]',
+  'invisible(.Call("C_prepare_data_for_benchmark", args[2]))',
+  'start <- Sys.time()',
+  'invisible(.Call("C_bench_SET_STRING_ELT"))',
+  't <- as.numeric(difftime(Sys.time(), start, units = "secs"))',
   'cat(t, "\n")'
-), worker_script)
-ms_fresh <- function() {
+), worker_SET_STRING_ELT_baseline)
+ms_SET_STRING_ELT_baseline <- function() {
   t <- vapply(seq_len(reps), function(i) {
     out <- system2(file.path(R.home("bin"), "Rscript"),
-                   c(worker_script, so, corpus_file), stdout = TRUE)
+                   c(worker_SET_STRING_ELT_baseline, so, corpus_file),
+                   stdout = TRUE)
     as.numeric(tail(out, 1))
   }, numeric(1))
   median(t) * 1000
 }
 
-# One fresh R session per repetition for STRING_ELT over unmaterialized charvec.
-# This read baseline creates CHARSXPs through the ALTREP Elt method, so repeated
-# timings in one session would mostly measure string-cache hits after the first
-# run. The charport::Reader read rows below run in this benchmark process
-# because they read charvec bytes without creating CHARSXPs.
-worker_string_elt_charvec <- file.path(build_dir, "worker_string_elt_charvec.R")
+# STRING_PTR_RO materialize (baseline) -------------------------------
+
+worker_STRING_PTR_RO_materialize <- file.path(build_dir, "worker_STRING_PTR_RO_materialize.R")
 writeLines(c(
   'args <- commandArgs(trailingOnly = TRUE)',
   'suppressMessages(library(charport))',
   'dyn.load(args[1])',
-  'cvec <- .Call("C_bench_read_lines_charvec", args[2], 1000L)',
-  't <- system.time(.Call("C_bench_string_elt", cvec))[["elapsed"]]',
+  'invisible(.Call("C_prepare_data_for_benchmark", args[2]))',
+  'cvec <- .Call("C_bench_charvec_Builder")',
+  'start <- Sys.time()',
+  'invisible(.Call("C_bench_STRING_PTR_RO_hash", cvec))',
+  't <- as.numeric(difftime(Sys.time(), start, units = "secs"))',
   'cat(t, "\n")'
-), worker_string_elt_charvec)
-ms_fresh_string_elt_charvec <- function() {
+), worker_STRING_PTR_RO_materialize)
+ms_STRING_PTR_RO_materialize <- function() {
   t <- vapply(seq_len(reps), function(i) {
     out <- system2(file.path(R.home("bin"), "Rscript"),
-                   c(worker_string_elt_charvec, so, corpus_file), stdout = TRUE)
+                   c(worker_STRING_PTR_RO_materialize, so, corpus_file),
+                   stdout = TRUE)
     as.numeric(tail(out, 1))
   }, numeric(1))
   median(t) * 1000
 }
-rows <- list()
+
 row <- function(name, t_ms, baseline = FALSE, label = name, color = NULL) {
   cat(sprintf("  %-46s %9.1f ms   %6.2f GB/s\n", name, t_ms,
               total_bytes / (t_ms / 1000) / 2^30))
@@ -144,61 +119,120 @@ row <- function(name, t_ms, baseline = FALSE, label = name, color = NULL) {
        label = label, color = color)
 }
 
-# Builder timings use freshly mapped pages and therefore include page faults
-# and zeroing by the kernel. A session with warm pages available from earlier
-# allocations may produce lower builder timings. Both construction paths here
-# start from a cold allocation state.
-cat("construction (input read through charport::Reader on charvec):\n")
+# Construction ---------------------------------------------------------
+
+cat("construction (input read from static C++ corpus):\n")
 build_rows <- list(
-  row("SET_STRING_ELT (baseline)", ms_fresh(), baseline = TRUE,
+  row("SET_STRING_ELT (baseline)", ms_SET_STRING_ELT_baseline(), baseline = TRUE,
       label = "SET_STRING_ELT\n(baseline)"),
   row("charport::charvec::Builder, serial",
-      ms(function() .Call("C_bench_build_charvec", cvec, 0L)),
+      ms(function() .Call("C_bench_charvec_Builder")),
       label = "charvec::Builder\n(1 thread)"),
   row(sprintf("charport::charvec::ParallelBuilder, %d threads", n_threads),
-      ms(function() .Call("C_bench_build_charvec", cvec, n_threads)),
+      ms(function() .Call("C_bench_charvec_ParallelBuilder", n_threads)),
       label = sprintf("charvec::Builder\n(%d threads)", n_threads))
 )
 
-# Construction correctness: the rebuilt charvec hashes identically.
-out <- .Call("C_bench_build_charvec", cvec, n_threads)
-stopifnot(identical(.Call("C_bench_reader", out), ref))
+out <- .Call("C_bench_charvec_ParallelBuilder", n_threads)
+stopifnot(identical(.Call("C_bench_charport_Reader_hash", out), ref))
 rm(out)
 
-# Build the plain vector once for correctness and access-path checks.
-plain <- .Call("C_bench_build_strsxp", cvec)
+plain <- .Call("C_bench_SET_STRING_ELT")
+
+# Read path ------------------------------------------------------------
 
 cat("\nread path (FNV-1a over every element):\n")
-h1 <- .Call("C_bench_string_elt", plain)
+h1 <- .Call("C_bench_STRING_PTR_RO_hash", plain)
 read_rows <- list(
-  row("STRING_ELT direct, unmaterialized charvec (baseline)",
-      ms_fresh_string_elt_charvec(), baseline = TRUE,
-      label = "STRING_ELT\nmaterialize\n(baseline)"),
-  row("charport::Reader charvec, 1 thread",
-      ms(function() .Call("C_bench_reader", cvec)),
+  row("STRING_PTR_RO materialize, unmaterialized charvec (baseline)",
+      ms_STRING_PTR_RO_materialize(), baseline = TRUE,
+      label = "STRING_PTR_RO\nmaterialize\n(baseline)"),
+  row("charport::Reader range byteviews, charvec, 1 thread",
+      ms(function() .Call("C_bench_charport_Reader_hash", cvec)),
       label = "charport::Reader\ncharvec, 1 thread"),
-  row(sprintf("charport::Reader, charvec, %d threads", n_threads),
-      ms(function() .Call("C_bench_reader_threaded", cvec, n_threads)),
+  row(sprintf("charport::Reader range byteviews, charvec, %d threads", n_threads),
+      ms(function() .Call("C_bench_charport_Reader_hash_threads", cvec, n_threads)),
       label = sprintf("charport::Reader\ncharvec, %d threads", n_threads))
 )
 stopifnot(identical(h1, ref),
-          identical(.Call("C_bench_reader", plain), ref),
-          identical(.Call("C_bench_string_elt", cvec), ref))
+          identical(.Call("C_bench_charport_Reader_hash_scalar", cvec), ref),
+          identical(.Call("C_bench_charport_Reader_hash_block1", cvec), ref),
+          identical(.Call("C_bench_charport_Reader_hash", plain), ref),
+          identical(.Call("C_bench_charport_Reader_hash_scalar", plain), ref),
+          identical(.Call("C_bench_charport_Reader_hash_block1", plain), ref),
+          identical(.Call("C_bench_charport_Reader_hash_threads", cvec, n_threads), ref),
+          identical(.Call("C_bench_STRING_PTR_RO_hash",
+                          .Call("C_bench_charvec_Builder")), ref))
+
+# Additional measurements ---------------------------------------------
+
+cat("\nadditional measurements (not plotted):\n")
+extra_rows <- list(
+  row("STRING_PTR_RO hash, base R vector",
+      ms(function() .Call("C_bench_STRING_PTR_RO_hash", plain)), baseline = TRUE),
+  row("charport::Reader scalar byteview hash, base R vector",
+      ms(function() .Call("C_bench_charport_Reader_hash_scalar", plain))),
+  row("charport::Reader block size 1 byteview hash, base R vector",
+      ms(function() .Call("C_bench_charport_Reader_hash_block1", plain))),
+  row("charport::Reader range byteviews hash, base R vector",
+      ms(function() .Call("C_bench_charport_Reader_hash", plain))),
+  row("charport::Reader scalar byteview hash, charvec",
+      ms(function() .Call("C_bench_charport_Reader_hash_scalar", cvec))),
+  row("charport::Reader block size 1 byteview hash, charvec",
+      ms(function() .Call("C_bench_charport_Reader_hash_block1", cvec))),
+  row("charport::Reader range byteviews hash, charvec",
+      ms(function() .Call("C_bench_charport_Reader_hash", cvec)))
+)
+
+# Access overhead ------------------------------------------------------
 
 cat("\naccess path only (sum of lengths, no byte work):\n")
-s1 <- .Call("C_bench_sumlen_elt", plain)
-invisible(row("STRING_ELT loop, plain vector (baseline)",
-              ms(function() .Call("C_bench_sumlen_elt", plain))))
-invisible(row("charport::Reader, plain vector (direct path)",
-              ms(function() .Call("C_bench_sumlen_reader", plain))))
-invisible(row("charport::Reader, charvec (registered class)",
-              ms(function() .Call("C_bench_sumlen_reader", cvec))))
-stopifnot(identical(s1, .Call("C_bench_sumlen_reader", plain)),
-          identical(s1, .Call("C_bench_sumlen_reader", cvec)))
+s1 <- .Call("C_probe_STRING_PTR_RO_length_sum", plain)
+access_rows <- list(
+  row("STRING_PTR_RO length, base R vector (baseline)",
+      ms(function() .Call("C_probe_STRING_PTR_RO_length_sum", plain)),
+      baseline = TRUE),
+  row("charport::Reader scalar length, base R vector",
+      ms(function() .Call("C_probe_charport_Reader_length_sum", plain))),
+  row("charport::Reader block size 1 length, base R vector",
+      ms(function() .Call("C_probe_charport_Reader_length_sum_block1", plain))),
+  row("charport::Reader range lengths, base R vector",
+      ms(function() .Call("C_probe_charport_Reader_length_sum_range", plain))),
+  row("charport::Reader scalar length, charvec",
+      ms(function() .Call("C_probe_charport_Reader_length_sum", cvec))),
+  row("charport::Reader block size 1 length, charvec",
+      ms(function() .Call("C_probe_charport_Reader_length_sum_block1", cvec))),
+  row("charport::Reader range lengths, charvec",
+      ms(function() .Call("C_probe_charport_Reader_length_sum_range", cvec)))
+)
+stopifnot(identical(s1, .Call("C_probe_charport_Reader_length_sum", plain)),
+          identical(s1, .Call("C_probe_charport_Reader_length_sum_block1", plain)),
+          identical(s1, .Call("C_probe_charport_Reader_length_sum_range", plain)),
+          identical(s1, .Call("C_probe_charport_Reader_length_sum", cvec)),
+          identical(s1, .Call("C_probe_charport_Reader_length_sum_block1", cvec)),
+          identical(s1, .Call("C_probe_charport_Reader_length_sum_range", cvec)))
+
+rows_to_df <- function(section, rows, plotted) {
+  do.call(rbind, lapply(rows, function(x) {
+    data.frame(section = section, name = x$name, ms = x$ms, gbps = x$gbps,
+               baseline = isTRUE(x$baseline), plotted = plotted)
+  }))
+}
+
+benchmark_table <- do.call(rbind, list(
+  rows_to_df("write path", build_rows, TRUE),
+  rows_to_df("read path", read_rows, TRUE),
+  rows_to_df("read path", extra_rows, FALSE),
+  rows_to_df("access path", access_rows, FALSE)
+))
+dir.create("scratch", showWarnings = FALSE)
+table_path <- file.path("scratch", "benchmark-table-current.csv")
+utils::write.csv(benchmark_table, table_path, row.names = FALSE)
+cat(sprintf("benchmark table written to %s\n", table_path))
 
 cat("\nall hashes verified equal across paths\n")
 
-# --- plot -------------------------------------------------------------------
+# Plot -----------------------------------------------------------------
 
 plot_panel <- function(rows, title) {
   theme_bg <- "#26323d"
@@ -216,9 +250,10 @@ plot_panel <- function(rows, title) {
   usr <- par("usr")
   rect(usr[1], usr[3], usr[2], usr[4], col = theme_panel, border = NA)
   par(new = TRUE)
+  name_cex <- if (length(rows) > 3) 1.04 else 1.18
   bp <- barplot(gbps, horiz = TRUE, names.arg = labels, col = cols,
                 border = NA, xlab = "GB/s", main = title,
-                xlim = c(0, max(gbps) * 1.18), cex.names = 1.18,
+                xlim = c(0, max(gbps) * 1.18), cex.names = name_cex,
                 cex.axis = 1.05, cex.lab = 1.1, cex.main = 1.28,
                 font.main = 2, col.axis = theme_text, col.lab = theme_text,
                 col.main = theme_text, axes = TRUE)

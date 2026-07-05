@@ -13,6 +13,7 @@ Infrastructure for ALTREP character vectors: a reference ALTREP string class ('c
 \seealso{
 Useful links:
 \itemize{
+  \item \url{https://charport.github.io/charport/}
   \item \url{https://github.com/charport/charport}
   \item Report bugs at \url{https://github.com/charport/charport/issues}
 }

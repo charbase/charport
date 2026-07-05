@@ -18,13 +18,13 @@ Steering Committee.*
 
 ## ALTREP string access
 
-The diagram compares ordinary R access, which may materialize an ALTREP
-vector, with access through a registered `charport::Reader` backend.
+The diagram below shows the default path and the `charport` path side by
+side.
 
 <img src="man/figures/altrep-string-access.svg" alt="ALTREP string access diagram" />
 
 The benchmark uses the `enwik8` dataset, the first 100 million bytes of
-Wikipedia split by line. The read baseline is `STRING_ELT` over an
+Wikipedia split by line. The read baseline is `STRING_PTR_RO` over an
 unmaterialized `charvec` (a built-in ALTREP class). The
 `charport::Reader` paths read the same data without materialization.
 
@@ -33,8 +33,12 @@ the baseline, compared to writing the same data to `charvec`.
 
 <img src="man/figures/bench.png" alt="charport benchmark" />
 
-The results measure materialization and construction costs for this corpus and
-are not a general performance guarantee.
+For an unmaterialized ALTREP source, the benchmark shows the cost of
+going through ordinary R string storage. `charport::Reader` avoids that
+conversion and keeps the read path on byte views.
+
+These results measure materialization and construction costs for this
+corpus and are not a general performance guarantee.
 
 ## A broker for ALTREP strings
 
@@ -76,3 +80,6 @@ behavior, pointer lifetime, thread safety, and the `charvec` builder.
 - [Package developer
   guide](https://charport.github.io/charport/articles/developer-guide.html),
   also listed by `utils::vignette(package = "charport")`.
+- [Design
+  rationale](https://charport.github.io/charport/articles/design-rationale.html),
+  for the contract and tradeoffs behind the interface.

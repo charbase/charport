@@ -12,7 +12,7 @@ static const R_CallMethodDef call_entries[] = {
   {"C_charvec_assign",              (DL_FUNC) &C_charvec_assign,              3},
   {"C_charvec_compact",             (DL_FUNC) &C_charvec_compact,             1},
   {"C_charport_classes",            (DL_FUNC) &C_charport_classes,            0},
-  {"C_charport_class_of",           (DL_FUNC) &C_charport_class_of,           1},
+  {"C_charport_info",               (DL_FUNC) &C_charport_info,               1},
   {"C_unregister_charvec",          (DL_FUNC) &C_unregister_charvec,          0},
   {"C_register_charvec",            (DL_FUNC) &C_register_charvec,            0},
   {NULL, NULL, 0}

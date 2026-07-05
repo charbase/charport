@@ -24,6 +24,11 @@ developer_guide <- if (IS_GITHUB) {
 } else {
   "developer-guide.html"
 }
+design_rationale <- if (IS_GITHUB) {
+  "https://charport.github.io/charport/articles/design-rationale.html"
+} else {
+  "design-rationale.html"
+}
 access_diagram <- if (IS_GITHUB) {
   "man/figures/altrep-string-access.svg"
 } else {
@@ -63,8 +68,7 @@ Committee.*
 
 ## ALTREP string access
 
-The diagram compares ordinary R access, which may materialize an ALTREP vector,
-with access through a registered `charport::Reader` backend.
+The diagram below shows the default path and the `charport` path side by side.
 
 ```{r, echo = FALSE, results = "asis"}
 cat(sprintf(
@@ -74,7 +78,7 @@ cat(sprintf(
 ```
 
 The benchmark uses the `enwik8` dataset, the first 100 million bytes of
-Wikipedia split by line. The read baseline is `STRING_ELT` over an
+Wikipedia split by line. The read baseline is `STRING_PTR_RO` over an
 unmaterialized `charvec` (a built-in ALTREP class). The `charport::Reader`
 paths read the same data without materialization.
 
@@ -88,8 +92,12 @@ cat(sprintf(
 ))
 ```
 
-The results measure materialization and construction costs for this corpus and
-are not a general performance guarantee.
+For an unmaterialized ALTREP source, the benchmark shows the cost of going
+through ordinary R string storage. `charport::Reader` avoids that conversion
+and keeps the read path on byte views.
+
+These results measure materialization and construction costs for this corpus
+and are not a general performance guarantee.
 
 ## A broker for ALTREP strings
 
@@ -129,7 +137,13 @@ pointer lifetime, thread safety, and the `charvec` builder.
 
 ```{r, echo = FALSE, results = "asis"}
 cat(sprintf(
-  "- [Package developer guide](%s), also listed by `utils::vignette(package = \"charport\")`.\n",
-  developer_guide
+  paste0(
+    "- [Package developer guide](%s), also listed by ",
+    "`utils::vignette(package = \"charport\")`.\n",
+    "- [Design rationale](%s), for the contract and tradeoffs behind the ",
+    "interface.\n"
+  ),
+  developer_guide,
+  design_rationale
 ))
 ```
