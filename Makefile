@@ -83,19 +83,22 @@ test-valgrind:
 	rm -rf $$tmp_lib
 
 vignette:
-	Rscript -e "rmarkdown::render(input='vignettes/charport.Rmd', output_format='html_vignette')"
-	IS_GITHUB=Yes Rscript -e "rmarkdown::render(input='vignettes/charport.Rmd', output_file='../README.md', output_format=rmarkdown::github_document(html_preview=FALSE))"; unset IS_GITHUB
-	Rscript -e "rmarkdown::render(input='vignettes/developer-guide.Rmd', output_format='html_vignette')"
-	Rscript -e "rmarkdown::render(input='vignettes/design-rationale.Rmd', output_format='html_vignette')"
+	mkdir -p local/cache
+	XDG_CACHE_HOME=$(CURDIR)/local/cache quarto render vignettes/charport.qmd --to html
+	XDG_CACHE_HOME=$(CURDIR)/local/cache quarto render vignettes/charport.qmd --to gfm --output README.md --output-dir .
+	XDG_CACHE_HOME=$(CURDIR)/local/cache quarto render vignettes/developer-guide.qmd --to html
+	XDG_CACHE_HOME=$(CURDIR)/local/cache quarto render vignettes/design-rationale.qmd --to html
+	Rscript tools/quarto-tabsets-to-bootstrap.R vignettes/*.html
 
 reflow-docs:
-	Rscript tools/reflow-rmd.R --width 80 vignettes/charport.Rmd vignettes/developer-guide.Rmd vignettes/design-rationale.Rmd
+	Rscript tools/reflow-rmd.R --width 80 vignettes/charport.qmd vignettes/developer-guide.qmd vignettes/design-rationale.qmd
 
 pkgdown: clean-native clean-pkgdown doc
 	$(MAKE) pkgdown-index
 	mkdir -p local/cache
 	XDG_CACHE_HOME=$(CURDIR)/local/cache R_USER_CACHE_DIR=$(CURDIR)/local/cache/R \
 	  IN_PKGDOWN=true Rscript -e 'pkgdown::build_site(new_process = FALSE, install = FALSE, quiet = FALSE, override = list(home = list(sidebar = FALSE)))'
+	Rscript tools/quarto-tabsets-to-bootstrap.R docs/articles/*.html
 	$(MAKE) clean-native
 
 pkgdown-index:

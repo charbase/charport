@@ -1,0 +1,77 @@
+---
+title: "Design rationale"
+format:
+  html:
+    theme:
+      light: flatly
+      dark: [darkly, darkly-fixes.scss]
+
+respect-user-color-scheme: true
+format-links: false
+vignette: >
+  %\VignetteIndexEntry{Design rationale}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+---
+
+R's ordinary string access gives a consumer two main choices. `STRING_ELT()` asks the ALTSTRING class to produce one `CHARSXP` at a time, while `STRING_PTR_RO()` may force a materialized string pointer array.
+
+`charport` adds a read path for compiled consumers that work with string bytes at vector scale. Its contract covers bytes, lengths, encoding marks, and pointer lifetime.
+
+## Plain data at the boundary
+
+R package entry points use a C interface. `charport` therefore represents its shared boundary with function pointers, `SEXP`, lengths, booleans, and small structs.
+
+C++ packages still get a small wrapper API in `charport.h`, but the exported interface stays C-compatible. That makes the fewest assumptions about object layout, exception handling, and framework dependencies. It also keeps error rules simple: callbacks must not throw C++ exceptions through the C boundary.
+
+## Range and indexed access
+
+Element-wise access pays callback overhead once per element and, for ordinary ALTSTRING access, produces `CHARSXP` objects. Range and indexed callbacks let the producer fill caller-owned arrays of pointers, lengths, and encodings.
+
+This gives consumers a block path without requiring either side to allocate one wrapper object per element. Producers whose storage is already contiguous can implement the common range case with `memcpy`.
+
+Scalar methods remain as conveniences. They are not the center of the design.
+
+## `Reader` fallback behavior
+
+`Reader` first uses ordinary R storage when it is already available: `DATAPTR_OR_NULL(x)` gives a direct pointer array without forcing. That path has persistent views, but it is still R-managed storage, so `charport` does not advertise concurrent access.
+
+If the vector is ALTREP and its class is registered, `Reader` asks the class to start a borrow. A registered class may still decline a particular vector by returning `NULL` from its init callback. In that case, or when the ALTREP class is not registered, `Reader` falls back to `STRING_PTR_RO(x)`.
+
+The fallback uses ordinary R behavior. It may materialize the ALTREP, but it works for every character vector. Registered producers can provide direct access when they can satisfy the stronger reader contract.
+
+## Reader capabilities
+
+The two capabilities record the promises a consumer actually needs after a bulk read.
+
+`persistent_views` answers: can I keep the returned byte pointers after the next reader call? If false, the consumer must finish with a pointer before calling back into the reader. If true, it can collect views and process them later while the borrow is active.
+
+`concurrent_access` answers: may reader callbacks be called from multiple threads, including worker threads? This is separate from pointer lifetime. A reader might return stable pointers but use R APIs or mutable scratch state in its callbacks. Another reader might be thread-safe but return pointers into a temporary buffer. Consumers need to know both facts.
+
+`reentrant` is therefore derived, not stored: it is the case where both promises are true. Other possible traits are deliberately left out. Sortedness, absence of missing values, normalization, ownership model, and string semantics belong either to R, to the producer class, or to higher-level string code. They are not needed to decide whether a byte-view read is safe.
+
+## Encoding representation
+
+`charport` carries encoding marks because bytes alone are not enough to reconstruct R strings correctly. But it does not use R's `cetype_t` directly as the ABI type.
+
+The ABI needs a small, fixed representation that is also usable from C. `cetype_ext_t` is one byte, has explicit values, and includes `CE_NA` so a full string view can carry missingness without consulting a separate convention. It also distinguishes ASCII and ASCII-compatible UTF-8. Base R can collapse those cases when making a `CHARSXP`, but byte-oriented consumers and `charvec` storage can benefit from preserving the distinction.
+
+This remains an encoding mark rather than an encoding policy. `charport` does not translate, normalize, or reinterpret string bytes.
+
+## `charvec` storage
+
+`charvec` is the reference implementation and an included output class. Its storage follows the reader contract: three fixed metadata arrays for pointers, byte lengths, and encoding marks, plus owned byte slices that hold the payload.
+
+The separate metadata arrays make contiguous reads cheap. For `charvec`, a range request can copy pointers, lengths, and encodings directly into the consumer's output arrays. The byte payload stays where it is.
+
+The payload is stored in slices instead of one giant buffer or one allocation per string. One giant buffer requires knowing the final byte size up front and is awkward for streaming writers. One allocation per string is expensive and fragmented. Slices give a middle ground: append-friendly construction, stable pointers during a read-only borrow, bounded allocation sizes, and simple cleanup. Slice growth is capped so one large output does not permanently push later allocations into huge blocks.
+
+The builders expose different amounts of control because producers know different things:
+
+- `Builder` handles ordinary serial output when strings arrive one at a time.
+- `DirectBuilder` is for producers that already know the byte layout and want to write bytes and metadata directly.
+- `ParallelBuilder` gives each worker its own slice chain while sharing the final metadata arrays. That avoids concurrent writes to the same byte buffer while still producing one `charvec`.
+
+When a `charvec` is fully materialized, it caches an ordinary STRSXP in ALTREP `data2` and releases the native store. At that point R has the representation it asked for, and keeping duplicate native storage would waste memory. The reader then naturally uses the ordinary fallback path over the cached STRSXP.
+
+Serialization follows the same design. An unmaterialized `charvec` serializes lengths, encoding bytes, and payload bytes, not a list of CHARSXPs. A materialized `charvec` serializes as the ordinary string vector it has become.

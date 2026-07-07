@@ -1,0 +1,17 @@
+/*-- scss:rules --*/
+
+/* Fix inline code/backticks inside headings on Darkly */
+h1 code,
+h2 code,
+h3 code,
+h4 code,
+h5 code,
+h6 code,
+.quarto-title code,
+.title code {
+  color: #f18acb;
+  background-color: rgba(255, 255, 255, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.35rem;
+  padding: 0.08em 0.32em;
+}

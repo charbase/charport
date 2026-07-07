@@ -16,12 +16,12 @@ Description: Infrastructure for ALTREP character vectors: a reference
 License: MIT + file LICENSE
 Encoding: UTF-8
 Suggests:
-    knitr, rmarkdown
-VignetteBuilder: knitr
+    quarto
+VignetteBuilder: quarto
 Biarch: true
 Depends: R (>= 3.6.0)
 URL: https://charport.github.io/charport/,
     https://github.com/charport/charport
 BugReports: https://github.com/charport/charport/issues
 Config/roxygen2/version: 8.0.0
-Config/Needs/website: pkgdown
+Config/Needs/website: pkgdown, xml2

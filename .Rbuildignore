@@ -16,3 +16,5 @@
 ^inst/extra$
 ^scratch$
 ^tools$
+^vignettes/.*_files$
+^vignettes/\.quarto$
