@@ -38,7 +38,7 @@ catn("compiling the test-time consumer (R CMD SHLIB)")
 dll <- compile_test_dso(src, c(
   "PKG_CXXFLAGS = -pthread",
   "PKG_LIBS = -pthread"
-), skip_label = "threaded consumer")
+), label = "threaded consumer")
 consumer_symbol <- function(name) getNativeSymbolInfo(name, PACKAGE = dll[["name"]])
 rebuild2 <- function(x, n_threads = 2L) {
   .Call(consumer_symbol("C_consumer_threaded_rebuild"), x, as.integer(n_threads))

@@ -9,40 +9,18 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <new>
 #include <vector>
 
 namespace charport {
-namespace internal {
+namespace charvec {
+namespace components {
 
 constexpr size_t min_multi_string_slice_bytes() noexcept { return 64; }
 constexpr size_t max_initial_slice_bytes() noexcept { return 16U << 10; }
 constexpr size_t max_slice_bytes() noexcept { return 256U << 10; }
 constexpr size_t slice_alignment() noexcept { return 64; }
 constexpr size_t vector_len_scale() noexcept { return 4; }
-constexpr size_t slice_header_bytes() noexcept { return sizeof(char *); }
-
-inline char * slice_next(char * block) noexcept {
-  char * next;
-  std::memcpy(&next, block, sizeof(next));
-  return next;
-}
-
-inline void slice_set_next(char * block, char * next) noexcept {
-  std::memcpy(block, &next, sizeof(next));
-}
-
-inline char * slice_payload(char * block) noexcept {
-  return block + slice_header_bytes();
-}
-
-inline void free_slice_chain(char * head) noexcept {
-  while(head != nullptr) {
-    char * next = slice_next(head);
-    delete[] head;
-    head = next;
-  }
-}
-
 inline const char * empty_data() noexcept {
   static const char empty = '\0';
   return &empty;
@@ -57,7 +35,7 @@ inline charport_strview empty_record(cetype_ext_t enc) noexcept {
 }
 
 inline int checked_string_size(size_t len, const char * what = "string length") {
-  if(!check_r_string_len(len)) {
+  if(!internal::check_r_string_len(len)) {
     throw std::runtime_error(std::string(what) + " exceeds R string size");
   }
   return static_cast<int>(len);
@@ -67,64 +45,162 @@ inline size_t initial_slice_heuristic(size_t vector_len) noexcept {
   if(vector_len <= 1) {
     return 0;
   }
-  const size_t scaled = next_power_of_two(vector_len * vector_len_scale());
+  const size_t scaled = internal::next_power_of_two(vector_len * vector_len_scale());
   return std::min(std::max(min_multi_string_slice_bytes(), scaled), max_initial_slice_bytes());
 }
 
-struct charvec_records {
+class SliceChain {
+  struct Slice {
+    Slice * next;
+  };
+
+  Slice * head_ = nullptr;
+
+  static Slice * allocate(size_t payload_bytes, Slice * next) {
+#if defined(SIZE_MAX) && defined(UINT32_MAX) && SIZE_MAX == UINT32_MAX
+    if(payload_bytes > SIZE_MAX - sizeof(Slice)) {
+      throw std::bad_alloc();
+    }
+#endif
+    void * mem = ::operator new(sizeof(Slice) + payload_bytes);
+    return new(mem) Slice{next};
+  }
+
+  static void deallocate(Slice * slice) noexcept {
+    slice->~Slice();
+    ::operator delete(slice);
+  }
+
+  static char * data(Slice * slice) noexcept {
+    return reinterpret_cast<char *>(slice) + sizeof(Slice);
+  }
+
+public:
+  SliceChain() noexcept = default;
+  SliceChain(const SliceChain &) = delete;
+  SliceChain & operator=(const SliceChain &) = delete;
+
+  SliceChain(SliceChain && other) noexcept : head_(other.head_) {
+    other.head_ = nullptr;
+  }
+
+  SliceChain & operator=(SliceChain && other) noexcept {
+    if(this != &other) {
+      clear();
+      head_ = other.head_;
+      other.head_ = nullptr;
+    }
+    return *this;
+  }
+
+  ~SliceChain() { clear(); }
+
+  bool empty() const noexcept { return head_ == nullptr; }
+
+  char * front_data() noexcept {
+    return head_ == nullptr ? nullptr : data(head_);
+  }
+
+  char * push_front(size_t payload_bytes) {
+    Slice * slice = allocate(payload_bytes, head_);
+    head_ = slice;
+    return data(slice);
+  }
+
+  char * data_slice(size_t idx) noexcept {
+    Slice * slice = head_;
+    while(slice != nullptr && idx > 0) {
+      slice = slice->next;
+      --idx;
+    }
+    return slice == nullptr ? nullptr : data(slice);
+  }
+
+  size_t count() const noexcept {
+    size_t count = 0;
+    for(Slice * slice = head_; slice != nullptr; slice = slice->next) {
+      ++count;
+    }
+    return count;
+  }
+
+  void clear() noexcept {
+    while(head_ != nullptr) {
+      Slice * next = head_->next;
+      deallocate(head_);
+      head_ = next;
+    }
+  }
+
+  void prepend(SliceChain & other) noexcept {
+    Slice * head = other.head_;
+    if(head == nullptr) {
+      return;
+    }
+    other.head_ = nullptr;
+    Slice * tail = head;
+    while(tail->next != nullptr) {
+      tail = tail->next;
+    }
+    tail->next = head_;
+    head_ = head;
+  }
+};
+
+struct RecordTable {
   std::unique_ptr<const char *[]> ptrs_;
   std::unique_ptr<int[]> lens_;
   std::unique_ptr<cetype_ext_t[]> encs_;
-  size_t n_;
+  size_t vector_length_;
 
-  charvec_records() noexcept : ptrs_(), lens_(), encs_(), n_(0) {}
+  RecordTable() noexcept : ptrs_(), lens_(), encs_(), vector_length_(0) {}
 
-  explicit charvec_records(size_t n)
-    : ptrs_(n ? new const char *[n] : nullptr),
-      lens_(n ? new int[n] : nullptr),
-      encs_(n ? new cetype_ext_t[n] : nullptr),
-      n_(n) {
-    for(size_t i = 0; i < n; ++i) {
+  explicit RecordTable(size_t vector_length)
+    : ptrs_(vector_length ? new const char *[vector_length] : nullptr),
+      lens_(vector_length ? new int[vector_length] : nullptr),
+      encs_(vector_length ? new cetype_ext_t[vector_length] : nullptr),
+      vector_length_(vector_length) {
+    for(size_t i = 0; i < vector_length; ++i) {
       set_na(i);
     }
   }
 
-  charvec_records(const charvec_records & other)
-    : ptrs_(other.n_ ? new const char *[other.n_] : nullptr),
-      lens_(other.n_ ? new int[other.n_] : nullptr),
-      encs_(other.n_ ? new cetype_ext_t[other.n_] : nullptr),
-      n_(other.n_) {
-    if(n_ > 0) {
-      std::copy(other.ptrs_.get(), other.ptrs_.get() + n_, ptrs_.get());
-      std::copy(other.lens_.get(), other.lens_.get() + n_, lens_.get());
-      std::copy(other.encs_.get(), other.encs_.get() + n_, encs_.get());
+  RecordTable(const RecordTable & other)
+    : ptrs_(other.vector_length_ ? new const char *[other.vector_length_] : nullptr),
+      lens_(other.vector_length_ ? new int[other.vector_length_] : nullptr),
+      encs_(other.vector_length_ ? new cetype_ext_t[other.vector_length_] : nullptr),
+      vector_length_(other.vector_length_) {
+    if(vector_length_ > 0) {
+      std::copy(other.ptrs_.get(), other.ptrs_.get() + vector_length_, ptrs_.get());
+      std::copy(other.lens_.get(), other.lens_.get() + vector_length_, lens_.get());
+      std::copy(other.encs_.get(), other.encs_.get() + vector_length_, encs_.get());
     }
   }
 
-  charvec_records & operator=(const charvec_records & other) {
-    charvec_records tmp(other);
+  RecordTable & operator=(const RecordTable & other) {
+    RecordTable tmp(other);
     *this = std::move(tmp);
     return *this;
   }
 
-  charvec_records(charvec_records && other) noexcept
+  RecordTable(RecordTable && other) noexcept
     : ptrs_(std::move(other.ptrs_)),
       lens_(std::move(other.lens_)),
       encs_(std::move(other.encs_)),
-      n_(other.n_) {
-    other.n_ = 0;
+      vector_length_(other.vector_length_) {
+    other.vector_length_ = 0;
   }
 
-  charvec_records & operator=(charvec_records && other) noexcept {
+  RecordTable & operator=(RecordTable && other) noexcept {
     ptrs_ = std::move(other.ptrs_);
     lens_ = std::move(other.lens_);
     encs_ = std::move(other.encs_);
-    n_ = other.n_;
-    other.n_ = 0;
+    vector_length_ = other.vector_length_;
+    other.vector_length_ = 0;
     return *this;
   }
 
-  size_t size() const noexcept { return n_; }
+  size_t size() const noexcept { return vector_length_; }
   const char ** ptrs() noexcept { return ptrs_.get(); }
   const char * const * ptrs() const noexcept { return ptrs_.get(); }
   int * lengths() noexcept { return lens_.get(); }
@@ -154,90 +230,61 @@ struct charvec_records {
   }
 };
 
-struct charvec_shard {
-  char * slice_head = nullptr;
+struct BuilderShard {
+  SliceChain slices;
   size_t allocated_bytes = 0;
   uint32_t current_slice_used = 0;
   uint32_t current_slice_capacity = 0;
 
-  charvec_shard() noexcept = default;
-  charvec_shard(const charvec_shard &) = delete;
-  charvec_shard & operator=(const charvec_shard &) = delete;
-
-  charvec_shard(charvec_shard && other) noexcept
-    : slice_head(other.slice_head),
-      allocated_bytes(other.allocated_bytes),
-      current_slice_used(other.current_slice_used),
-      current_slice_capacity(other.current_slice_capacity) {
-    other.slice_head = nullptr;
-  }
-
-  charvec_shard & operator=(charvec_shard && other) noexcept {
-    if(this != &other) {
-      free_slice_chain(slice_head);
-      slice_head = other.slice_head;
-      allocated_bytes = other.allocated_bytes;
-      current_slice_used = other.current_slice_used;
-      current_slice_capacity = other.current_slice_capacity;
-      other.slice_head = nullptr;
-    }
-    return *this;
-  }
-
-  ~charvec_shard() { free_slice_chain(slice_head); }
+  BuilderShard() noexcept = default;
+  BuilderShard(const BuilderShard &) = delete;
+  BuilderShard & operator=(const BuilderShard &) = delete;
+  BuilderShard(BuilderShard &&) noexcept = default;
+  BuilderShard & operator=(BuilderShard &&) noexcept = default;
 };
 
-inline char * shard_allocate_bytes(charvec_shard & shard, uint32_t len, size_t n_hint) {
+inline char * shard_allocate_bytes(BuilderShard & shard, uint32_t len, size_t vector_length_hint) {
   if(len == 0) {
     return const_cast<char*>(empty_data());
   }
-  if(shard.slice_head == nullptr || shard.current_slice_capacity - shard.current_slice_used < len) {
-    const size_t initial = initial_slice_heuristic(n_hint);
+  if(shard.slices.empty() || shard.current_slice_capacity - shard.current_slice_used < len) {
+    const size_t initial = initial_slice_heuristic(vector_length_hint);
     const size_t regular = std::min(
-      round_up(std::max(initial, shard.allocated_bytes / 2), slice_alignment()),
+      internal::round_up(std::max(initial, shard.allocated_bytes / 2), slice_alignment()),
       max_slice_bytes());
-    const size_t next_size = round_up(std::max(regular, static_cast<size_t>(len)),
-                                      slice_alignment());
-    const uint32_t cap = checked_u32(next_size, "slice size");
-    char * block = new char[slice_header_bytes() + cap];
-    slice_set_next(block, shard.slice_head);
-    shard.slice_head = block;
+    const size_t next_size = internal::round_up(
+      std::max(regular, static_cast<size_t>(len)), slice_alignment());
+    const uint32_t cap = internal::checked_u32(next_size, "slice size");
+    shard.slices.push_front(cap);
     shard.current_slice_used = 0;
     shard.current_slice_capacity = cap;
   }
-  char * dest = slice_payload(shard.slice_head) + shard.current_slice_used;
+  char * dest = shard.slices.front_data() + shard.current_slice_used;
   shard.current_slice_used += len;
   shard.allocated_bytes += static_cast<size_t>(len);
   return dest;
 }
 
-inline char * shard_push_slice(charvec_shard & shard, size_t len) {
+inline char * shard_push_slice(BuilderShard & shard, size_t len) {
   if(len == 0) {
     return const_cast<char*>(empty_data());
   }
-  const uint32_t cap = checked_u32(len, "slice size");
-  char * block = new char[slice_header_bytes() + static_cast<size_t>(cap)];
-  slice_set_next(block, shard.slice_head);
-  shard.slice_head = block;
+  const uint32_t cap = internal::checked_u32(len, "slice size");
+  char * data = shard.slices.push_front(static_cast<size_t>(cap));
   shard.current_slice_used = cap;
   shard.current_slice_capacity = cap;
   shard.allocated_bytes += static_cast<size_t>(cap);
-  return slice_payload(block);
+  return data;
 }
 
-inline char * shard_data_slice(charvec_shard & shard, size_t idx) noexcept {
-  char * block = shard.slice_head;
-  while(block != nullptr && idx > 0) {
-    block = slice_next(block);
-    --idx;
-  }
-  return block == nullptr ? nullptr : slice_payload(block);
+inline char * shard_data_slice(BuilderShard & shard, size_t idx) noexcept {
+  return shard.slices.data_slice(idx);
 }
 
-inline char * fill_record(charvec_shard & shard, charvec_records & records,
+inline char * fill_record(BuilderShard & shard, RecordTable & records,
                           size_t idx, size_t len, cetype_ext_t enc) {
-  const size_t n = records.size();
-  if(idx >= n) {
+  const size_t vector_length = records.size();
+  if(idx >= vector_length) {
     throw std::runtime_error("charvec builder: assignment out of bounds");
   }
   const int stored_len = checked_string_size(len, "stored string length");
@@ -249,12 +296,12 @@ inline char * fill_record(charvec_shard & shard, charvec_records & records,
     records.set(idx, empty_data(), 0, enc);
     return const_cast<char*>(empty_data());
   }
-  char * dest = shard_allocate_bytes(shard, static_cast<uint32_t>(stored_len), n);
+  char * dest = shard_allocate_bytes(shard, static_cast<uint32_t>(stored_len), vector_length);
   records.set(idx, dest, stored_len, enc);
   return dest;
 }
 
-inline void copy_record(charvec_shard & shard, charvec_records & records,
+inline void copy_record(BuilderShard & shard, RecordTable & records,
                         size_t idx, const char * ptr, size_t len, cetype_ext_t enc) {
   if(enc != cetype_ext_t::CE_NA && ptr == nullptr && len > 0) {
     throw std::runtime_error("cannot assign non-NA null bytes");
@@ -265,48 +312,39 @@ inline void copy_record(charvec_shard & shard, charvec_records & records,
   }
 }
 
-inline void copy_record(charvec_shard & shard, charvec_records & records,
+inline void copy_record(BuilderShard & shard, RecordTable & records,
                         size_t idx, const charport_strview & value) {
   const size_t len = value.is_na() ? 0 : static_cast<size_t>(value.len);
   copy_record(shard, records, idx, value.ptr, len, value.enc);
 }
 
-struct charvec_data {
-  char * slice_head;
-  charvec_records records;
+} // namespace components
 
-  charvec_data() noexcept : slice_head(nullptr), records() {}
-  explicit charvec_data(size_t len) : slice_head(nullptr), records(len) {}
-  explicit charvec_data(charvec_records && recs) noexcept
-    : slice_head(nullptr), records(std::move(recs)) {}
+class Store {
+  components::SliceChain slices_;
 
-  charvec_data(const charvec_data & other) : slice_head(nullptr), records() {
+public:
+  components::RecordTable records;
+
+  Store() noexcept : slices_(), records() {}
+  explicit Store(size_t len) : slices_(), records(len) {}
+  explicit Store(components::RecordTable && recs) noexcept
+    : slices_(), records(std::move(recs)) {}
+
+  Store(const Store & other) : slices_(), records() {
     rebuild_from(other.records);
   }
 
-  charvec_data(charvec_data && other) noexcept
-    : slice_head(other.slice_head), records(std::move(other.records)) {
-    other.slice_head = nullptr;
-  }
+  Store(Store &&) noexcept = default;
 
-  charvec_data & operator=(const charvec_data & other) {
+  Store & operator=(const Store & other) {
     if(this == &other) return *this;
-    charvec_data tmp(other);
+    Store tmp(other);
     *this = std::move(tmp);
     return *this;
   }
 
-  charvec_data & operator=(charvec_data && other) noexcept {
-    if(this != &other) {
-      free_slices();
-      slice_head = other.slice_head;
-      records = std::move(other.records);
-      other.slice_head = nullptr;
-    }
-    return *this;
-  }
-
-  ~charvec_data() { free_slices(); }
+  Store & operator=(Store &&) noexcept = default;
 
   size_t size() const noexcept { return records.size(); }
   charport_strview view(size_t idx) const noexcept { return records.view(idx); }
@@ -315,42 +353,24 @@ struct charvec_data {
   cetype_ext_t encoding(size_t idx) const noexcept { return records.encoding(idx); }
 
   void free_slices() noexcept {
-    free_slice_chain(slice_head);
-    slice_head = nullptr;
+    slices_.clear();
   }
 
   size_t slice_count() const noexcept {
-    size_t n = 0;
-    for(char * block = slice_head; block != nullptr; block = slice_next(block)) {
-      ++n;
-    }
-    return n;
+    return slices_.count();
   }
 
   char * push_slice(uint32_t len) {
-    char * block = new char[slice_header_bytes() + static_cast<size_t>(len)];
-    slice_set_next(block, slice_head);
-    slice_head = block;
-    return slice_payload(block);
+    return slices_.push_front(static_cast<size_t>(len));
   }
 
-  void adopt_chain(charvec_shard & shard) noexcept {
-    char * head = shard.slice_head;
-    if(head == nullptr) {
-      return;
-    }
-    shard.slice_head = nullptr;
-    char * tail = head;
-    while(slice_next(tail) != nullptr) {
-      tail = slice_next(tail);
-    }
-    slice_set_next(tail, slice_head);
-    slice_head = head;
+  void adopt_chain(components::BuilderShard & shard) noexcept {
+    slices_.prepend(shard.slices);
   }
 
   void clear() {
     free_slices();
-    records = charvec_records();
+    records = components::RecordTable();
   }
 
   void compact() {
@@ -358,10 +378,10 @@ struct charvec_data {
   }
 
   char * reserve(size_t idx, size_t len, cetype_ext_t enc) {
-    if(!check_r_string_len(len)) {
+    if(!internal::check_r_string_len(len)) {
       throw std::runtime_error("stored string length exceeds R string size");
     }
-    const int stored_len = checked_string_size(len, "stored string length");
+    const int stored_len = components::checked_string_size(len, "stored string length");
     if(idx >= records.size()) {
       throw std::runtime_error("charvec store assignment out of bounds");
     }
@@ -372,8 +392,8 @@ struct charvec_data {
       return nullptr;
     }
     if(stored_len == 0) {
-      records.set(idx, empty_data(), 0, enc);
-      return const_cast<char*>(empty_data());
+      records.set(idx, components::empty_data(), 0, enc);
+      return const_cast<char*>(components::empty_data());
     }
     if(!current.is_na() && current.len >= stored_len) {
       records.set(idx, current.ptr, stored_len, enc);
@@ -399,9 +419,9 @@ struct charvec_data {
     assign(idx, value.ptr, len, value.enc);
   }
 
-  void rebuild_from(const charvec_records & source) {
-    std::vector<std::unique_ptr<char[]>> blocks;
-    charvec_records out(source.size());
+  void rebuild_from(const components::RecordTable & source) {
+    components::SliceChain slices;
+    components::RecordTable out(source.size());
     const size_t max_block = static_cast<size_t>(std::numeric_limits<uint32_t>::max());
     size_t i = 0;
 
@@ -419,46 +439,37 @@ struct charvec_data {
       }
 
       if(block_bytes > 0) {
-        std::unique_ptr<char[]> block(new char[slice_header_bytes() + block_bytes]);
-        char * write_ptr = slice_payload(block.get());
+        char * write_ptr = slices.push_front(block_bytes);
         for(size_t k = i; k < j; ++k) {
           const charport_strview rec = source.view(k);
           if(rec.is_na()) {
             continue;
           }
           if(rec.len == 0) {
-            out.set(k, empty_data(), 0, rec.enc);
+            out.set(k, components::empty_data(), 0, rec.enc);
             continue;
           }
           std::memcpy(write_ptr, rec.ptr, static_cast<size_t>(rec.len));
           out.set(k, write_ptr, rec.len, rec.enc);
           write_ptr += rec.len;
         }
-        blocks.push_back(std::move(block));
       } else {
         for(size_t k = i; k < j; ++k) {
           const charport_strview rec = source.view(k);
           if(!rec.is_na() && rec.len == 0) {
-            out.set(k, empty_data(), 0, rec.enc);
+            out.set(k, components::empty_data(), 0, rec.enc);
           }
         }
       }
       i = (j > i) ? j : i + 1;
     }
 
-    free_slices();
-    char * head = nullptr;
-    for(std::unique_ptr<char[]> & block : blocks) {
-      char * raw = block.release();
-      slice_set_next(raw, head);
-      head = raw;
-    }
-    slice_head = head;
+    slices_ = std::move(slices);
     records = std::move(out);
   }
 };
 
-} // namespace internal
+} // namespace charvec
 } // namespace charport
 
 #endif

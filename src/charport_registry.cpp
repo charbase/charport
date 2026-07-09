@@ -1,6 +1,7 @@
 #include "charvec_altrep.h"
 #include "charport_registry.h"
 
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <vector>
@@ -12,7 +13,8 @@ namespace {
 struct altrep_entry {
   R_altrep_class_t cls;
   charport_reader_state_fns state;
-  charport_reader_access_fns access;
+  charport_reader_range_fns range;
+  charport_reader_index_fns index;
   charport_reader_capabilities capabilities;
 };
 
@@ -21,34 +23,97 @@ std::vector<altrep_entry> & altrep_registry() {
   return reg;
 }
 
-void direct_fill_one(SEXP cs, R_xlen_t out_i, const char ** out_ptrs,
-                     int * out_lens, cetype_ext_t * out_encs) {
+void direct_fill_strview(SEXP cs, R_xlen_t out_i, const char ** out_ptrs,
+                         int * out_lens, cetype_ext_t * out_encs) {
   if(cs == NA_STRING) {
-    if(out_ptrs != nullptr) out_ptrs[out_i] = nullptr;
-    if(out_lens != nullptr) out_lens[out_i] = NA_INTEGER;
-    if(out_encs != nullptr) out_encs[out_i] = cetype_ext_t::CE_NA;
+    out_ptrs[out_i] = nullptr;
+    out_lens[out_i] = NA_INTEGER;
+    out_encs[out_i] = cetype_ext_t::CE_NA;
     return;
   }
-  if(out_ptrs != nullptr) out_ptrs[out_i] = CHAR(cs);
-  if(out_lens != nullptr) out_lens[out_i] = LENGTH(cs);
-  if(out_encs != nullptr) out_encs[out_i] = cpi::classify_charsxp(cs);
+  out_ptrs[out_i] = CHAR(cs);
+  out_lens[out_i] = LENGTH(cs);
+  out_encs[out_i] = cpi::classify_charsxp(cs);
 }
 
-void direct_range(void * state, R_xlen_t start, R_xlen_t size,
-                  const char ** out_ptrs, int * out_lens,
-                  cetype_ext_t * out_encs) {
+void direct_fill_byteview(SEXP cs, R_xlen_t out_i, const char ** out_ptrs,
+                          int * out_lens) {
+  if(cs == NA_STRING) {
+    out_ptrs[out_i] = nullptr;
+    out_lens[out_i] = NA_INTEGER;
+    return;
+  }
+  out_ptrs[out_i] = CHAR(cs);
+  out_lens[out_i] = LENGTH(cs);
+}
+
+void direct_strviews_range(void * state, R_xlen_t start, R_xlen_t size,
+                           const char ** out_ptrs, int * out_lens,
+                           cetype_ext_t * out_encs) {
   const SEXP * ptr = static_cast<const SEXP *>(state);
   for(R_xlen_t j = 0; j < size; ++j) {
-    direct_fill_one(ptr[start + j], j, out_ptrs, out_lens, out_encs);
+    direct_fill_strview(ptr[start + j], j, out_ptrs, out_lens, out_encs);
   }
 }
 
-void direct_index(void * state, const R_xlen_t * indices, R_xlen_t size,
-                  const char ** out_ptrs, int * out_lens,
-                  cetype_ext_t * out_encs) {
+void direct_strviews_index(void * state, const R_xlen_t * indices, R_xlen_t size,
+                           const char ** out_ptrs, int * out_lens,
+                           cetype_ext_t * out_encs) {
   const SEXP * ptr = static_cast<const SEXP *>(state);
   for(R_xlen_t j = 0; j < size; ++j) {
-    direct_fill_one(ptr[indices[j]], j, out_ptrs, out_lens, out_encs);
+    direct_fill_strview(ptr[indices[j]], j, out_ptrs, out_lens, out_encs);
+  }
+}
+
+void direct_byteviews_range(void * state, R_xlen_t start, R_xlen_t size,
+                            const char ** out_ptrs, int * out_lens) {
+  const SEXP * ptr = static_cast<const SEXP *>(state);
+  for(R_xlen_t j = 0; j < size; ++j) {
+    direct_fill_byteview(ptr[start + j], j, out_ptrs, out_lens);
+  }
+}
+
+void direct_byteviews_index(void * state, const R_xlen_t * indices, R_xlen_t size,
+                            const char ** out_ptrs, int * out_lens) {
+  const SEXP * ptr = static_cast<const SEXP *>(state);
+  for(R_xlen_t j = 0; j < size; ++j) {
+    direct_fill_byteview(ptr[indices[j]], j, out_ptrs, out_lens);
+  }
+}
+
+void direct_lengths_range(void * state, R_xlen_t start, R_xlen_t size,
+                          int * out_lens) {
+  const SEXP * ptr = static_cast<const SEXP *>(state);
+  for(R_xlen_t j = 0; j < size; ++j) {
+    const SEXP cs = ptr[start + j];
+    out_lens[j] = cs == NA_STRING ? NA_INTEGER : LENGTH(cs);
+  }
+}
+
+void direct_lengths_index(void * state, const R_xlen_t * indices, R_xlen_t size,
+                          int * out_lens) {
+  const SEXP * ptr = static_cast<const SEXP *>(state);
+  for(R_xlen_t j = 0; j < size; ++j) {
+    const SEXP cs = ptr[indices[j]];
+    out_lens[j] = cs == NA_STRING ? NA_INTEGER : LENGTH(cs);
+  }
+}
+
+void direct_encodings_range(void * state, R_xlen_t start, R_xlen_t size,
+                            cetype_ext_t * out_encs) {
+  const SEXP * ptr = static_cast<const SEXP *>(state);
+  for(R_xlen_t j = 0; j < size; ++j) {
+    const SEXP cs = ptr[start + j];
+    out_encs[j] = cs == NA_STRING ? cetype_ext_t::CE_NA : cpi::classify_charsxp(cs);
+  }
+}
+
+void direct_encodings_index(void * state, const R_xlen_t * indices, R_xlen_t size,
+                            cetype_ext_t * out_encs) {
+  const SEXP * ptr = static_cast<const SEXP *>(state);
+  for(R_xlen_t j = 0; j < size; ++j) {
+    const SEXP cs = ptr[indices[j]];
+    out_encs[j] = cs == NA_STRING ? cetype_ext_t::CE_NA : cpi::classify_charsxp(cs);
   }
 }
 
@@ -66,9 +131,34 @@ charport_reader direct_reader(SEXP x, const void * direct) {
   r.n = Rf_xlength(x);
   r.state = const_cast<void *>(direct);
   r.release = nullptr;
-  r.access = charport_reader_access_fns{direct_range, direct_index};
+  r.range = charport_reader_range_fns{
+    direct_strviews_range,
+    direct_byteviews_range,
+    direct_lengths_range,
+    direct_encodings_range
+  };
+  r.index = charport_reader_index_fns{
+    direct_strviews_index,
+    direct_byteviews_index,
+    direct_lengths_index,
+    direct_encodings_index
+  };
   r.capabilities = charport_reader_capabilities{true, false};
   return r;
+}
+
+bool range_fns_complete(charport_reader_range_fns range_fns) {
+  return range_fns.strviews != NULL &&
+         range_fns.byteviews != NULL &&
+         range_fns.lengths != NULL &&
+         range_fns.encodings != NULL;
+}
+
+bool index_fns_complete(charport_reader_index_fns index_fns) {
+  return index_fns.strviews != NULL &&
+         index_fns.byteviews != NULL &&
+         index_fns.lengths != NULL &&
+         index_fns.encodings != NULL;
 }
 
 const char * atom_string(SEXP x) {
@@ -107,10 +197,11 @@ SEXP class_string_or_na(const char * pkg, const char * cls) {
 
 extern "C" void charport_register_altrep(R_altrep_class_t cls,
                                          charport_reader_state_fns state_fns,
-                                         charport_reader_access_fns access_fns,
+                                         charport_reader_range_fns range_fns,
+                                         charport_reader_index_fns index_fns,
                                          charport_reader_capabilities capabilities) {
   if(R_SEXP(cls) == NULL || state_fns.init == NULL ||
-     access_fns.range == NULL || access_fns.index == NULL) {
+     !range_fns_complete(range_fns) || !index_fns_complete(index_fns)) {
     Rf_error("charport_register_altrep: reader callbacks must be non-NULL");
   }
   for(altrep_entry & entry : altrep_registry()) {
@@ -118,13 +209,18 @@ extern "C" void charport_register_altrep(R_altrep_class_t cls,
       Rf_error("charport_register_altrep: ALTREP class is already registered");
     }
   }
+  char msg[512];
   try {
     altrep_registry().push_back(altrep_entry{
-      cls, state_fns, access_fns, capabilities
+      cls, state_fns, range_fns, index_fns, capabilities
     });
+    return;
   } catch(const std::exception & e) {
-    Rf_error("charport_register_altrep: %s", e.what());
+    std::snprintf(msg, sizeof(msg), "%s", e.what());
+  } catch(...) {
+    std::snprintf(msg, sizeof(msg), "unknown C++ exception");
   }
+  Rf_error("charport_register_altrep: %s", msg);
 }
 
 extern "C" void charport_unregister_altrep(R_altrep_class_t cls) {
@@ -153,7 +249,8 @@ extern "C" charport_reader charport_resolve(SEXP x) {
       if(void * state = entry->state.init(x)) {
         r.state = state;
         r.release = entry->state.release;
-        r.access = entry->access;
+        r.range = entry->range;
+        r.index = entry->index;
         r.capabilities = entry->capabilities;
         return r;
       }
@@ -261,9 +358,17 @@ extern "C" SEXP C_register_charvec(void) {
   charport_register_altrep(
     charvec_altrep::class_t,
     charport_reader_state_fns{charvec_altrep::reader_init, nullptr},
-    charport_reader_access_fns{
-      charvec_altrep::reader_range,
-      charvec_altrep::reader_index
+    charport_reader_range_fns{
+      charvec_altrep::reader_strviews_range,
+      charvec_altrep::reader_byteviews_range,
+      charvec_altrep::reader_lengths_range,
+      charvec_altrep::reader_encodings_range
+    },
+    charport_reader_index_fns{
+      charvec_altrep::reader_strviews_index,
+      charvec_altrep::reader_byteviews_index,
+      charvec_altrep::reader_lengths_index,
+      charvec_altrep::reader_encodings_index
     },
     charport_reader_capabilities{true, true}
   );

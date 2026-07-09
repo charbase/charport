@@ -1,4 +1,4 @@
-compile_test_dso <- function(src, extra_makevars = character(), skip_label = src) {
+compile_test_dso <- function(src, extra_makevars = character(), label = src) {
   if (!file.exists(src)) src <- file.path("tests", src)
   stopifnot(file.exists(src))
 
@@ -14,24 +14,44 @@ compile_test_dso <- function(src, extra_makevars = character(), skip_label = src
     extra_makevars
   ), file.path(build_dir, "Makevars"))
 
+  # R CMD check can leave a relative startup-file path in the environment even
+  # after changing away from the directory that contains it. Preserve files we
+  # can resolve; otherwise use a known empty file for the nested R process.
+  empty_startup <- file.path(build_dir, "empty-startup")
+  file.create(empty_startup)
+  child_env <- character()
+  for (name in c("R_ENVIRON_USER", "R_PROFILE_USER", "R_TESTS")) {
+    path <- Sys.getenv(name, unset = NA_character_)
+    if (!is.na(path) && nzchar(path) && file.exists(path)) {
+      path <- normalizePath(path, winslash = "/", mustWork = TRUE)
+    } else {
+      path <- empty_startup
+    }
+    child_env <- c(child_env, paste0(name, "=", shQuote(path)))
+  }
+
   old_wd <- setwd(build_dir)
   status <- tryCatch(
     system2(file.path(R.home("bin"), "R"), c("CMD", "SHLIB", basename(src)),
-            stdout = "shlib_out.txt", stderr = "shlib_out.txt"),
+            stdout = "shlib_out.txt", stderr = "shlib_out.txt", env = child_env),
     finally = setwd(old_wd)
   )
 
   so_path <- file.path(build_dir, paste0(stem, .Platform$dynlib.ext))
   if (status != 0L || !file.exists(so_path)) {
-    cat("SKIP:", skip_label, "build failed; compiled-consumer coverage was not run\n")
-    cat("R CMD SHLIB status:", status, "\n")
-    cat("build directory:", build_dir, "\n")
-    cat("compiler output follows:\n")
     out <- file.path(build_dir, "shlib_out.txt")
-    if (file.exists(out)) {
-      cat(readLines(out, warn = FALSE), sep = "\n")
+    compiler_output <- if (file.exists(out)) {
+      readLines(out, warn = FALSE)
+    } else {
+      "<compiler output file was not created>"
     }
-    quit(save = "no", status = 0L)
+    stop(paste(c(
+      paste0(label, " build failed"),
+      paste0("R CMD SHLIB status: ", status),
+      paste0("build directory: ", build_dir),
+      "compiler output follows:",
+      compiler_output
+    ), collapse = "\n"), call. = FALSE)
   }
 
   dyn.load(so_path, local = FALSE)

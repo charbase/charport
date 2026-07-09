@@ -22,27 +22,63 @@ extern "C" {
 
 typedef void * (*charport_reader_init_fn)(SEXP x);
 typedef void (*charport_reader_release_fn)(void * state);
-typedef void (*charport_reader_range_fn)(void * state, R_xlen_t start,
-                                         R_xlen_t size,
-                                         const char ** out_ptrs,
-                                         int * out_lens,
-                                         cetype_ext_t * out_encs);
-typedef void (*charport_reader_index_fn)(void * state,
-                                         const R_xlen_t * indices,
-                                         R_xlen_t size,
-                                         const char ** out_ptrs,
-                                         int * out_lens,
-                                         cetype_ext_t * out_encs);
+typedef void (*charport_reader_strviews_range_fn)(void * state,
+                                                  R_xlen_t start,
+                                                  R_xlen_t size,
+                                                  const char ** out_ptrs,
+                                                  int * out_lens,
+                                                  cetype_ext_t * out_encs);
+typedef void (*charport_reader_strviews_index_fn)(void * state,
+                                                  const R_xlen_t * indices,
+                                                  R_xlen_t size,
+                                                  const char ** out_ptrs,
+                                                  int * out_lens,
+                                                  cetype_ext_t * out_encs);
+typedef void (*charport_reader_byteviews_range_fn)(void * state,
+                                                   R_xlen_t start,
+                                                   R_xlen_t size,
+                                                   const char ** out_ptrs,
+                                                   int * out_lens);
+typedef void (*charport_reader_byteviews_index_fn)(void * state,
+                                                   const R_xlen_t * indices,
+                                                   R_xlen_t size,
+                                                   const char ** out_ptrs,
+                                                   int * out_lens);
+typedef void (*charport_reader_lengths_range_fn)(void * state,
+                                                 R_xlen_t start,
+                                                 R_xlen_t size,
+                                                 int * out_lens);
+typedef void (*charport_reader_lengths_index_fn)(void * state,
+                                                 const R_xlen_t * indices,
+                                                 R_xlen_t size,
+                                                 int * out_lens);
+typedef void (*charport_reader_encodings_range_fn)(void * state,
+                                                   R_xlen_t start,
+                                                   R_xlen_t size,
+                                                   cetype_ext_t * out_encs);
+typedef void (*charport_reader_encodings_index_fn)(void * state,
+                                                   const R_xlen_t * indices,
+                                                   R_xlen_t size,
+                                                   cetype_ext_t * out_encs);
 
 typedef struct charport_reader_state_fns {
     charport_reader_init_fn init;
     charport_reader_release_fn release;
 } charport_reader_state_fns;
 
-typedef struct charport_reader_access_fns {
-    charport_reader_range_fn range;
-    charport_reader_index_fn index;
-} charport_reader_access_fns;
+typedef struct charport_reader_range_fns {
+    charport_reader_strviews_range_fn strviews;
+    charport_reader_byteviews_range_fn byteviews;
+    charport_reader_lengths_range_fn lengths;
+    charport_reader_encodings_range_fn encodings;
+} charport_reader_range_fns;
+
+typedef struct charport_reader_index_fns {
+    charport_reader_strviews_index_fn strviews;
+    charport_reader_byteviews_index_fn byteviews;
+    charport_reader_lengths_index_fn lengths;
+    charport_reader_encodings_index_fn encodings;
+} charport_reader_index_fns;
 
 typedef struct charport_reader_capabilities {
     bool persistent_views;
@@ -53,7 +89,8 @@ typedef struct charport_reader {
     R_xlen_t n;
     void * state;
     charport_reader_release_fn release;
-    charport_reader_access_fns access;
+    charport_reader_range_fns range;
+    charport_reader_index_fns index;
     charport_reader_capabilities capabilities;
 } charport_reader;
 
@@ -89,7 +126,8 @@ static inline void charport_reader_release(charport_reader * r) {
 
 typedef void (*charport_register_altrep_t)(R_altrep_class_t cls,
                                            charport_reader_state_fns state_fns,
-                                           charport_reader_access_fns access_fns,
+                                           charport_reader_range_fns range_fns,
+                                           charport_reader_index_fns index_fns,
                                            charport_reader_capabilities capabilities);
 typedef void (*charport_unregister_altrep_t)(R_altrep_class_t cls);
 typedef charport_reader (*charport_resolve_t)(SEXP x);
@@ -135,11 +173,12 @@ inline charport_reader resolve(SEXP x) {
 
 inline void register_altrep(R_altrep_class_t cls,
                             charport_reader_state_fns state_fns,
-                            charport_reader_access_fns access_fns,
+                            charport_reader_range_fns range_fns,
+                            charport_reader_index_fns index_fns,
                             charport_reader_capabilities capabilities) {
   static charport_register_altrep_t fn =
     reinterpret_cast<charport_register_altrep_t>(detail::fetch("charport_register_altrep"));
-  fn(cls, state_fns, access_fns, capabilities);
+  fn(cls, state_fns, range_fns, index_fns, capabilities);
 }
 
 inline void unregister_altrep(R_altrep_class_t cls) {
@@ -251,31 +290,31 @@ public:
   ByteView byteview(R_xlen_t i) const {
     const char * ptr = nullptr;
     int len = NA_INTEGER;
-    r_.access.range(r_.state, i, 1, &ptr, &len, nullptr);
+    r_.range.byteviews(r_.state, i, 1, &ptr, &len);
     return make_byteview(ptr, len);
   }
   int length(R_xlen_t i) const {
     int len = NA_INTEGER;
-    r_.access.range(r_.state, i, 1, nullptr, &len, nullptr);
+    r_.range.lengths(r_.state, i, 1, &len);
     return len;
   }
   cetype_ext_t encoding(R_xlen_t i) const {
     cetype_ext_t enc = cetype_ext_t::CE_NA;
-    r_.access.range(r_.state, i, 1, nullptr, nullptr, &enc);
+    r_.range.encodings(r_.state, i, 1, &enc);
     return enc;
   }
   StrView view(R_xlen_t i) const {
     const char * ptr = nullptr;
     int len = NA_INTEGER;
     cetype_ext_t enc = cetype_ext_t::CE_NA;
-    r_.access.range(r_.state, i, 1, &ptr, &len, &enc);
+    r_.range.strviews(r_.state, i, 1, &ptr, &len, &enc);
     return make_strview(ptr, len, enc);
   }
   StrView operator[](R_xlen_t i) const { return view(i); }
 
   void views(R_xlen_t start, R_xlen_t size, const char ** out_ptrs,
              int * out_lens, cetype_ext_t * out_encs) const {
-    r_.access.range(r_.state, start, size, out_ptrs, out_lens, out_encs);
+    r_.range.strviews(r_.state, start, size, out_ptrs, out_lens, out_encs);
   }
   void views(int start, R_xlen_t size, const char ** out_ptrs,
              int * out_lens, cetype_ext_t * out_encs) const {
@@ -291,7 +330,7 @@ public:
 
   void byteviews(R_xlen_t start, R_xlen_t size, const char ** out_ptrs,
                  int * out_lens) const {
-    r_.access.range(r_.state, start, size, out_ptrs, out_lens, nullptr);
+    r_.range.byteviews(r_.state, start, size, out_ptrs, out_lens);
   }
   void byteviews(int start, R_xlen_t size, const char ** out_ptrs,
                  int * out_lens) const {
@@ -306,13 +345,13 @@ public:
   }
 
   void lengths(R_xlen_t start, R_xlen_t size, int * out) const {
-    r_.access.range(r_.state, start, size, nullptr, out, nullptr);
+    r_.range.lengths(r_.state, start, size, out);
   }
   void lengths(int start, R_xlen_t size, int * out) const {
     lengths(static_cast<R_xlen_t>(start), size, out);
   }
   void encodings(R_xlen_t start, R_xlen_t size, cetype_ext_t * out) const {
-    r_.access.range(r_.state, start, size, nullptr, nullptr, out);
+    r_.range.encodings(r_.state, start, size, out);
   }
   void encodings(int start, R_xlen_t size, cetype_ext_t * out) const {
     encodings(static_cast<R_xlen_t>(start), size, out);
@@ -320,7 +359,7 @@ public:
 
   void views(const R_xlen_t * indices, R_xlen_t size, const char ** out_ptrs,
              int * out_lens, cetype_ext_t * out_encs) const {
-    r_.access.index(r_.state, indices, size, out_ptrs, out_lens, out_encs);
+    r_.index.strviews(r_.state, indices, size, out_ptrs, out_lens, out_encs);
   }
   void views(const R_xlen_t * indices, R_xlen_t size, StrViews & out) const {
     out.resize(size);
@@ -329,17 +368,17 @@ public:
 
   void byteviews(const R_xlen_t * indices, R_xlen_t size, const char ** out_ptrs,
                  int * out_lens) const {
-    r_.access.index(r_.state, indices, size, out_ptrs, out_lens, nullptr);
+    r_.index.byteviews(r_.state, indices, size, out_ptrs, out_lens);
   }
   void byteviews(const R_xlen_t * indices, R_xlen_t size, ByteViews & out) const {
     out.resize(size);
     byteviews(indices, size, out.ptrs(), out.lengths());
   }
   void lengths(const R_xlen_t * indices, R_xlen_t size, int * out) const {
-    r_.access.index(r_.state, indices, size, nullptr, out, nullptr);
+    r_.index.lengths(r_.state, indices, size, out);
   }
   void encodings(const R_xlen_t * indices, R_xlen_t size, cetype_ext_t * out) const {
-    r_.access.index(r_.state, indices, size, nullptr, nullptr, out);
+    r_.index.encodings(r_.state, indices, size, out);
   }
 
   class const_iterator {
@@ -355,7 +394,7 @@ public:
       const char * ptr = nullptr;
       int len = NA_INTEGER;
       cetype_ext_t enc = cetype_ext_t::CE_NA;
-      r_->access.range(r_->state, i_, 1, &ptr, &len, &enc);
+      r_->range.strviews(r_->state, i_, 1, &ptr, &len, &enc);
       return make_strview(ptr, len, enc);
     }
     const_iterator & operator++() noexcept { ++i_; return *this; }

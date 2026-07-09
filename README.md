@@ -31,10 +31,16 @@ materialization.
 On the write path, writing standard R strings via `SET_STRING_ELT` is
 the baseline, compared to writing the same data to `charvec`.
 
+For ordinary materialized R character vectors, `Reader` uses standard R
+storage. On the benchmark run used for the plot, `Reader` range length
+access over a base R vector took 8.77 ms, compared with 7.62 ms for
+direct `STRING_PTR_RO` length access.
+
 ![charport benchmark](man/figures/bench.png)
 
-These measurements show the materialization and construction costs for
-this workload. They are not a general performance guarantee.
+These measurements show materialization, construction, and
+fallback-access costs for this workload. They are not a general
+performance guarantee.
 
 ## A broker for ALTREP strings
 

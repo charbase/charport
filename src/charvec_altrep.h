@@ -14,6 +14,8 @@
 #include <exception>
 
 namespace cpi = charport::internal;
+namespace cpv = charport::charvec;
+namespace cpc = charport::charvec::components;
 
 namespace charport {
 namespace internal {
@@ -234,7 +236,7 @@ struct charvec_altrep {
   static R_altrep_class_t class_t;
 
   struct make_owned_context {
-    cpi::charvec_data * data;
+    cpv::Store * data;
   };
 
   static SEXP MakeOwnedBody(void * ptr) {
@@ -253,7 +255,7 @@ struct charvec_altrep {
     ctx->data = nullptr;
   }
 
-  static SEXP MakeOwned(cpi::charvec_data * data) {
+  static SEXP MakeOwned(cpv::Store * data) {
     if(data == nullptr) {
       Rf_error("charvec MakeOwned: data is NULL");
     }
@@ -263,7 +265,7 @@ struct charvec_altrep {
   }
 
   static void Finalize(SEXP xp) {
-    auto * ptr = static_cast<cpi::charvec_data*>(R_ExternalPtrAddr(xp));
+    auto * ptr = static_cast<cpv::Store*>(R_ExternalPtrAddr(xp));
     if(ptr == nullptr) {
       return;
     }
@@ -271,11 +273,11 @@ struct charvec_altrep {
     R_ClearExternalPtr(xp);
   }
 
-  static cpi::charvec_data * Ptr(SEXP vec) {
-    return static_cast<cpi::charvec_data*>(R_ExternalPtrAddr(R_altrep_data1(vec)));
+  static cpv::Store * Ptr(SEXP vec) {
+    return static_cast<cpv::Store*>(R_ExternalPtrAddr(R_altrep_data1(vec)));
   }
 
-  static cpi::charvec_data & Get(SEXP vec) {
+  static cpv::Store & Get(SEXP vec) {
     return *Ptr(vec);
   }
 
@@ -316,28 +318,24 @@ struct charvec_altrep {
     return data2;
   }
 
-  static SEXP DuplicateEX(SEXP vec, Rboolean /* deep */) {
+  static SEXP Duplicate(SEXP vec, Rboolean /* deep */) {
     return charport_sexp_guard("charvec Duplicate", [&]() -> SEXP {
-    SEXP data2 = R_altrep_data2(vec);
-    if(data2 != R_NilValue) {
-      const R_xlen_t n = Rf_xlength(data2);
-      const SEXP * ptr = STRING_PTR_RO(data2);
-      auto out = charport::charvec::Builder::build_store(static_cast<size_t>(n),
-        [&](cpi::charvec_shard & sh, cpi::charvec_records & rec) {
-          for(R_xlen_t i = 0; i < n; ++i) {
-            cpi::copy_record(sh, rec, static_cast<size_t>(i),
-                             cpi::charsxp_to_view(ptr[i]));
-          }
-        });
-      return MakeOwned(out.release());
+      SEXP data2 = R_altrep_data2(vec);
+      if(data2 != R_NilValue) {
+        const R_xlen_t n = Rf_xlength(data2);
+        const SEXP * ptr = STRING_PTR_RO(data2);
+        auto out = charport::charvec::Builder::build_store(static_cast<size_t>(n),
+          [&](cpc::BuilderShard & sh, cpc::RecordTable & rec) {
+            for(R_xlen_t i = 0; i < n; ++i) {
+              cpc::copy_record(sh, rec, static_cast<size_t>(i),
+                               cpi::charsxp_to_view(ptr[i]));
+            }
+          });
+        return MakeOwned(out.release());
       }
-      auto * out = new cpi::charvec_data(Get(vec));
+      auto * out = new cpv::Store(Get(vec));
       return MakeOwned(out);
     });
-  }
-
-  static SEXP Duplicate(SEXP vec, Rboolean deep) {
-    return DuplicateEX(vec, deep);
   }
 
   static const void * Dataptr_or_null(SEXP vec) {
@@ -412,18 +410,18 @@ struct charvec_altrep {
         ? Rf_xlength(data2)
         : static_cast<R_xlen_t>(Get(x).size());
 
-      auto copy_element = [&](cpi::charvec_shard & sh, cpi::charvec_records & recs,
+      auto copy_element = [&](cpc::BuilderShard & sh, cpc::RecordTable & recs,
                               size_t out_i, R_xlen_t zero_based) {
         if(zero_based < 0 || zero_based >= xlen) {
           return;
         }
         if(data2_ptr != nullptr) {
-          cpi::copy_record(sh, recs, out_i, cpi::charsxp_to_view(data2_ptr[zero_based]));
+          cpc::copy_record(sh, recs, out_i, cpi::charsxp_to_view(data2_ptr[zero_based]));
           return;
         }
         const charport_strview rec = Get(x).view(static_cast<size_t>(zero_based));
         if(!rec.is_na()) {
-          cpi::copy_record(sh, recs, out_i, rec);
+          cpc::copy_record(sh, recs, out_i, rec);
         }
       };
 
@@ -431,7 +429,7 @@ struct charvec_altrep {
         const int * idx = LOGICAL(indx);
         const R_xlen_t idx_len = Rf_xlength(indx);
         if(idx_len == 0) {
-          return MakeOwned(new cpi::charvec_data());
+          return MakeOwned(new cpv::Store());
         }
 
         R_xlen_t out_len = 0;
@@ -443,7 +441,7 @@ struct charvec_altrep {
         }
 
         auto out = charport::charvec::Builder::build_store(static_cast<size_t>(out_len),
-          [&](cpi::charvec_shard & sh, cpi::charvec_records & rec) {
+          [&](cpc::BuilderShard & sh, cpc::RecordTable & rec) {
             R_xlen_t out_i = 0;
             for(R_xlen_t i = 0; i < xlen; ++i) {
               const int idx_i = idx[i % idx_len];
@@ -462,7 +460,7 @@ struct charvec_altrep {
       }
       const R_xlen_t len = Rf_xlength(indx);
       auto out = charport::charvec::Builder::build_store(static_cast<size_t>(len),
-        [&](cpi::charvec_shard & sh, cpi::charvec_records & rec) {
+        [&](cpc::BuilderShard & sh, cpc::RecordTable & rec) {
           if(TYPEOF(indx) == INTSXP) {
             const int * idx = INTEGER(indx);
             for(R_xlen_t i = 0; i < len; ++i) {
@@ -473,8 +471,11 @@ struct charvec_altrep {
           } else {
             const double * idx = REAL(indx);
             for(R_xlen_t i = 0; i < len; ++i) {
-              if(!ISNAN(idx[i])) {
-                copy_element(sh, rec, static_cast<size_t>(i), static_cast<R_xlen_t>(idx[i]) - 1);
+              const double one_based = idx[i];
+              if(R_FINITE(one_based) && one_based >= 1.0 &&
+                 one_based <= static_cast<double>(xlen)) {
+                copy_element(sh, rec, static_cast<size_t>(i),
+                             static_cast<R_xlen_t>(one_based) - 1);
               }
             }
           }
@@ -548,7 +549,7 @@ struct charvec_altrep {
       const unsigned char * data_offset = layout.data_offset;
 
       auto ret = charport::charvec::Builder::build_store(static_cast<R_xlen_t>(layout.n),
-        [&](cpi::charvec_shard & sh, cpi::charvec_records & rec) {
+        [&](cpc::BuilderShard & sh, cpc::RecordTable & rec) {
           for(size_t i = 0; i < layout.n; ++i) {
             const uint32_t size = charvec_read_u32_advance(size_offset, layout.swap);
             if(!cpi::check_r_string_len(size)) {
@@ -567,13 +568,13 @@ struct charvec_altrep {
             case cetype_ext_t::CE_LATIN1:
             case cetype_ext_t::CE_NATIVE:
             case cetype_ext_t::CE_BYTES:
-              cpi::copy_record(sh, rec, i, payload, stored_len, encoding);
+              cpc::copy_record(sh, rec, i, payload, stored_len, encoding);
               break;
             case cetype_ext_t::CE_NA:
               if(stored_len != 0) {
                 throw std::runtime_error("serialized NA string must have zero length");
               }
-              cpi::copy_record(sh, rec, i, nullptr, 0, cetype_ext_t::CE_NA);
+              cpc::copy_record(sh, rec, i, nullptr, 0, cetype_ext_t::CE_NA);
               break;
             default:
               throw std::runtime_error("invalid string encoding in serialized_state");
@@ -599,35 +600,99 @@ struct charvec_altrep {
     return Ptr(x);
   }
 
-  static void reader_range(void * state, R_xlen_t start, R_xlen_t size,
-                           const char ** out_ptrs, int * out_lens,
-                           cetype_ext_t * out_encs) {
-    const cpi::charvec_data * data = static_cast<cpi::charvec_data *>(state);
+  static void reader_strviews_range(void * state, R_xlen_t start, R_xlen_t size,
+                                    const char ** out_ptrs, int * out_lens,
+                                    cetype_ext_t * out_encs) {
+    if(size == 0) {
+      return;
+    }
+    const cpv::Store * data = static_cast<cpv::Store *>(state);
     const size_t offset = static_cast<size_t>(start);
     const size_t count = static_cast<size_t>(size);
-    if(out_ptrs != nullptr) {
-      std::memcpy(out_ptrs, data->records.ptrs() + offset,
-                  count * sizeof(const char *));
-    }
-    if(out_lens != nullptr) {
-      std::memcpy(out_lens, data->records.lengths() + offset,
-                  count * sizeof(int));
-    }
-    if(out_encs != nullptr) {
-      std::memcpy(out_encs, data->records.encodings() + offset,
-                  count * sizeof(cetype_ext_t));
+    std::memcpy(out_ptrs, data->records.ptrs() + offset,
+                count * sizeof(const char *));
+    std::memcpy(out_lens, data->records.lengths() + offset,
+                count * sizeof(int));
+    std::memcpy(out_encs, data->records.encodings() + offset,
+                count * sizeof(cetype_ext_t));
+  }
+
+  static void reader_strviews_index(void * state, const R_xlen_t * indices,
+                                    R_xlen_t size, const char ** out_ptrs,
+                                    int * out_lens, cetype_ext_t * out_encs) {
+    const cpv::Store * data = static_cast<cpv::Store *>(state);
+    for(R_xlen_t j = 0; j < size; ++j) {
+      const size_t i = static_cast<size_t>(indices[j]);
+      out_ptrs[j] = data->records.ptrs()[i];
+      out_lens[j] = data->records.lengths()[i];
+      out_encs[j] = data->records.encodings()[i];
     }
   }
 
-  static void reader_index(void * state, const R_xlen_t * indices,
-                           R_xlen_t size, const char ** out_ptrs,
-                           int * out_lens, cetype_ext_t * out_encs) {
-    const cpi::charvec_data * data = static_cast<cpi::charvec_data *>(state);
+  static void reader_byteviews_range(void * state, R_xlen_t start, R_xlen_t size,
+                                     const char ** out_ptrs, int * out_lens) {
+    if(size == 0) {
+      return;
+    }
+    const cpv::Store * data = static_cast<cpv::Store *>(state);
+    const size_t offset = static_cast<size_t>(start);
+    const size_t count = static_cast<size_t>(size);
+    std::memcpy(out_ptrs, data->records.ptrs() + offset,
+                count * sizeof(const char *));
+    std::memcpy(out_lens, data->records.lengths() + offset,
+                count * sizeof(int));
+  }
+
+  static void reader_byteviews_index(void * state, const R_xlen_t * indices,
+                                     R_xlen_t size, const char ** out_ptrs,
+                                     int * out_lens) {
+    const cpv::Store * data = static_cast<cpv::Store *>(state);
     for(R_xlen_t j = 0; j < size; ++j) {
       const size_t i = static_cast<size_t>(indices[j]);
-      if(out_ptrs != nullptr) out_ptrs[j] = data->records.ptrs()[i];
-      if(out_lens != nullptr) out_lens[j] = data->records.lengths()[i];
-      if(out_encs != nullptr) out_encs[j] = data->records.encodings()[i];
+      out_ptrs[j] = data->records.ptrs()[i];
+      out_lens[j] = data->records.lengths()[i];
+    }
+  }
+
+  static void reader_lengths_range(void * state, R_xlen_t start, R_xlen_t size,
+                                   int * out_lens) {
+    if(size == 0) {
+      return;
+    }
+    const cpv::Store * data = static_cast<cpv::Store *>(state);
+    const size_t offset = static_cast<size_t>(start);
+    const size_t count = static_cast<size_t>(size);
+    std::memcpy(out_lens, data->records.lengths() + offset,
+                count * sizeof(int));
+  }
+
+  static void reader_lengths_index(void * state, const R_xlen_t * indices,
+                                   R_xlen_t size, int * out_lens) {
+    const cpv::Store * data = static_cast<cpv::Store *>(state);
+    for(R_xlen_t j = 0; j < size; ++j) {
+      const size_t i = static_cast<size_t>(indices[j]);
+      out_lens[j] = data->records.lengths()[i];
+    }
+  }
+
+  static void reader_encodings_range(void * state, R_xlen_t start, R_xlen_t size,
+                                     cetype_ext_t * out_encs) {
+    if(size == 0) {
+      return;
+    }
+    const cpv::Store * data = static_cast<cpv::Store *>(state);
+    const size_t offset = static_cast<size_t>(start);
+    const size_t count = static_cast<size_t>(size);
+    std::memcpy(out_encs, data->records.encodings() + offset,
+                count * sizeof(cetype_ext_t));
+  }
+
+  static void reader_encodings_index(void * state, const R_xlen_t * indices,
+                                     R_xlen_t size, cetype_ext_t * out_encs) {
+    const cpv::Store * data = static_cast<cpv::Store *>(state);
+    for(R_xlen_t j = 0; j < size; ++j) {
+      const size_t i = static_cast<size_t>(indices[j]);
+      out_encs[j] = data->records.encodings()[i];
     }
   }
 
@@ -638,7 +703,6 @@ struct charvec_altrep {
 
     R_set_altrep_Serialized_state_method(class_t, Serialized_state);
     R_set_altrep_Unserialize_method(class_t, Unserialize);
-    R_set_altrep_DuplicateEX_method(class_t, DuplicateEX);
     R_set_altrep_Duplicate_method(class_t, Duplicate);
 
     R_set_altrep_Length_method(class_t, Length);

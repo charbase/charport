@@ -16,7 +16,7 @@ if (!file.exists(helper)) helper <- file.path("tests", helper)
 source(helper)
 
 catn("compiling the charport wrapper consumer (R CMD SHLIB)")
-dll <- compile_test_dso("charport_consumer.cpp", skip_label = "charport wrapper consumer")
+dll <- compile_test_dso("charport_consumer.cpp", label = "charport wrapper consumer")
 
 stats     <- charvec_stats
 consumer_symbol <- function(name) getNativeSymbolInfo(name, PACKAGE = dll[["name"]])

@@ -28,17 +28,17 @@ public:
     if(n < 0) {
       throw std::runtime_error("charvec builder: negative length");
     }
-    records_ = internal::charvec_records(static_cast<size_t>(n));
-    shard_ = internal::charvec_shard();
+    records_ = components::RecordTable(static_cast<size_t>(n));
+    shard_ = components::BuilderShard();
   }
 
   void set(R_xlen_t i, const char * ptr, size_t len, cetype_ext_t enc) {
     if(ptr == nullptr || enc == cetype_ext_t::CE_NA) {
-      internal::copy_record(shard_, records_,
-                            static_cast<size_t>(i), nullptr, 0, cetype_ext_t::CE_NA);
+      components::copy_record(shard_, records_,
+                              static_cast<size_t>(i), nullptr, 0, cetype_ext_t::CE_NA);
       return;
     }
-    internal::copy_record(shard_, records_, static_cast<size_t>(i), ptr, len, enc);
+    components::copy_record(shard_, records_, static_cast<size_t>(i), ptr, len, enc);
   }
 
   void set(R_xlen_t i, const StrView & value) {
@@ -54,11 +54,11 @@ public:
   }
 
   char * reserve(R_xlen_t i, size_t len, cetype_ext_t enc) {
-    return internal::fill_record(shard_, records_, static_cast<size_t>(i), len, enc);
+    return components::fill_record(shard_, records_, static_cast<size_t>(i), len, enc);
   }
 
-  std::unique_ptr<internal::charvec_data> release_store() {
-    auto store = internal::make_unique<internal::charvec_data>(std::move(records_));
+  std::unique_ptr<Store> release_store() {
+    auto store = internal::make_unique<Store>(std::move(records_));
     store->adopt_chain(shard_);
     return store;
   }
@@ -70,21 +70,21 @@ public:
   }
 
   template<typename Fill>
-  static std::unique_ptr<internal::charvec_data> build_store(R_xlen_t n, Fill && fill) {
+  static std::unique_ptr<Store> build_store(R_xlen_t n, Fill && fill) {
     if(n < 0) {
       throw std::runtime_error("charvec builder: negative length");
     }
-    internal::charvec_records records(static_cast<size_t>(n));
-    internal::charvec_shard shard;
+    components::RecordTable records(static_cast<size_t>(n));
+    components::BuilderShard shard;
     fill(shard, records);
-    auto store = internal::make_unique<internal::charvec_data>(std::move(records));
+    auto store = internal::make_unique<Store>(std::move(records));
     store->adopt_chain(shard);
     return store;
   }
 
 private:
-  internal::charvec_records records_;
-  internal::charvec_shard shard_;
+  components::RecordTable records_;
+  components::BuilderShard shard_;
 };
 
 class DirectBuilder {
@@ -102,8 +102,8 @@ public:
     if(n < 0) {
       throw std::runtime_error("charvec builder: negative length");
     }
-    records_ = internal::charvec_records(static_cast<size_t>(n));
-    shard_ = internal::charvec_shard();
+    records_ = components::RecordTable(static_cast<size_t>(n));
+    shard_ = components::BuilderShard();
     if(total_bytes > 0) {
       allocate_next_slice(total_bytes);
     }
@@ -134,7 +134,7 @@ public:
   }
 
   char * data_slice(size_t i = 0) {
-    char * ptr = internal::shard_data_slice(shard_, i);
+    char * ptr = components::shard_data_slice(shard_, i);
     if(ptr == nullptr) {
       throw std::runtime_error("charvec direct builder: data slice index out of range");
     }
@@ -142,11 +142,11 @@ public:
   }
 
   char * allocate_next_slice(size_t bytes) {
-    return internal::shard_push_slice(shard_, bytes);
+    return components::shard_push_slice(shard_, bytes);
   }
 
-  std::unique_ptr<internal::charvec_data> release_store() {
-    auto store = internal::make_unique<internal::charvec_data>(std::move(records_));
+  std::unique_ptr<Store> release_store() {
+    auto store = internal::make_unique<Store>(std::move(records_));
     store->adopt_chain(shard_);
     return store;
   }
@@ -158,8 +158,8 @@ public:
   }
 
 private:
-  internal::charvec_records records_;
-  internal::charvec_shard shard_;
+  components::RecordTable records_;
+  components::BuilderShard shard_;
 };
 
 class ParallelBuilder {
@@ -180,7 +180,7 @@ public:
     if(n_shards == 0) {
       throw std::runtime_error("charvec builder: n_shards must be >= 1");
     }
-    records_ = internal::charvec_records(static_cast<size_t>(n));
+    records_ = components::RecordTable(static_cast<size_t>(n));
     shards_.clear();
     shards_.reserve(n_shards);
     for(size_t i = 0; i < n_shards; ++i) {
@@ -191,13 +191,13 @@ public:
   size_t n_shards() const noexcept { return shards_.size(); }
 
   void set(size_t shard, R_xlen_t i, const char * ptr, size_t len, cetype_ext_t enc) {
-    internal::charvec_shard & s = shard_at(shard);
+    components::BuilderShard & s = shard_at(shard);
     if(ptr == nullptr || enc == cetype_ext_t::CE_NA) {
-      internal::copy_record(s, records_,
-                            static_cast<size_t>(i), nullptr, 0, cetype_ext_t::CE_NA);
+      components::copy_record(s, records_,
+                              static_cast<size_t>(i), nullptr, 0, cetype_ext_t::CE_NA);
       return;
     }
-    internal::copy_record(s, records_, static_cast<size_t>(i), ptr, len, enc);
+    components::copy_record(s, records_, static_cast<size_t>(i), ptr, len, enc);
   }
 
   void set(size_t shard, R_xlen_t i, const StrView & value) {
@@ -213,12 +213,12 @@ public:
   }
 
   char * reserve(size_t shard, R_xlen_t i, size_t len, cetype_ext_t enc) {
-    return internal::fill_record(shard_at(shard), records_, static_cast<size_t>(i), len, enc);
+    return components::fill_record(shard_at(shard), records_, static_cast<size_t>(i), len, enc);
   }
 
-  std::unique_ptr<internal::charvec_data> release_store() {
-    auto store = internal::make_unique<internal::charvec_data>(std::move(records_));
-    for(internal::charvec_shard & shard : shards_) {
+  std::unique_ptr<Store> release_store() {
+    auto store = internal::make_unique<Store>(std::move(records_));
+    for(components::BuilderShard & shard : shards_) {
       store->adopt_chain(shard);
     }
     shards_.clear();
@@ -232,15 +232,15 @@ public:
   }
 
 private:
-  internal::charvec_shard & shard_at(size_t shard) {
+  components::BuilderShard & shard_at(size_t shard) {
     if(shard >= shards_.size()) {
       throw std::runtime_error("charvec builder: shard index out of range");
     }
     return shards_[shard];
   }
 
-  internal::charvec_records records_;
-  std::vector<internal::charvec_shard> shards_;
+  components::RecordTable records_;
+  std::vector<components::BuilderShard> shards_;
 };
 
 inline SEXP build_scalar(const StrView & value) {

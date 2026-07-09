@@ -11,7 +11,7 @@ bool is_charvec_sexp(SEXP x) {
   return R_altrep_inherits(x, charvec_altrep::class_t) == TRUE;
 }
 
-cpi::charvec_data & checked_store(SEXP x) {
+cpv::Store & checked_store(SEXP x) {
   if(!is_charvec_sexp(x)) {
     throw std::runtime_error("x must be a charvec");
   }
@@ -41,7 +41,7 @@ extern "C" SEXP charport_charvec_wrap(void * store_) {
     Rf_error("charport charvec wrap: store is NULL");
   }
   return charport_sexp_guard("charvec wrap", [&]() -> SEXP {
-    return charvec_altrep::MakeOwned(static_cast<cpi::charvec_data *>(store_));
+    return charvec_altrep::MakeOwned(static_cast<cpv::Store *>(store_));
   });
 }
 
@@ -53,9 +53,9 @@ extern "C" SEXP C_as_charvec(SEXP x) {
     const R_xlen_t n = Rf_xlength(x);
     const SEXP * ptr = STRING_PTR_RO(x);
     auto store = charport::charvec::Builder::build_store(n,
-      [&](cpi::charvec_shard & shard, cpi::charvec_records & rec) {
+      [&](cpc::BuilderShard & shard, cpc::RecordTable & rec) {
         for(R_xlen_t i = 0; i < n; ++i) {
-          cpi::copy_record(shard, rec, static_cast<size_t>(i),
+          cpc::copy_record(shard, rec, static_cast<size_t>(i),
                            cpi::charsxp_to_view(ptr[i]));
         }
       });
@@ -65,7 +65,7 @@ extern "C" SEXP C_as_charvec(SEXP x) {
 
 extern "C" SEXP C_charvec_alloc(SEXP n_) {
   return charport_sexp_guard("charvec_alloc", [&]() -> SEXP {
-    return charvec_altrep::MakeOwned(new cpi::charvec_data(checked_len_arg(n_)));
+    return charvec_altrep::MakeOwned(new cpv::Store(checked_len_arg(n_)));
   });
 }
 

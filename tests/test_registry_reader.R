@@ -25,7 +25,7 @@ expect_error_matching <- function(expr, pattern) {
 }
 
 catn("compiling the charport reader consumer (R CMD SHLIB)")
-dll <- compile_test_dso("charport_consumer.cpp", skip_label = "charport reader consumer")
+dll <- compile_test_dso("charport_consumer.cpp", label = "charport reader consumer")
 
 consumer_symbol <- function(name) getNativeSymbolInfo(name, PACKAGE = dll[["name"]])
 roundtrip <- function(x) .Call(consumer_symbol("C_consumer_reader_roundtrip"), x)
@@ -57,6 +57,15 @@ release_test_vector <- function() {
 }
 release_test_count <- function() {
   .Call(consumer_symbol("C_consumer_release_test_count"))
+}
+release_test_reset_access_counts <- function() {
+  invisible(.Call(consumer_symbol("C_consumer_release_test_reset_access_counts")))
+}
+release_test_access_counts <- function() {
+  .Call(consumer_symbol("C_consumer_release_test_access_counts"))
+}
+reader_touch_all_access_paths <- function(x) {
+  invisible(.Call(consumer_symbol("C_consumer_reader_touch_all_access_paths"), x))
 }
 
 expect_registered_class <- function(x) {
@@ -223,6 +232,7 @@ stopifnot(identical(range_roundtrip(x), as.character(1:5000)))
 catn("reader edge cases")
 stopifnot(identical(roundtrip(character(0)), character(0)))
 stopifnot(identical(roundtrip(charvec()), character(0)))
+reader_touch_all_access_paths(charvec())
 stopifnot(identical(roundtrip(c(NA_character_, NA_character_)), c(NA_character_, NA_character_)))
 stopifnot(identical(roundtrip(as_charvec(c(NA_character_, NA_character_))),
                     c(NA_character_, NA_character_)))
@@ -272,6 +282,15 @@ stopifnot(identical(reader_capabilities(z), c(FALSE, FALSE, FALSE)))
 stopifnot(identical(release_test_count(), count0 + 1L))
 stopifnot(identical(roundtrip(z), c("alpha", "beta")))
 stopifnot(identical(release_test_count(), count0 + 2L))
+release_test_reset_access_counts()
+reader_touch_all_access_paths(z)
+stopifnot(identical(
+  release_test_access_counts(),
+  c(strviews_range = 1L, strviews_index = 1L,
+    byteviews_range = 1L, byteviews_index = 1L,
+    lengths_range = 1L, lengths_index = 1L,
+    encodings_range = 1L, encodings_index = 1L)
+))
 unregister_release_test()
 
 catn("reader equivalence under serialization round trip")

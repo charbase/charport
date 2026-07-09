@@ -11,6 +11,18 @@ namespace {
 
 R_altrep_class_t release_test_class;
 int release_test_count = 0;
+int release_test_access_counts[8] = {};
+
+enum release_test_access {
+  release_strviews_range = 0,
+  release_strviews_index,
+  release_byteviews_range,
+  release_byteviews_index,
+  release_lengths_range,
+  release_lengths_index,
+  release_encodings_range,
+  release_encodings_index
+};
 
 struct release_test_state {
   int marker;
@@ -37,25 +49,86 @@ charport_strview release_test_view(void * state, R_xlen_t i) {
                 : make_strview("beta", 4, cetype_ext_t::CE_ASCII);
 }
 
-void release_test_range(void * state, R_xlen_t start, R_xlen_t size,
-                        const char ** out_ptrs, int * out_lens,
-                        cetype_ext_t * out_encs) {
+void release_test_fill_strview(void * state, R_xlen_t i, const char ** out_ptrs,
+                               int * out_lens, cetype_ext_t * out_encs,
+                               R_xlen_t out_i) {
+  const charport_strview view = release_test_view(state, i);
+  out_ptrs[out_i] = view.ptr;
+  out_lens[out_i] = view.len;
+  out_encs[out_i] = view.enc;
+}
+
+void release_test_fill_byteview(void * state, R_xlen_t i, const char ** out_ptrs,
+                                int * out_lens, R_xlen_t out_i) {
+  const charport_strview view = release_test_view(state, i);
+  out_ptrs[out_i] = view.ptr;
+  out_lens[out_i] = view.len;
+}
+
+void release_test_strviews_range(void * state, R_xlen_t start, R_xlen_t size,
+                                 const char ** out_ptrs, int * out_lens,
+                                 cetype_ext_t * out_encs) {
+  ++release_test_access_counts[release_strviews_range];
   for(R_xlen_t j = 0; j < size; ++j) {
-    const charport_strview view = release_test_view(state, start + j);
-    if(out_ptrs != nullptr) out_ptrs[j] = view.ptr;
-    if(out_lens != nullptr) out_lens[j] = view.len;
-    if(out_encs != nullptr) out_encs[j] = view.enc;
+    release_test_fill_strview(state, start + j, out_ptrs, out_lens, out_encs, j);
   }
 }
 
-void release_test_index(void * state, const R_xlen_t * indices,
-                        R_xlen_t size, const char ** out_ptrs,
-                        int * out_lens, cetype_ext_t * out_encs) {
+void release_test_strviews_index(void * state, const R_xlen_t * indices,
+                                 R_xlen_t size, const char ** out_ptrs,
+                                 int * out_lens, cetype_ext_t * out_encs) {
+  ++release_test_access_counts[release_strviews_index];
   for(R_xlen_t j = 0; j < size; ++j) {
-    const charport_strview view = release_test_view(state, indices[j]);
-    if(out_ptrs != nullptr) out_ptrs[j] = view.ptr;
-    if(out_lens != nullptr) out_lens[j] = view.len;
-    if(out_encs != nullptr) out_encs[j] = view.enc;
+    release_test_fill_strview(state, indices[j], out_ptrs, out_lens, out_encs, j);
+  }
+}
+
+void release_test_byteviews_range(void * state, R_xlen_t start, R_xlen_t size,
+                                  const char ** out_ptrs, int * out_lens) {
+  ++release_test_access_counts[release_byteviews_range];
+  for(R_xlen_t j = 0; j < size; ++j) {
+    release_test_fill_byteview(state, start + j, out_ptrs, out_lens, j);
+  }
+}
+
+void release_test_byteviews_index(void * state, const R_xlen_t * indices,
+                                  R_xlen_t size, const char ** out_ptrs,
+                                  int * out_lens) {
+  ++release_test_access_counts[release_byteviews_index];
+  for(R_xlen_t j = 0; j < size; ++j) {
+    release_test_fill_byteview(state, indices[j], out_ptrs, out_lens, j);
+  }
+}
+
+void release_test_lengths_range(void * state, R_xlen_t start, R_xlen_t size,
+                                int * out_lens) {
+  ++release_test_access_counts[release_lengths_range];
+  for(R_xlen_t j = 0; j < size; ++j) {
+    out_lens[j] = release_test_view(state, start + j).len;
+  }
+}
+
+void release_test_lengths_index(void * state, const R_xlen_t * indices,
+                                R_xlen_t size, int * out_lens) {
+  ++release_test_access_counts[release_lengths_index];
+  for(R_xlen_t j = 0; j < size; ++j) {
+    out_lens[j] = release_test_view(state, indices[j]).len;
+  }
+}
+
+void release_test_encodings_range(void * state, R_xlen_t start, R_xlen_t size,
+                                  cetype_ext_t * out_encs) {
+  ++release_test_access_counts[release_encodings_range];
+  for(R_xlen_t j = 0; j < size; ++j) {
+    out_encs[j] = release_test_view(state, start + j).enc;
+  }
+}
+
+void release_test_encodings_index(void * state, const R_xlen_t * indices,
+                                  R_xlen_t size, cetype_ext_t * out_encs) {
+  ++release_test_access_counts[release_encodings_index];
+  for(R_xlen_t j = 0; j < size; ++j) {
+    out_encs[j] = release_test_view(state, indices[j]).enc;
   }
 }
 
@@ -130,7 +203,18 @@ SEXP C_consumer_register_release_test(void) {
     charport::register_altrep(
       release_test_class,
       charport_reader_state_fns{release_test_init, release_test_release},
-      charport_reader_access_fns{release_test_range, release_test_index},
+      charport_reader_range_fns{
+        release_test_strviews_range,
+        release_test_byteviews_range,
+        release_test_lengths_range,
+        release_test_encodings_range
+      },
+      charport_reader_index_fns{
+        release_test_strviews_index,
+        release_test_byteviews_index,
+        release_test_lengths_index,
+        release_test_encodings_index
+      },
       charport_reader_capabilities{false, false}
     );
     return R_NilValue;
@@ -148,6 +232,29 @@ SEXP C_consumer_release_test_vector(void) {
 
 SEXP C_consumer_release_test_count(void) {
   return Rf_ScalarInteger(release_test_count);
+}
+
+SEXP C_consumer_release_test_reset_access_counts(void) {
+  for(int & count : release_test_access_counts) {
+    count = 0;
+  }
+  return R_NilValue;
+}
+
+SEXP C_consumer_release_test_access_counts(void) {
+  const char * names[] = {
+    "strviews_range", "strviews_index",
+    "byteviews_range", "byteviews_index",
+    "lengths_range", "lengths_index",
+    "encodings_range", "encodings_index",
+    ""
+  };
+  SEXP out = PROTECT(Rf_mkNamed(INTSXP, names));
+  for(int i = 0; i < 8; ++i) {
+    INTEGER(out)[i] = release_test_access_counts[i];
+  }
+  UNPROTECT(1);
+  return out;
 }
 
 SEXP C_consumer_reader_roundtrip(SEXP x) {
@@ -289,6 +396,30 @@ SEXP C_consumer_reader_encodings(SEXP x) {
     }
     UNPROTECT(1);
     return out;
+  });
+}
+
+SEXP C_consumer_reader_touch_all_access_paths(SEXP x) {
+  return test_sexp_guard("reader_touch_all_access_paths", [&]() -> SEXP {
+    charport::Reader r(x);
+    const R_xlen_t n = r.size();
+    std::vector<R_xlen_t> idx(static_cast<size_t>(n));
+    for(R_xlen_t i = 0; i < n; ++i) {
+      idx[static_cast<size_t>(i)] = n - i - 1;
+    }
+    charport::StrViews strviews(n);
+    charport::ByteViews byteviews(n);
+    std::vector<int> lens(static_cast<size_t>(n));
+    std::vector<cetype_ext_t> encs(static_cast<size_t>(n));
+    r.views(0, n, strviews);
+    r.views(idx.data(), n, strviews);
+    r.byteviews(0, n, byteviews);
+    r.byteviews(idx.data(), n, byteviews);
+    r.lengths(0, n, lens.data());
+    r.lengths(idx.data(), n, lens.data());
+    r.encodings(0, n, encs.data());
+    r.encodings(idx.data(), n, encs.data());
+    return R_NilValue;
   });
 }
 

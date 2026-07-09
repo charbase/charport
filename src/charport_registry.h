@@ -7,7 +7,8 @@ extern "C" {
 
 void charport_register_altrep(R_altrep_class_t cls,
                               charport_reader_state_fns state_fns,
-                              charport_reader_access_fns access_fns,
+                              charport_reader_range_fns range_fns,
+                              charport_reader_index_fns index_fns,
                               charport_reader_capabilities capabilities);
 void charport_unregister_altrep(R_altrep_class_t cls);
 charport_reader charport_resolve(SEXP x);

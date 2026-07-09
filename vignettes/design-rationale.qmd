@@ -26,9 +26,11 @@ C++ packages still get a small wrapper API in `charport.h`, but the exported int
 
 ## Range and indexed access
 
-Element-wise access pays callback overhead once per element and, for ordinary ALTSTRING access, produces `CHARSXP` objects. Range and indexed callbacks let the producer fill caller-owned arrays of pointers, lengths, and encodings.
+Element-wise access pays callback overhead once per element and, for ordinary ALTSTRING access, produces `CHARSXP` objects.
 
-This gives consumers a block path without requiring either side to allocate one wrapper object per element. Producers whose storage is already contiguous can implement the common range case with `memcpy`.
+`charport` uses range and indexed callbacks, with separate registered entry points for string views, byte views, lengths, and encodings. The producer fills caller-owned arrays for the requested shape. This avoids allocating one wrapper object per element, and producers with contiguous storage can implement the common range case with `memcpy`.
+
+The separate entry points are intentional. A consumer asking only for lengths should reach a lengths callback, not a generic string-view callback that infers the request from missing output buffers. That keeps the ABI explicit and lets producers specialize metadata-only access without extra branching.
 
 Scalar methods remain as conveniences. They are not the center of the design.
 
