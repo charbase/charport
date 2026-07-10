@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 
 namespace {
@@ -12,6 +13,12 @@ namespace {
 R_altrep_class_t release_test_class;
 int release_test_count = 0;
 int release_test_access_counts[8] = {};
+int unwind_probe_count = 0;
+int release_test_init_failure = 0;
+
+struct unwind_probe {
+  ~unwind_probe() noexcept { ++unwind_probe_count; }
+};
 
 enum release_test_access {
   release_strviews_range = 0,
@@ -26,6 +33,16 @@ enum release_test_access {
 
 struct release_test_state {
   int marker;
+  bool count_cleanup;
+
+  release_test_state(int marker_, bool count_cleanup_) noexcept
+    : marker(marker_), count_cleanup(count_cleanup_) {}
+
+  ~release_test_state() noexcept {
+    if(count_cleanup) {
+      ++unwind_probe_count;
+    }
+  }
 };
 
 R_xlen_t release_test_length(SEXP) {
@@ -37,7 +54,25 @@ SEXP release_test_elt(SEXP, R_xlen_t i) {
 }
 
 void * release_test_init(SEXP) {
-  return new release_test_state{42};
+  if(release_test_init_failure == 0) {
+    return new release_test_state(42, false);
+  }
+
+  return charport::reader_init_boundary("release_test init",
+    [&]() -> void * {
+      std::unique_ptr<release_test_state> state(
+        new release_test_state(42, true)
+      );
+      if(release_test_init_failure == 1) {
+        charport::provider_unwind_protect([]() -> SEXP {
+          Rf_error("injected provider init R error");
+          return R_NilValue;
+        });
+      } else {
+        throw std::runtime_error("injected provider init C++ error");
+      }
+      return state.release();
+    });
 }
 
 charport_strview release_test_view(void * state, R_xlen_t i) {
@@ -155,6 +190,11 @@ SEXP test_sexp_guard(const char * op, Fn fn) {
 }
 
 template<typename Fn>
+SEXP test_r_boundary(const char * op, Fn fn) {
+  return charport::r_boundary(op, fn);
+}
+
+template<typename Fn>
 bool throws_exception(Fn fn) {
   try {
     fn();
@@ -234,6 +274,20 @@ SEXP C_consumer_release_test_count(void) {
   return Rf_ScalarInteger(release_test_count);
 }
 
+SEXP C_consumer_unwind_probe_count(void) {
+  return Rf_ScalarInteger(unwind_probe_count);
+}
+
+SEXP C_consumer_unwind_probe_reset(void) {
+  unwind_probe_count = 0;
+  return R_NilValue;
+}
+
+SEXP C_consumer_release_test_init_failure(SEXP value) {
+  release_test_init_failure = Rf_asInteger(value);
+  return R_NilValue;
+}
+
 SEXP C_consumer_release_test_reset_access_counts(void) {
   for(int & count : release_test_access_counts) {
     count = 0;
@@ -258,37 +312,41 @@ SEXP C_consumer_release_test_access_counts(void) {
 }
 
 SEXP C_consumer_reader_roundtrip(SEXP x) {
-  return test_sexp_guard("reader_roundtrip", [&]() -> SEXP {
+  return test_r_boundary("reader_roundtrip", [&]() -> SEXP {
     charport::Reader r(x);
-    SEXP out = PROTECT(Rf_allocVector(STRSXP, r.size()));
-    R_xlen_t i = 0;
-    for(charport::StrView s : r) {
-      SET_STRING_ELT(out, i++, make_charsxp(s));
-    }
-    UNPROTECT(1);
-    return out;
+    return charport::unwind_protect([&]() -> SEXP {
+      SEXP out = PROTECT(Rf_allocVector(STRSXP, r.size()));
+      R_xlen_t i = 0;
+      for(charport::StrView s : r) {
+        SET_STRING_ELT(out, i++, make_charsxp(s));
+      }
+      UNPROTECT(1);
+      return out;
+    });
   });
 }
 
 SEXP C_consumer_reader_range_roundtrip(SEXP x) {
-  return test_sexp_guard("reader_range_roundtrip", [&]() -> SEXP {
+  return test_r_boundary("reader_range_roundtrip", [&]() -> SEXP {
     charport::Reader r(x);
     const R_xlen_t n = r.size();
     charport::StrViews views(n);
     if(n > 0) {
       r.views(0, n, views);
     }
-    SEXP out = PROTECT(Rf_allocVector(STRSXP, n));
-    for(R_xlen_t i = 0; i < n; ++i) {
-      SET_STRING_ELT(out, i, make_charsxp(views[i]));
-    }
-    UNPROTECT(1);
-    return out;
+    return charport::unwind_protect([&]() -> SEXP {
+      SEXP out = PROTECT(Rf_allocVector(STRSXP, n));
+      for(R_xlen_t i = 0; i < n; ++i) {
+        SET_STRING_ELT(out, i, make_charsxp(views[i]));
+      }
+      UNPROTECT(1);
+      return out;
+    });
   });
 }
 
 SEXP C_consumer_reader_index_roundtrip(SEXP x) {
-  return test_sexp_guard("reader_index_roundtrip", [&]() -> SEXP {
+  return test_r_boundary("reader_index_roundtrip", [&]() -> SEXP {
     charport::Reader r(x);
     const R_xlen_t n = r.size();
     std::vector<R_xlen_t> idx(static_cast<size_t>(n));
@@ -300,60 +358,68 @@ SEXP C_consumer_reader_index_roundtrip(SEXP x) {
     if(n > 0) {
       r.views(idx.data(), n, views);
     }
-    SEXP out = PROTECT(Rf_allocVector(STRSXP, n));
-    for(R_xlen_t i = 0; i < n; ++i) {
-      SET_STRING_ELT(out, i, make_charsxp(views[i]));
-    }
-    UNPROTECT(1);
-    return out;
+    return charport::unwind_protect([&]() -> SEXP {
+      SEXP out = PROTECT(Rf_allocVector(STRSXP, n));
+      for(R_xlen_t i = 0; i < n; ++i) {
+        SET_STRING_ELT(out, i, make_charsxp(views[i]));
+      }
+      UNPROTECT(1);
+      return out;
+    });
   });
 }
 
 SEXP C_consumer_reader_capabilities(SEXP x) {
-  return test_sexp_guard("reader_capabilities", [&]() -> SEXP {
+  return test_r_boundary("reader_capabilities", [&]() -> SEXP {
     charport::Reader r(x);
-    SEXP out = PROTECT(Rf_allocVector(LGLSXP, 3));
-    LOGICAL(out)[0] = r.persistent_views() ? TRUE : FALSE;
-    LOGICAL(out)[1] = r.concurrent_access() ? TRUE : FALSE;
-    LOGICAL(out)[2] = r.reentrant() ? TRUE : FALSE;
-    UNPROTECT(1);
-    return out;
+    return charport::unwind_protect([&]() -> SEXP {
+      SEXP out = PROTECT(Rf_allocVector(LGLSXP, 3));
+      LOGICAL(out)[0] = r.persistent_views() ? TRUE : FALSE;
+      LOGICAL(out)[1] = r.concurrent_access() ? TRUE : FALSE;
+      LOGICAL(out)[2] = r.reentrant() ? TRUE : FALSE;
+      UNPROTECT(1);
+      return out;
+    });
   });
 }
 
 SEXP C_consumer_reader_lengths(SEXP x) {
-  return test_sexp_guard("reader_lengths", [&]() -> SEXP {
+  return test_r_boundary("reader_lengths", [&]() -> SEXP {
     charport::Reader r(x);
-    SEXP out = PROTECT(Rf_allocVector(INTSXP, r.size()));
-    for(R_xlen_t i = 0; i < r.size(); ++i) {
-      const int len = r.length(i);
-      INTEGER(out)[i] = len < 0 ? NA_INTEGER : len;
-    }
-    UNPROTECT(1);
-    return out;
+    return charport::unwind_protect([&]() -> SEXP {
+      SEXP out = PROTECT(Rf_allocVector(INTSXP, r.size()));
+      for(R_xlen_t i = 0; i < r.size(); ++i) {
+        const int len = r.length(i);
+        INTEGER(out)[i] = len < 0 ? NA_INTEGER : len;
+      }
+      UNPROTECT(1);
+      return out;
+    });
   });
 }
 
 SEXP C_consumer_reader_range_lengths(SEXP x) {
-  return test_sexp_guard("reader_range_lengths", [&]() -> SEXP {
+  return test_r_boundary("reader_range_lengths", [&]() -> SEXP {
     charport::Reader r(x);
     const R_xlen_t n = r.size();
     std::vector<int> len(static_cast<size_t>(n));
     if(n > 0) {
       r.lengths(0, n, len.data());
     }
-    SEXP out = PROTECT(Rf_allocVector(INTSXP, n));
-    for(R_xlen_t i = 0; i < n; ++i) {
-      const int x = len[static_cast<size_t>(i)];
-      INTEGER(out)[i] = x < 0 ? NA_INTEGER : x;
-    }
-    UNPROTECT(1);
-    return out;
+    return charport::unwind_protect([&]() -> SEXP {
+      SEXP out = PROTECT(Rf_allocVector(INTSXP, n));
+      for(R_xlen_t i = 0; i < n; ++i) {
+        const int x = len[static_cast<size_t>(i)];
+        INTEGER(out)[i] = x < 0 ? NA_INTEGER : x;
+      }
+      UNPROTECT(1);
+      return out;
+    });
   });
 }
 
 SEXP C_consumer_reader_index_lengths(SEXP x) {
-  return test_sexp_guard("reader_index_lengths", [&]() -> SEXP {
+  return test_r_boundary("reader_index_lengths", [&]() -> SEXP {
     charport::Reader r(x);
     const R_xlen_t n = r.size();
     std::vector<R_xlen_t> idx(static_cast<size_t>(n));
@@ -364,43 +430,50 @@ SEXP C_consumer_reader_index_lengths(SEXP x) {
     if(n > 0) {
       r.lengths(idx.data(), n, len.data());
     }
-    SEXP out = PROTECT(Rf_allocVector(INTSXP, n));
-    for(R_xlen_t i = 0; i < n; ++i) {
-      const int x = len[static_cast<size_t>(i)];
-      INTEGER(out)[i] = x < 0 ? NA_INTEGER : x;
-    }
-    UNPROTECT(1);
-    return out;
+    return charport::unwind_protect([&]() -> SEXP {
+      SEXP out = PROTECT(Rf_allocVector(INTSXP, n));
+      for(R_xlen_t i = 0; i < n; ++i) {
+        const int x = len[static_cast<size_t>(i)];
+        INTEGER(out)[i] = x < 0 ? NA_INTEGER : x;
+      }
+      UNPROTECT(1);
+      return out;
+    });
   });
 }
 
 SEXP C_consumer_reader_byte_lengths(SEXP x) {
-  return test_sexp_guard("reader_byte_lengths", [&]() -> SEXP {
+  return test_r_boundary("reader_byte_lengths", [&]() -> SEXP {
     charport::Reader r(x);
-    SEXP out = PROTECT(Rf_allocVector(INTSXP, r.size()));
-    for(R_xlen_t i = 0; i < r.size(); ++i) {
-      const charport::ByteView view = r.byteview(i);
-      INTEGER(out)[i] = view.is_na() ? NA_INTEGER : static_cast<int>(view.len);
-    }
-    UNPROTECT(1);
-    return out;
+    return charport::unwind_protect([&]() -> SEXP {
+      SEXP out = PROTECT(Rf_allocVector(INTSXP, r.size()));
+      for(R_xlen_t i = 0; i < r.size(); ++i) {
+        const charport::ByteView view = r.byteview(i);
+        INTEGER(out)[i] = view.is_na() ? NA_INTEGER : static_cast<int>(view.len);
+      }
+      UNPROTECT(1);
+      return out;
+    });
   });
 }
 
 SEXP C_consumer_reader_encodings(SEXP x) {
-  return test_sexp_guard("reader_encodings", [&]() -> SEXP {
+  return test_r_boundary("reader_encodings", [&]() -> SEXP {
     charport::Reader r(x);
-    SEXP out = PROTECT(Rf_allocVector(INTSXP, r.size()));
-    for(R_xlen_t i = 0; i < r.size(); ++i) {
-      INTEGER(out)[i] = static_cast<int>(r.encoding(i));
-    }
-    UNPROTECT(1);
-    return out;
+    return charport::unwind_protect([&]() -> SEXP {
+      SEXP out = PROTECT(Rf_allocVector(INTSXP, r.size()));
+      for(R_xlen_t i = 0; i < r.size(); ++i) {
+        INTEGER(out)[i] = static_cast<int>(r.encoding(i));
+      }
+      UNPROTECT(1);
+      return out;
+    });
   });
 }
 
 SEXP C_consumer_reader_touch_all_access_paths(SEXP x) {
-  return test_sexp_guard("reader_touch_all_access_paths", [&]() -> SEXP {
+  return test_r_boundary("reader_touch_all_access_paths",
+                         [&]() -> SEXP {
     charport::Reader r(x);
     const R_xlen_t n = r.size();
     std::vector<R_xlen_t> idx(static_cast<size_t>(n));
@@ -449,17 +522,19 @@ SEXP C_consumer_sexp_info(SEXP x) {
 }
 
 SEXP C_consumer_read_scalar(SEXP x) {
-  return test_sexp_guard("read_scalar", [&]() -> SEXP {
+  return test_r_boundary("read_scalar", [&]() -> SEXP {
     charport::Reader r(x);
     if(r.size() < 1) {
       throw std::runtime_error("x must have length at least 1");
     }
-    return Rf_ScalarString(make_charsxp(r.view(0)));
+    return charport::unwind_protect([&]() -> SEXP {
+      return Rf_ScalarString(make_charsxp(r.view(0)));
+    });
   });
 }
 
 SEXP C_consumer_build_scalar(SEXP x) {
-  return test_sexp_guard("build_scalar", [&]() -> SEXP {
+  return test_r_boundary("build_scalar", [&]() -> SEXP {
     charport::Reader r(x);
     if(r.size() < 1) {
       throw std::runtime_error("x must have length at least 1");
@@ -469,10 +544,10 @@ SEXP C_consumer_build_scalar(SEXP x) {
 }
 
 SEXP C_consumer_builder_from_reader(SEXP x, SEXP n_shards_) {
-  return test_sexp_guard("builder_from_reader", [&]() -> SEXP {
+  const int k = Rf_asInteger(n_shards_);
+  return test_r_boundary("builder_from_reader", [&, k]() -> SEXP {
     charport::Reader r(x);
     const R_xlen_t n = r.size();
-    const int k = Rf_asInteger(n_shards_);
     if(k == NA_INTEGER || k < 0) {
       throw std::runtime_error("n_shards must be a non-negative integer");
     }
@@ -498,10 +573,10 @@ SEXP C_consumer_builder_from_reader(SEXP x, SEXP n_shards_) {
 }
 
 SEXP C_consumer_builder_reserve(SEXP x, SEXP n_shards_) {
-  return test_sexp_guard("builder_reserve", [&]() -> SEXP {
+  const int k = Rf_asInteger(n_shards_);
+  return test_r_boundary("builder_reserve", [&, k]() -> SEXP {
     charport::Reader r(x);
     const R_xlen_t n = r.size();
-    const int k = Rf_asInteger(n_shards_);
     if(k == NA_INTEGER || k < 0) {
       throw std::runtime_error("n_shards must be a non-negative integer");
     }
@@ -534,7 +609,7 @@ SEXP C_consumer_builder_reserve(SEXP x, SEXP n_shards_) {
 }
 
 SEXP C_consumer_builder_direct(void) {
-  return test_sexp_guard("builder_direct", []() -> SEXP {
+  return test_r_boundary("builder_direct", []() -> SEXP {
     charport::charvec::DirectBuilder b(6, 9);
     char * first = b.data_slice();
     std::memcpy(first, "alphabeta", 9);
@@ -565,7 +640,7 @@ SEXP C_consumer_builder_direct(void) {
 }
 
 SEXP C_consumer_builder_errors(void) {
-  return test_sexp_guard("builder_errors", [&]() -> SEXP {
+  return test_r_boundary("builder_errors", [&]() -> SEXP {
     charport::charvec::Builder b(3);
 
     bool ok = !throws_exception([&]() { b.set(0, "x", 1, cetype_ext_t::CE_LATIN1); });
@@ -609,7 +684,41 @@ SEXP C_consumer_builder_errors(void) {
       abandoned.set(0, 0, "z", 1, cetype_ext_t::CE_ASCII);
     }
 
-    return Rf_ScalarLogical(ok ? TRUE : FALSE);
+    return charport::unwind_protect([&]() -> SEXP {
+      return Rf_ScalarLogical(ok ? TRUE : FALSE);
+    });
+  });
+}
+
+SEXP C_consumer_reader_eval(SEXP x, SEXP expression, SEXP environment) {
+  return test_r_boundary("reader_eval", [&]() -> SEXP {
+    unwind_probe probe;
+    charport::Reader reader(x);
+    charport::charvec::Builder builder(reader.size());
+    for(R_xlen_t i = 0; i < reader.size(); ++i) {
+      builder.set(i, reader[i]);
+    }
+
+    return charport::unwind_protect([&]() -> SEXP {
+      return Rf_eval(expression, environment);
+    });
+  });
+}
+
+SEXP C_consumer_reader_open(SEXP x) {
+  return test_r_boundary("reader_open", [&]() -> SEXP {
+    unwind_probe probe;
+    charport::Reader reader(x);
+    return R_NilValue;
+  });
+}
+
+SEXP C_consumer_context_cpp_error(void) {
+  return test_r_boundary("context_cpp_error", []() -> SEXP {
+    unwind_probe probe;
+    return charport::unwind_protect([]() -> SEXP {
+      throw std::runtime_error("injected context C++ error");
+    });
   });
 }
 

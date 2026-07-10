@@ -249,7 +249,7 @@ struct charvec_altrep {
     return res;
   }
 
-  static void MakeOwnedCleanup(void * ptr, Rboolean /* jump */) {
+  static void MakeOwnedCleanup(void * ptr) {
     make_owned_context * ctx = static_cast<make_owned_context *>(ptr);
     delete ctx->data;
     ctx->data = nullptr;
@@ -261,7 +261,7 @@ struct charvec_altrep {
     }
     // R allocation can longjmp; keep native ownership until finalizer install.
     make_owned_context ctx{data};
-    return R_UnwindProtect(MakeOwnedBody, &ctx, MakeOwnedCleanup, &ctx, NULL);
+    return R_ExecWithCleanup(MakeOwnedBody, &ctx, MakeOwnedCleanup, &ctx);
   }
 
   static void Finalize(SEXP xp) {

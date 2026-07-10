@@ -1,5 +1,5 @@
 # Registry and reader broker semantics. Reader behavior is exercised through a
-# test-local downstream DSO that uses only charport.h and R_GetCCallable.
+# test-local downstream library that uses only charport.h and R_GetCCallable.
 
 suppressPackageStartupMessages(library(charport))
 

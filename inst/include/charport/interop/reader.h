@@ -3,7 +3,9 @@
 
 // Reader and ALTREP registration ABI. Include charport.h from packages.
 
+#ifndef R_NO_REMAP
 #define R_NO_REMAP
+#endif
 #include <Rinternals.h>
 #include <R_ext/Altrep.h>
 #include <R_ext/Rdynload.h>
@@ -13,6 +15,10 @@
 #endif
 
 #include "types.h"
+
+#ifdef __cplusplus
+#include "unwind.h"
+#endif
 
 #define CHARPORT_ABI_VERSION 1
 
@@ -158,32 +164,54 @@ inline DL_FUNC fetch(const char * name) {
 }
 
 inline int loaded_abi_version() {
-  static charport_abi_version_t fn =
-    reinterpret_cast<charport_abi_version_t>(fetch("charport_abi_version"));
+  static charport_abi_version_t fn = nullptr;
+  if(fn == nullptr) {
+    fn = reinterpret_cast<charport_abi_version_t>(fetch("charport_abi_version"));
+  }
   return fn();
 }
 
 } // namespace detail
 
 inline charport_reader resolve(SEXP x) {
-  static charport_resolve_t fn =
-    reinterpret_cast<charport_resolve_t>(detail::fetch("charport_resolve"));
+  static charport_resolve_t fn = nullptr;
+  if(fn == nullptr) {
+    fn = reinterpret_cast<charport_resolve_t>(detail::fetch("charport_resolve"));
+  }
   return fn(x);
 }
+
+namespace detail {
+
+template<typename Backend>
+inline charport_reader resolve_with(SEXP x) {
+  charport_reader out{};
+  Backend::call([&]() -> SEXP {
+    out = resolve(x);
+    return R_NilValue;
+  });
+  return out;
+}
+
+} // namespace detail
 
 inline void register_altrep(R_altrep_class_t cls,
                             charport_reader_state_fns state_fns,
                             charport_reader_range_fns range_fns,
                             charport_reader_index_fns index_fns,
                             charport_reader_capabilities capabilities) {
-  static charport_register_altrep_t fn =
-    reinterpret_cast<charport_register_altrep_t>(detail::fetch("charport_register_altrep"));
+  static charport_register_altrep_t fn = nullptr;
+  if(fn == nullptr) {
+    fn = reinterpret_cast<charport_register_altrep_t>(detail::fetch("charport_register_altrep"));
+  }
   fn(cls, state_fns, range_fns, index_fns, capabilities);
 }
 
 inline void unregister_altrep(R_altrep_class_t cls) {
-  static charport_unregister_altrep_t fn =
-    reinterpret_cast<charport_unregister_altrep_t>(detail::fetch("charport_unregister_altrep"));
+  static charport_unregister_altrep_t fn = nullptr;
+  if(fn == nullptr) {
+    fn = reinterpret_cast<charport_unregister_altrep_t>(detail::fetch("charport_unregister_altrep"));
+  }
   fn(cls);
 }
 
@@ -192,8 +220,10 @@ inline bool check_abi() {
 }
 
 inline SexpInfo sexp_info(SEXP x) {
-  static charport_sexp_info_t fn =
-    reinterpret_cast<charport_sexp_info_t>(detail::fetch("charport_sexp_info"));
+  static charport_sexp_info_t fn = nullptr;
+  if(fn == nullptr) {
+    fn = reinterpret_cast<charport_sexp_info_t>(detail::fetch("charport_sexp_info"));
+  }
   return fn(x);
 }
 
@@ -263,17 +293,18 @@ private:
   std::vector<cetype_ext_t> encs_;
 };
 
-class Reader {
+template<typename Backend>
+class BasicReader {
 public:
-  explicit Reader(SEXP x) : r_(resolve(x)) {}
-  explicit Reader(charport_reader r) noexcept : r_(r) {}
-  ~Reader() { release_owned(); }
+  explicit BasicReader(SEXP x) : r_(detail::resolve_with<Backend>(x)) {}
+  explicit BasicReader(charport_reader r) noexcept : r_(r) {}
+  ~BasicReader() noexcept { release_owned(); }
 
-  Reader(const Reader &) = delete;
-  Reader & operator=(const Reader &) = delete;
+  BasicReader(const BasicReader &) = delete;
+  BasicReader & operator=(const BasicReader &) = delete;
 
-  Reader(Reader && other) noexcept : r_(other.r_) { other.disown(); }
-  Reader & operator=(Reader && other) noexcept {
+  BasicReader(BasicReader && other) noexcept : r_(other.r_) { other.disown(); }
+  BasicReader & operator=(BasicReader && other) noexcept {
     if(this != &other) {
       release_owned();
       r_ = other.r_;

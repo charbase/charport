@@ -16,7 +16,9 @@ Description: Infrastructure for ALTREP character vectors: a reference
 License: MIT + file LICENSE
 Encoding: UTF-8
 Suggests:
-    quarto
+    cpp11,
+    quarto,
+    Rcpp
 VignetteBuilder: quarto
 Biarch: true
 Depends: R (>= 3.6.0)

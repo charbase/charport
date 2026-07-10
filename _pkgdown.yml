@@ -26,6 +26,7 @@ articles:
 - title: Developer documentation
   contents:
   - developer-guide
+  - error-handling
   - design-rationale
 
 reference:

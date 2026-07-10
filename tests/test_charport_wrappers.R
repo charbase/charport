@@ -98,11 +98,138 @@ expect_error_matching(read_scalar(character(0)), "length at least 1")
 catn("scalar helpers release state-owning registered ALTREP classes")
 release_test_count <- function() .Call(consumer_symbol("C_consumer_release_test_count"))
 release_test_vector <- function() .Call(consumer_symbol("C_consumer_release_test_vector"))
+unwind_probe_count <- function() .Call(consumer_symbol("C_consumer_unwind_probe_count"))
+unwind_probe_reset <- function() invisible(.Call(consumer_symbol("C_consumer_unwind_probe_reset")))
+release_test_init_failure <- function(value) {
+  invisible(.Call(consumer_symbol("C_consumer_release_test_init_failure"), value))
+}
+reader_open <- function(x) .Call(consumer_symbol("C_consumer_reader_open"), x)
+context_cpp_error <- function() .Call(consumer_symbol("C_consumer_context_cpp_error"))
+reader_eval <- function(x, expression, environment = parent.frame()) {
+  .Call(consumer_symbol("C_consumer_reader_eval"), x, expression, environment)
+}
 invisible(.Call(consumer_symbol("C_consumer_register_release_test")))
-on.exit(.Call(consumer_symbol("C_consumer_unregister_release_test")), add = TRUE)
 before <- release_test_count()
 stopifnot(identical(read_scalar(release_test_vector()), "alpha"))
 stopifnot(identical(release_test_count(), before + 1L))
+
+catn("R errors unwind Reader and Builder state")
+condition <- structure(
+  list(message = "injected R error", code = 42L),
+  class = c("charport_test_error", "error", "condition")
+)
+condition_env <- list2env(list(condition = condition), parent = baseenv())
+unwind_probe_reset()
+before <- release_test_count()
+err <- tryCatch(
+  reader_eval(release_test_vector(), quote(stop(condition)), condition_env),
+  charport_test_error = identity
+)
+stopifnot(identical(err$code, 42L), identical(conditionMessage(err), "injected R error"))
+stopifnot(identical(release_test_count(), before + 1L), identical(unwind_probe_count(), 1L))
+
+catn("Rcpp and cpp11 preserve R errors while unwinding Reader state")
+framework_dlls <- list()
+for (framework in c("Rcpp", "cpp11")) {
+  if (!requireNamespace(framework, quietly = TRUE)) {
+    catn(sprintf("framework unwind test skipped: %s is unavailable", framework))
+    next
+  }
+
+  include_dir <- system.file("include", package = framework)
+  framework_dlls[[framework]] <- compile_test_dso(
+    paste0(tolower(framework), "_consumer.cpp"),
+    sprintf('PKG_CPPFLAGS += -I"%s"', include_dir),
+    paste0(framework, " unwind consumer")
+  )
+  framework_symbol <- getNativeSymbolInfo(
+    paste0("C_", tolower(framework), "_charport_test"),
+    PACKAGE = framework_dlls[[framework]][["name"]]
+  )
+  cleanup_symbol <- getNativeSymbolInfo(
+    paste0("C_", tolower(framework), "_charport_cleanup_count"),
+    PACKAGE = framework_dlls[[framework]][["name"]]
+  )
+  cleanup_count <- function() .Call(cleanup_symbol)
+
+  cleanup_before <- cleanup_count()
+  before <- release_test_count()
+  err <- tryCatch(
+    .Call(framework_symbol, release_test_vector(), quote(stop(condition)), condition_env),
+    charport_test_error = identity
+  )
+  stopifnot(identical(err$code, 42L), identical(conditionMessage(err), "injected R error"))
+  stopifnot(identical(release_test_count(), before + 1L))
+  stopifnot(identical(cleanup_count(), cleanup_before + 1L))
+
+  cleanup_before <- cleanup_count()
+  before <- release_test_count()
+  out <- .Call(framework_symbol, release_test_vector(), NULL, baseenv())
+  stopifnot(is_charvec(out), identical(as.character(out), c("alpha", "beta")))
+  stopifnot(identical(release_test_count(), before + 1L))
+  stopifnot(identical(cleanup_count(), cleanup_before + 1L))
+
+  cleanup_before <- cleanup_count()
+  err <- tryCatch(.Call(framework_symbol, NULL, NULL, NULL), error = identity)
+  stopifnot(grepl("injected builder C\\+\\+ error", conditionMessage(err)))
+  stopifnot(identical(cleanup_count(), cleanup_before + 1L))
+
+  cleanup_before <- cleanup_count()
+  err <- tryCatch(.Call(framework_symbol, 1:3, NULL, baseenv()), error = identity)
+  stopifnot(grepl("character", conditionMessage(err)))
+  stopifnot(identical(cleanup_count(), cleanup_before + 1L))
+
+  unwind_probe_reset()
+  release_test_init_failure(1L)
+  cleanup_before <- cleanup_count()
+  err <- tryCatch(
+    .Call(framework_symbol, release_test_vector(), NULL, baseenv()),
+    error = identity,
+    finally = release_test_init_failure(0L)
+  )
+  stopifnot(grepl("injected provider init R error", conditionMessage(err)))
+  stopifnot(identical(cleanup_count(), cleanup_before + 1L))
+  stopifnot(identical(unwind_probe_count(), 1L))
+}
+
+catn("R errors during provider init unwind both provider and consumer state")
+unwind_probe_reset()
+release_test_init_failure(1L)
+err <- tryCatch(
+  reader_open(release_test_vector()),
+  error = identity,
+  finally = release_test_init_failure(0L)
+)
+stopifnot(grepl("injected provider init R error", conditionMessage(err)))
+stopifnot(identical(unwind_probe_count(), 2L))
+
+catn("C++ errors during provider init unwind both provider and consumer state")
+unwind_probe_reset()
+release_test_init_failure(2L)
+err <- tryCatch(
+  reader_open(release_test_vector()),
+  error = identity,
+  finally = release_test_init_failure(0L)
+)
+stopifnot(grepl("injected provider init C\\+\\+ error", conditionMessage(err)))
+stopifnot(identical(unwind_probe_count(), 2L))
+
+catn("C++ errors return through R frames before conversion")
+unwind_probe_reset()
+expect_error_matching(context_cpp_error(), "injected context C\\+\\+ error")
+stopifnot(identical(unwind_probe_count(), 1L))
+
+catn("warnings promoted to errors unwind Reader and Builder state")
+old_warn <- options(warn = 2L)
+unwind_probe_reset()
+before <- release_test_count()
+err <- tryCatch(
+  reader_eval(release_test_vector(), quote(warning("promoted warning")), baseenv()),
+  error = identity,
+  finally = options(old_warn)
+)
+stopifnot(inherits(err, "error"), grepl("promoted warning", conditionMessage(err)))
+stopifnot(identical(release_test_count(), before + 1L), identical(unwind_probe_count(), 1L))
 
 catn("builder rebuilds a charvec input across shard counts")
 input <- c(w_utf8[1:40], NA, "", w_latin1[41:80], b, NA)
@@ -174,5 +301,9 @@ for (trial in 1:15) {
   stopifnot(marks_identical(out, as.character(x)))
 }
 
+invisible(.Call(consumer_symbol("C_consumer_unregister_release_test")))
+for (framework_dll in framework_dlls) {
+  dyn.unload(framework_dll[["path"]])
+}
 dyn.unload(dll[["path"]])
 catn("charport wrapper tests passed")

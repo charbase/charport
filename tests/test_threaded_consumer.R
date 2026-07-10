@@ -1,8 +1,9 @@
 # Real multithreading, without charport itself carrying thread flags:
-# compile threaded_consumer.cpp at test time as a separate DSO (R CMD SHLIB
-# with a test-local Makevars holding -pthread), the way a downstream package
-# would consume the installed headers + R_GetCCallable symbols. If the
-# toolchain can't build it, skip because the package's own build is untouched.
+# compile threaded_consumer.cpp at test time as a separate loaded library
+# (R CMD SHLIB with a test-local Makevars holding -pthread), the way a
+# downstream package would consume the installed headers and R_GetCCallable
+# symbols. If the toolchain can't build it, skip because the package's own
+# build is untouched.
 #
 # Workers: each thread reads its range through the same reentrant Reader and
 # writes its own ParallelBuilder shard index. 2 threads (CRAN core limit).

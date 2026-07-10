@@ -51,7 +51,7 @@ bench:
 	Rscript inst/extra/benchmark.R 5
 
 # ASan + UBSan over the full test suite. Only the package (and the
-# test-compiled consumer DSO, via R_MAKEVARS_USER) is instrumented. R
+# test-compiled consumer library, via R_MAKEVARS_USER) is instrumented. R
 # itself is not, so libasan must be preloaded and leak checking disabled
 # (the R interpreter intentionally leaks at exit).
 #
@@ -87,11 +87,12 @@ vignette:
 	XDG_CACHE_HOME=$(CURDIR)/local/cache quarto render vignettes/charport.qmd --to html
 	XDG_CACHE_HOME=$(CURDIR)/local/cache quarto render vignettes/charport.qmd --to gfm --output README.md --output-dir .
 	XDG_CACHE_HOME=$(CURDIR)/local/cache quarto render vignettes/developer-guide.qmd --to html
+	XDG_CACHE_HOME=$(CURDIR)/local/cache quarto render vignettes/error-handling.qmd --to html
 	XDG_CACHE_HOME=$(CURDIR)/local/cache quarto render vignettes/design-rationale.qmd --to html
 	Rscript tools/quarto-tabsets-to-bootstrap.R vignettes/*.html
 
 reflow-docs:
-	Rscript tools/reflow-rmd.R --width 80 vignettes/charport.qmd vignettes/developer-guide.qmd vignettes/design-rationale.qmd
+	Rscript tools/reflow-rmd.R --width 80 vignettes/charport.qmd vignettes/developer-guide.qmd vignettes/error-handling.qmd vignettes/design-rationale.qmd
 
 pkgdown: clean-native clean-pkgdown doc
 	$(MAKE) pkgdown-index

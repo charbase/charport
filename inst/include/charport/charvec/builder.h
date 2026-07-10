@@ -8,21 +8,47 @@
 
 #include <memory>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace charport {
 namespace charvec {
 
-class Builder {
+namespace builder_detail {
+
+inline charport_charvec_wrap_t wrap_callable() {
+  static charport_charvec_wrap_t fn = nullptr;
+  if(fn == nullptr) {
+    fn = reinterpret_cast<charport_charvec_wrap_t>(
+      charport::detail::fetch("charport_charvec_wrap")
+    );
+  }
+  return fn;
+}
+
+template<typename Backend, typename Release>
+inline SEXP wrap_store(Release && release) {
+  std::unique_ptr<Store> store;
+  return Backend::call([&]() -> SEXP {
+    charport_charvec_wrap_t wrap = wrap_callable();
+    store = std::forward<Release>(release)();
+    return wrap(store.release());
+  });
+}
+
+} // namespace builder_detail
+
+template<typename Backend>
+class BasicBuilder {
 public:
-  explicit Builder(R_xlen_t n) {
+  explicit BasicBuilder(R_xlen_t n) {
     reset(n);
   }
 
-  Builder(const Builder &) = delete;
-  Builder & operator=(const Builder &) = delete;
-  Builder(Builder &&) noexcept = default;
-  Builder & operator=(Builder &&) noexcept = default;
+  BasicBuilder(const BasicBuilder &) = delete;
+  BasicBuilder & operator=(const BasicBuilder &) = delete;
+  BasicBuilder(BasicBuilder &&) noexcept = default;
+  BasicBuilder & operator=(BasicBuilder &&) noexcept = default;
 
   void reset(R_xlen_t n) {
     if(n < 0) {
@@ -64,9 +90,7 @@ public:
   }
 
   SEXP to_sexp() {
-    static charport_charvec_wrap_t wrap =
-      reinterpret_cast<charport_charvec_wrap_t>(detail::fetch("charport_charvec_wrap"));
-    return wrap(release_store().release());
+    return builder_detail::wrap_store<Backend>([&]() { return release_store(); });
   }
 
   template<typename Fill>
@@ -87,16 +111,17 @@ private:
   components::BuilderShard shard_;
 };
 
-class DirectBuilder {
+template<typename Backend>
+class BasicDirectBuilder {
 public:
-  explicit DirectBuilder(R_xlen_t n, size_t total_bytes = 0) {
+  explicit BasicDirectBuilder(R_xlen_t n, size_t total_bytes = 0) {
     reset(n, total_bytes);
   }
 
-  DirectBuilder(const DirectBuilder &) = delete;
-  DirectBuilder & operator=(const DirectBuilder &) = delete;
-  DirectBuilder(DirectBuilder &&) noexcept = default;
-  DirectBuilder & operator=(DirectBuilder &&) noexcept = default;
+  BasicDirectBuilder(const BasicDirectBuilder &) = delete;
+  BasicDirectBuilder & operator=(const BasicDirectBuilder &) = delete;
+  BasicDirectBuilder(BasicDirectBuilder &&) noexcept = default;
+  BasicDirectBuilder & operator=(BasicDirectBuilder &&) noexcept = default;
 
   void reset(R_xlen_t n, size_t total_bytes = 0) {
     if(n < 0) {
@@ -152,9 +177,7 @@ public:
   }
 
   SEXP to_sexp() {
-    static charport_charvec_wrap_t wrap =
-      reinterpret_cast<charport_charvec_wrap_t>(detail::fetch("charport_charvec_wrap"));
-    return wrap(release_store().release());
+    return builder_detail::wrap_store<Backend>([&]() { return release_store(); });
   }
 
 private:
@@ -162,16 +185,17 @@ private:
   components::BuilderShard shard_;
 };
 
-class ParallelBuilder {
+template<typename Backend>
+class BasicParallelBuilder {
 public:
-  ParallelBuilder(R_xlen_t n, size_t n_shards) {
+  BasicParallelBuilder(R_xlen_t n, size_t n_shards) {
     reset(n, n_shards);
   }
 
-  ParallelBuilder(const ParallelBuilder &) = delete;
-  ParallelBuilder & operator=(const ParallelBuilder &) = delete;
-  ParallelBuilder(ParallelBuilder &&) noexcept = default;
-  ParallelBuilder & operator=(ParallelBuilder &&) noexcept = default;
+  BasicParallelBuilder(const BasicParallelBuilder &) = delete;
+  BasicParallelBuilder & operator=(const BasicParallelBuilder &) = delete;
+  BasicParallelBuilder(BasicParallelBuilder &&) noexcept = default;
+  BasicParallelBuilder & operator=(BasicParallelBuilder &&) noexcept = default;
 
   void reset(R_xlen_t n, size_t n_shards) {
     if(n < 0) {
@@ -226,9 +250,7 @@ public:
   }
 
   SEXP to_sexp() {
-    static charport_charvec_wrap_t wrap =
-      reinterpret_cast<charport_charvec_wrap_t>(detail::fetch("charport_charvec_wrap"));
-    return wrap(release_store().release());
+    return builder_detail::wrap_store<Backend>([&]() { return release_store(); });
   }
 
 private:
@@ -243,10 +265,13 @@ private:
   std::vector<components::BuilderShard> shards_;
 };
 
-inline SEXP build_scalar(const StrView & value) {
-  Builder b(1);
-  b.set(0, value);
-  return b.to_sexp();
+template<typename Backend>
+inline SEXP build_scalar_with(const StrView & value) {
+  return builder_detail::wrap_store<Backend>([&]() {
+    BasicBuilder<Backend> b(1);
+    b.set(0, value);
+    return b.release_store();
+  });
 }
 
 } // namespace charvec

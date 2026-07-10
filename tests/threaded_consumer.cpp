@@ -1,8 +1,8 @@
 // A minimal external charport consumer, compiled at test time with
-// R CMD SHLIB (see test_threaded_consumer.R). It is a separate DSO that knows
-// charport only through the installed public header and R_GetCCallable,
-// exactly like a downstream package. Thread flags live in the test-local
-// Makevars, so charport itself carries none.
+// R CMD SHLIB (see test_threaded_consumer.R). It is a separately loaded
+// library that knows charport only through the installed public header and
+// R_GetCCallable, exactly like a downstream package. Thread flags live in
+// the test-local Makevars, so charport itself carries none.
 //
 // The parallel-consumer pattern: worker threads share a reentrant Reader by
 // reference and write disjoint ranges through their own ParallelBuilder shard index.
@@ -11,8 +11,8 @@
 #include "charport.h"
 
 #include <cstdio>
+#include <exception>
 #include <stdexcept>
-#include <string>
 #include <thread>
 #include <vector>
 
@@ -20,17 +20,15 @@ namespace {
 
 template <typename Fun>
 SEXP guarded(const char * op, Fun fun) {
-  char msg[512];
-  try {
-    return fun();
-  } catch(const std::exception & e) {
-    // snprintf copies the message; Rf_error must run after C++ catch exits.
-    std::snprintf(msg, sizeof(msg), "%s", e.what());
-  } catch(...) {
-    std::snprintf(msg, sizeof(msg), "unknown C++ exception");
+  return charport::r_boundary(op, fun);
+}
+
+void join_all(std::vector<std::thread> & threads) {
+  for(std::thread & thread : threads) {
+    if(thread.joinable()) {
+      thread.join();
+    }
   }
-  Rf_error("threaded_consumer %s: %s", op, msg);
-  return R_NilValue;
 }
 
 } // namespace
@@ -42,51 +40,53 @@ SEXP C_consumer_abi_ok(void) {
 }
 
 SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
-  return guarded("threaded_rebuild", [&]() -> SEXP {
-    charport::Reader r(x);
-    const R_xlen_t n = r.size();
-    const int k = Rf_asInteger(n_threads_);
+  const int k = Rf_asInteger(n_threads_);
+  return guarded("threaded_rebuild", [&, k]() -> SEXP {
     if(k == NA_INTEGER || k < 1 || k > 16) {
       throw std::runtime_error("n_threads must be in 1..16");
     }
+
+    charport::Reader r(x);
+    const R_xlen_t n = r.size();
     if(!r.reentrant()) {
       throw std::runtime_error("input reader is not reentrant");
     }
 
     charport::charvec::ParallelBuilder b(n, static_cast<size_t>(k));
 
-    std::vector<std::string> worker_errors(static_cast<size_t>(k));
+    std::vector<std::exception_ptr> worker_errors(static_cast<size_t>(k));
     std::vector<std::thread> threads;
     threads.reserve(static_cast<size_t>(k));
-    for(int j = 0; j < k; ++j) {
-      const R_xlen_t lo = n * j / k;
-      const R_xlen_t hi = n * (j + 1) / k;
-      const size_t shard = static_cast<size_t>(j);
-      std::string * err = &worker_errors[static_cast<size_t>(j)];
-      threads.emplace_back([&b, &r, shard, lo, hi, err]() {
-        try {
-          const R_xlen_t m = hi - lo;
-          charport::StrViews views(m);
-          if(m > 0) {
-            r.views(lo, m, views);
+    try {
+      for(int j = 0; j < k; ++j) {
+        const R_xlen_t lo = n * j / k;
+        const R_xlen_t hi = n * (j + 1) / k;
+        const size_t shard = static_cast<size_t>(j);
+        std::exception_ptr * error = &worker_errors[static_cast<size_t>(j)];
+        threads.emplace_back([&b, &r, shard, lo, hi, error]() {
+          try {
+            const R_xlen_t m = hi - lo;
+            charport::StrViews views(m);
+            if(m > 0) {
+              r.views(lo, m, views);
+            }
+            for(R_xlen_t i = lo; i < hi; ++i) {
+              const size_t j = static_cast<size_t>(i - lo);
+              b.set(shard, i, views[static_cast<R_xlen_t>(j)]);
+            }
+          } catch(...) {
+            *error = std::current_exception();
           }
-          for(R_xlen_t i = lo; i < hi; ++i) {
-            const size_t j = static_cast<size_t>(i - lo);
-            b.set(shard, i, views[static_cast<R_xlen_t>(j)]);
-          }
-        } catch(const std::exception & e) {
-          *err = e.what();
-        } catch(...) {
-          *err = "unknown C++ exception";
-        }
-      });
+        });
+      }
+    } catch(...) {
+      join_all(threads);
+      throw;
     }
-    for(std::thread & t : threads) {
-      t.join();
-    }
-    for(const std::string & err : worker_errors) {
-      if(!err.empty()) {
-        throw std::runtime_error(err);
+    join_all(threads);
+    for(const std::exception_ptr & error : worker_errors) {
+      if(error) {
+        std::rethrow_exception(error);
       }
     }
     return b.to_sexp();
@@ -100,27 +100,30 @@ SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
 SEXP C_consumer_worker_throws(void) {
   return guarded("worker_throws", [&]() -> SEXP {
     charport::charvec::ParallelBuilder b(2, 2);
-    std::vector<std::string> worker_errors(2);
+    std::vector<std::exception_ptr> worker_errors(2);
     std::vector<std::thread> threads;
-    for(int j = 0; j < 2; ++j) {
-      std::string * err = &worker_errors[static_cast<size_t>(j)];
-      threads.emplace_back([&b, j, err]() {
-        try {
-          if(j == 1) {
-            throw std::runtime_error("injected worker failure");
+    try {
+      for(int j = 0; j < 2; ++j) {
+        std::exception_ptr * error = &worker_errors[static_cast<size_t>(j)];
+        threads.emplace_back([&b, j, error]() {
+          try {
+            if(j == 1) {
+              throw std::runtime_error("injected worker failure");
+            }
+            b.set(static_cast<size_t>(j), j, "ok", 2, cetype_ext_t::CE_ASCII);
+          } catch(...) {
+            *error = std::current_exception();
           }
-          b.set(static_cast<size_t>(j), j, "ok", 2, cetype_ext_t::CE_ASCII);
-        } catch(const std::exception & e) {
-          *err = e.what();
-        }
-      });
+        });
+      }
+    } catch(...) {
+      join_all(threads);
+      throw;
     }
-    for(std::thread & t : threads) {
-      t.join();
-    }
-    for(const std::string & err : worker_errors) {
-      if(!err.empty()) {
-        throw std::runtime_error(err);
+    join_all(threads);
+    for(const std::exception_ptr & error : worker_errors) {
+      if(error) {
+        std::rethrow_exception(error);
       }
     }
     return b.to_sexp();
