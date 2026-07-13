@@ -1,11 +1,20 @@
 // Test-only downstream-style consumer of the installed charport headers.
 
+#define HAS_UNWIND_PROTECT
 #include "charport.h"
+#undef HAS_UNWIND_PROTECT
+
+static_assert(
+  std::is_same<
+    charport::detail::selected_backend,
+    charport::unwind_detail::standalone_backend
+  >::value,
+  "a generic unwind macro must not select cpp11"
+);
 
 #include <cstdio>
 #include <cstring>
 #include <limits>
-#include <memory>
 #include <stdexcept>
 
 namespace {
@@ -33,16 +42,7 @@ enum release_test_access {
 
 struct release_test_state {
   int marker;
-  bool count_cleanup;
-
-  release_test_state(int marker_, bool count_cleanup_) noexcept
-    : marker(marker_), count_cleanup(count_cleanup_) {}
-
-  ~release_test_state() noexcept {
-    if(count_cleanup) {
-      ++unwind_probe_count;
-    }
-  }
+  explicit release_test_state(int marker_) noexcept : marker(marker_) {}
 };
 
 R_xlen_t release_test_length(SEXP) {
@@ -54,25 +54,10 @@ SEXP release_test_elt(SEXP, R_xlen_t i) {
 }
 
 void * release_test_init(SEXP) {
-  if(release_test_init_failure == 0) {
-    return new release_test_state(42, false);
+  if(release_test_init_failure != 0) {
+    Rf_error("injected provider init R error");
   }
-
-  return charport::reader_init_boundary("release_test init",
-    [&]() -> void * {
-      std::unique_ptr<release_test_state> state(
-        new release_test_state(42, true)
-      );
-      if(release_test_init_failure == 1) {
-        charport::provider_unwind_protect([]() -> SEXP {
-          Rf_error("injected provider init R error");
-          return R_NilValue;
-        });
-      } else {
-        throw std::runtime_error("injected provider init C++ error");
-      }
-      return state.release();
-    });
+  return new release_test_state(42);
 }
 
 charport_strview release_test_view(void * state, R_xlen_t i) {

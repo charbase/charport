@@ -24,6 +24,9 @@ inline bool charsxp_is_ascii(SEXP x) {
 #if (R_VERSION >= R_Version(4, 5, 0))
   return Rf_charIsASCII(x) == TRUE;
 #else
+  // Before 4.5 there is no CRAN-safe accessor for the CHARSXP ASCII flag, so
+  // this scans the bytes (O(len) per native-encoded string). Reading the
+  // levels bit directly would be free but is not API-safe; revisit later.
   return check_ascii(CHAR(x), static_cast<size_t>(Rf_xlength(x)));
 #endif
 }
@@ -319,22 +322,14 @@ struct charvec_altrep {
   }
 
   static SEXP Duplicate(SEXP vec, Rboolean /* deep */) {
+    SEXP data2 = R_altrep_data2(vec);
+    if(data2 != R_NilValue) {
+      // materialized: duplicate the cached STRSXP, sharing CHARSXPs. The copy
+      // is an ordinary character vector; R's DuplicateEX copies attributes.
+      return Rf_duplicate(data2);
+    }
     return charport_sexp_guard("charvec Duplicate", [&]() -> SEXP {
-      SEXP data2 = R_altrep_data2(vec);
-      if(data2 != R_NilValue) {
-        const R_xlen_t n = Rf_xlength(data2);
-        const SEXP * ptr = STRING_PTR_RO(data2);
-        auto out = charport::charvec::Builder::build_store(static_cast<size_t>(n),
-          [&](cpc::BuilderShard & sh, cpc::RecordTable & rec) {
-            for(R_xlen_t i = 0; i < n; ++i) {
-              cpc::copy_record(sh, rec, static_cast<size_t>(i),
-                               cpi::charsxp_to_view(ptr[i]));
-            }
-          });
-        return MakeOwned(out.release());
-      }
-      auto * out = new cpv::Store(Get(vec));
-      return MakeOwned(out);
+      return MakeOwned(new cpv::Store(Get(vec)));
     });
   }
 
@@ -399,24 +394,24 @@ struct charvec_altrep {
   }
 
   // Subset copies records store-to-store: one memcpy per element, no
-  // intermediate owned-string temporary.
+  // intermediate owned-string temporary. A materialized charvec falls back to
+  // the default subset over the cached STRSXP, which shares CHARSXPs. R
+  // normalizes subscripts to INTSXP/REALSXP before this method; anything else
+  // also falls back to the default implementation.
   static SEXP Extract_subset(SEXP x, SEXP indx, SEXP call) {
+    (void)call;
+    if(R_altrep_data2(x) != R_NilValue) {
+      return nullptr;
+    }
+    if(TYPEOF(indx) != INTSXP && TYPEOF(indx) != REALSXP) {
+      return nullptr;
+    }
     return charport_sexp_guard("charvec Extract_subset", [&]() -> SEXP {
-      (void)call;
-      SEXP data2 = R_altrep_data2(x);
-      const SEXP * data2_ptr =
-        data2 == R_NilValue ? nullptr : STRING_PTR_RO(data2);
-      const R_xlen_t xlen = data2 != R_NilValue
-        ? Rf_xlength(data2)
-        : static_cast<R_xlen_t>(Get(x).size());
+      const R_xlen_t xlen = static_cast<R_xlen_t>(Get(x).size());
 
       auto copy_element = [&](cpc::BuilderShard & sh, cpc::RecordTable & recs,
                               size_t out_i, R_xlen_t zero_based) {
         if(zero_based < 0 || zero_based >= xlen) {
-          return;
-        }
-        if(data2_ptr != nullptr) {
-          cpc::copy_record(sh, recs, out_i, cpi::charsxp_to_view(data2_ptr[zero_based]));
           return;
         }
         const charport_strview rec = Get(x).view(static_cast<size_t>(zero_based));
@@ -425,39 +420,6 @@ struct charvec_altrep {
         }
       };
 
-      if(TYPEOF(indx) == LGLSXP) {
-        const int * idx = LOGICAL(indx);
-        const R_xlen_t idx_len = Rf_xlength(indx);
-        if(idx_len == 0) {
-          return MakeOwned(new cpv::Store());
-        }
-
-        R_xlen_t out_len = 0;
-        for(R_xlen_t i = 0; i < xlen; ++i) {
-          const int idx_i = idx[i % idx_len];
-          if(idx_i == TRUE || idx_i == NA_LOGICAL) {
-            ++out_len;
-          }
-        }
-
-        auto out = charport::charvec::Builder::build_store(static_cast<size_t>(out_len),
-          [&](cpc::BuilderShard & sh, cpc::RecordTable & rec) {
-            R_xlen_t out_i = 0;
-            for(R_xlen_t i = 0; i < xlen; ++i) {
-              const int idx_i = idx[i % idx_len];
-              if(idx_i == TRUE) {
-                copy_element(sh, rec, static_cast<size_t>(out_i++), i);
-              } else if(idx_i == NA_LOGICAL) {
-                ++out_i;  // stays NA
-              }
-            }
-          });
-        return MakeOwned(out.release());
-      }
-
-      if(TYPEOF(indx) != INTSXP && TYPEOF(indx) != REALSXP) {
-        throw std::runtime_error("invalid indx type in Extract_subset method");
-      }
       const R_xlen_t len = Rf_xlength(indx);
       auto out = charport::charvec::Builder::build_store(static_cast<size_t>(len),
         [&](cpc::BuilderShard & sh, cpc::RecordTable & rec) {

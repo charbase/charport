@@ -1,5 +1,14 @@
 #define RCPP_MASK_RF_ERROR
-#include "charport/rcpp.h"
+#include <Rcpp.h>
+#include "charport.h"
+
+static_assert(
+  std::is_same<
+    charport::detail::selected_backend,
+    charport::unwind_detail::rcpp_backend
+  >::value,
+  "charport.h did not select the Rcpp adapter"
+);
 
 namespace {
 
@@ -13,6 +22,19 @@ struct cleanup_probe {
 
 extern "C" SEXP C_rcpp_charport_cleanup_count(void) {
   return Rf_ScalarInteger(cleanup_count);
+}
+
+// A hand-written .Call boundary in the same TU: r_boundary must recognize the
+// Rcpp unwind exception thrown by the selected backend and continue the
+// original R condition.
+extern "C" SEXP C_rcpp_charport_boundary(SEXP x, SEXP expression, SEXP environment) {
+  return charport::r_boundary("rcpp_boundary", [&]() -> SEXP {
+    cleanup_probe probe;
+    charport::Reader reader(x);
+    return charport::unwind_protect([&]() -> SEXP {
+      return Rf_eval(expression, environment);
+    });
+  });
 }
 
 extern "C" SEXP C_rcpp_charport_test(SEXP x, SEXP expression, SEXP environment) {

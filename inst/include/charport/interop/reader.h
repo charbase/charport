@@ -347,6 +347,8 @@ public:
              int * out_lens, cetype_ext_t * out_encs) const {
     r_.range.strviews(r_.state, start, size, out_ptrs, out_lens, out_encs);
   }
+  // The int-start overloads exist because a literal 0 start would otherwise
+  // be ambiguous between R_xlen_t and the indexed const R_xlen_t * overloads.
   void views(int start, R_xlen_t size, const char ** out_ptrs,
              int * out_lens, cetype_ext_t * out_encs) const {
     views(static_cast<R_xlen_t>(start), size, out_ptrs, out_lens, out_encs);

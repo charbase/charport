@@ -100,11 +100,12 @@ for (i in 1:25) {
   stopifnot(marks_identical(x[idx], ref[idx]))
 }
 
-catn("subsetting after materialization")
+catn("subsetting after materialization falls back to plain character")
 x <- as_charvec(ref)
 charport_materialize(x)
 stopifnot(is_charvec(x))
-stopifnot(is_charvec(x[2:4]))
+stopifnot(!is_charvec(x[2:4]))   # default subset over the cache, CHARSXPs shared
+stopifnot(marks_identical(x[2:4], ref[2:4]))
 stopifnot(marks_identical(x[c(3L, NA, 99L)], ref[c(3L, NA, 99L)]))
 
 catn("copy-on-write under [<-")
@@ -133,12 +134,13 @@ stopifnot(identical(attr(y, "charport_test"), "keep"))
 stopifnot(identical(class(y), c("charport_test_class", "character")))
 stopifnot(identical(names(x), c("a", "b")), identical(x[[1L]], "one"))
 
-catn("copy-on-write from a materialized charvec")
+catn("copy-on-write from a materialized charvec yields a plain copy")
 x <- as_charvec(ref)
 charport_materialize(x)
 y <- x
 y[1L] <- "q"
 stopifnot(marks_identical(x, ref), identical(y[[1L]], "q"))
+stopifnot(!is_charvec(y))        # Duplicate of the cache shares CHARSXPs
 
 catn("serialization round trip (unmaterialized stays charvec)")
 mixed_in <- c(w_utf8[1:50], NA, "", w_latin1[51:100], b)

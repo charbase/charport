@@ -19,24 +19,24 @@ navbar:
       href: articles/design-rationale.html
 
 articles:
-- title: Start here
+- title: Start Here
   navbar: ~
   contents:
   - charport
-- title: Developer documentation
+- title: Developer Documentation
   contents:
   - developer-guide
   - error-handling
   - design-rationale
 
 reference:
-- title: Construct and inspect `charvec`
+- title: Construct And Inspect `charvec`
   contents:
   - charvec
   - is_charvec
   - as_charvec
   - charport_materialize
-- title: Class diagnostics
+- title: Class Diagnostics
   contents:
   - charport_classes
   - charport_info

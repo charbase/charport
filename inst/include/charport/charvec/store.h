@@ -303,9 +303,6 @@ inline char * fill_record(BuilderShard & shard, RecordTable & records,
 
 inline void copy_record(BuilderShard & shard, RecordTable & records,
                         size_t idx, const char * ptr, size_t len, cetype_ext_t enc) {
-  if(enc != cetype_ext_t::CE_NA && ptr == nullptr && len > 0) {
-    throw std::runtime_error("cannot assign non-NA null bytes");
-  }
   char * dest = fill_record(shard, records, idx, len, enc);
   if(dest != nullptr && len > 0) {
     std::memcpy(dest, ptr, len);
@@ -405,9 +402,6 @@ public:
   }
 
   void assign(size_t idx, const char * ptr, size_t len, cetype_ext_t enc) {
-    if(enc != cetype_ext_t::CE_NA && ptr == nullptr && len > 0) {
-      throw std::runtime_error("cannot assign non-NA null bytes");
-    }
     char * dest = reserve(idx, len, enc);
     if(dest != nullptr && len > 0) {
       std::memmove(dest, ptr, len);

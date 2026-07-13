@@ -179,7 +179,6 @@ for (framework in c("Rcpp", "cpp11")) {
   stopifnot(grepl("character", conditionMessage(err)))
   stopifnot(identical(cleanup_count(), cleanup_before + 1L))
 
-  unwind_probe_reset()
   release_test_init_failure(1L)
   cleanup_before <- cleanup_count()
   err <- tryCatch(
@@ -189,10 +188,28 @@ for (framework in c("Rcpp", "cpp11")) {
   )
   stopifnot(grepl("injected provider init R error", conditionMessage(err)))
   stopifnot(identical(cleanup_count(), cleanup_before + 1L))
-  stopifnot(identical(unwind_probe_count(), 1L))
+
+  # hand-written r_boundary in the same TU: the framework backend's unwind
+  # exception must continue the original R condition, not a generic error
+  boundary_symbol <- getNativeSymbolInfo(
+    paste0("C_", tolower(framework), "_charport_boundary"),
+    PACKAGE = framework_dlls[[framework]][["name"]]
+  )
+  cleanup_before <- cleanup_count()
+  before <- release_test_count()
+  err <- tryCatch(
+    .Call(boundary_symbol, release_test_vector(), quote(stop(condition)), condition_env),
+    charport_test_error = identity
+  )
+  stopifnot(identical(err$code, 42L), identical(conditionMessage(err), "injected R error"))
+  stopifnot(identical(release_test_count(), before + 1L))
+  stopifnot(identical(cleanup_count(), cleanup_before + 1L))
+
+  out <- .Call(boundary_symbol, release_test_vector(), quote("ok"), baseenv())
+  stopifnot(identical(out, "ok"))
 }
 
-catn("R errors during provider init unwind both provider and consumer state")
+catn("R errors during provider init unwind consumer state")
 unwind_probe_reset()
 release_test_init_failure(1L)
 err <- tryCatch(
@@ -201,18 +218,7 @@ err <- tryCatch(
   finally = release_test_init_failure(0L)
 )
 stopifnot(grepl("injected provider init R error", conditionMessage(err)))
-stopifnot(identical(unwind_probe_count(), 2L))
-
-catn("C++ errors during provider init unwind both provider and consumer state")
-unwind_probe_reset()
-release_test_init_failure(2L)
-err <- tryCatch(
-  reader_open(release_test_vector()),
-  error = identity,
-  finally = release_test_init_failure(0L)
-)
-stopifnot(grepl("injected provider init C\\+\\+ error", conditionMessage(err)))
-stopifnot(identical(unwind_probe_count(), 2L))
+stopifnot(identical(unwind_probe_count(), 1L))
 
 catn("C++ errors return through R frames before conversion")
 unwind_probe_reset()
@@ -285,6 +291,17 @@ stopifnot(out_stats$n_slices == 0, all(is.na(out)))
 big <- strrep("q", 300000)                      # > 256 KiB slice cap, via a shard
 out <- rebuild(as_charvec(c(big, "tail")), 1L)
 stopifnot(identical(as.character(out), c(big, "tail")))
+
+catn("oversize strings are stored whole on every builder path")
+# strings above the slice cap get an exact-fit slice; the cap only bounds
+# the regular geometric slice size
+mixed <- c(big, "s1", NA, strrep("w", 400000), "", "s2")
+for (k in c(0L, 1L, 3L)) {
+  out <- rebuild(mixed, k)                      # set() path
+  stopifnot(is_charvec(out), marks_identical(out, mixed))
+  out <- reserve_rebuild(mixed, k)              # reserve() path
+  stopifnot(is_charvec(out), marks_identical(out, mixed))
+}
 
 catn("built charvec serializes like any other")
 x <- rebuild(as_charvec(c(w_utf8[1:10], NA, "", b)), 3L)

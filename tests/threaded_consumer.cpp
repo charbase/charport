@@ -1,8 +1,8 @@
 // A minimal external charport consumer, compiled at test time with
-// R CMD SHLIB (see test_threaded_consumer.R). It is a separately loaded
-// library that knows charport only through the installed public header and
-// R_GetCCallable, exactly like a downstream package. Thread flags live in
-// the test-local Makevars, so charport itself carries none.
+// R CMD SHLIB (see test_threaded_consumer.R) -- a separately loaded library that knows
+// charport only through the installed public header and R_GetCCallable,
+// exactly like a downstream package. Thread flags live in the test-local
+// Makevars, so charport itself carries none.
 //
 // The parallel-consumer pattern: worker threads share a reentrant Reader by
 // reference and write disjoint ranges through their own ParallelBuilder shard index.

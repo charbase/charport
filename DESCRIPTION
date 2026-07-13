@@ -23,7 +23,7 @@ VignetteBuilder: quarto
 Biarch: true
 Depends: R (>= 3.6.0)
 URL: https://charport.github.io/charport/,
-    https://github.com/charport/charport
-BugReports: https://github.com/charport/charport/issues
+    https://github.com/traversc/charport
+BugReports: https://github.com/traversc/charport/issues
 Config/roxygen2/version: 8.0.0
 Config/Needs/website: pkgdown, xml2

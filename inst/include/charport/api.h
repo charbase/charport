@@ -1,10 +1,10 @@
 #ifndef CHARPORT_API_H
 #define CHARPORT_API_H
 
-// Common C++ API. Select a backend through a charport umbrella header.
+// Common C++ API. charport.h selects the unwind backend.
 
 #ifndef CHARPORT_UNWIND_BACKEND
-#error "include charport.h, charport/rcpp.h, or charport/cpp11.h"
+#error "include charport.h"
 #endif
 
 #include "interop/reader.h"

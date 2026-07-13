@@ -51,16 +51,16 @@ bench:
 	Rscript inst/extra/benchmark.R 5
 
 # ASan + UBSan over the full test suite. Only the package (and the
-# test-compiled consumer library, via R_MAKEVARS_USER) is instrumented. R
+# test-compiled consumer library, via R_MAKEVARS_USER) is instrumented -- R
 # itself is not, so libasan must be preloaded and leak checking disabled
 # (the R interpreter intentionally leaks at exit).
 #
-# --no-test-load is required because R CMD INSTALL's post-install load test
-# runs without the libasan LD_PRELOAD. Loading the instrumented .so then
-# aborts with "ASan runtime does not come first", and INSTALL removes the
-# package. Without this flag, the empty temporary library can cause the suite
-# to load an uninstrumented user-library copy of charport. The test loop below
-# performs the preloaded load.
+# --no-test-load is REQUIRED: R CMD INSTALL's post-install load test runs R
+# without the libasan LD_PRELOAD, so loading the instrumented .so aborts with
+# "ASan runtime does not come first" and INSTALL removes the package. Without
+# this flag the temp lib ends up empty and the suite silently falls through to
+# the uninstrumented user-library charport -- i.e. it stops instrumenting at
+# all. The test loop below does the real (preloaded) load.
 test-san:
 	tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-san-XXXXXX); \
 	printf 'CXXFLAGS = -g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all\nSHLIB_CXXLDFLAGS = -fsanitize=address,undefined -shared\n' > $$tmp_lib/Makevars.san; \
@@ -89,7 +89,6 @@ vignette:
 	XDG_CACHE_HOME=$(CURDIR)/local/cache quarto render vignettes/developer-guide.qmd --to html
 	XDG_CACHE_HOME=$(CURDIR)/local/cache quarto render vignettes/error-handling.qmd --to html
 	XDG_CACHE_HOME=$(CURDIR)/local/cache quarto render vignettes/design-rationale.qmd --to html
-	Rscript tools/quarto-tabsets-to-bootstrap.R vignettes/*.html
 
 reflow-docs:
 	Rscript tools/reflow-rmd.R --width 80 vignettes/charport.qmd vignettes/developer-guide.qmd vignettes/error-handling.qmd vignettes/design-rationale.qmd
@@ -120,7 +119,6 @@ clean-native:
 	rm -f src/symbols.rds
 
 clean-build-products:
-	rm -f vignettes/*.html
 	rm -f $(PACKAGE)_*.tar.gz
 	rm -rf $(PACKAGE).Rcheck ..Rcheck
 	rm -rf docs

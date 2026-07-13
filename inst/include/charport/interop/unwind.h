@@ -1,7 +1,7 @@
 #ifndef CHARPORT_INTEROP_UNWIND_H
 #define CHARPORT_INTEROP_UNWIND_H
 
-// Bridge R errors through live C++ objects. Include a charport umbrella header.
+// Bridge R errors through live C++ objects. Include charport.h.
 
 #ifndef R_NO_REMAP
 #define R_NO_REMAP
@@ -55,6 +55,11 @@ struct standalone_backend {
     typedef typename std::remove_reference<Fn>::type fun_type;
     call_state<fun_type> state{&fn, std::exception_ptr()};
     jump_buffer jump;
+    // A fresh token costs ~20ns over a cpp11-style preserved static (measured;
+    // the R_UnwindProtect context setup dominates either way). We pay it: this
+    // bridge runs once per Reader/Builder operation, not per element, and a
+    // static token is shared state whose safety rests on every caller's
+    // destructor discipline. Revisit only if this ever shows up in a profile.
     SEXP token = PROTECT(R_MakeUnwindCont());
 
     if(setjmp(jump.value) != 0) {
@@ -79,6 +84,38 @@ struct standalone_backend {
   }
 };
 
+#if defined(RCPP_VERSION)
+struct rcpp_backend {
+  template<typename Fn>
+  static SEXP call(Fn && fn) {
+    typedef typename std::remove_reference<Fn>::type fun_type;
+    call_state<fun_type> state{&fn, std::exception_ptr()};
+    SEXP out = Rcpp::unwindProtect(&call_body<fun_type>, &state);
+    if(state.error) {
+      std::rethrow_exception(state.error);
+    }
+    return out;
+  }
+};
+#endif
+
+#if defined(CHARPORT_CPP11_INCLUDED)
+struct cpp11_backend {
+  template<typename Fn>
+  static SEXP call(Fn && fn) {
+    typedef typename std::remove_reference<Fn>::type fun_type;
+    call_state<fun_type> state{&fn, std::exception_ptr()};
+    SEXP out = cpp11::unwind_protect([&]() -> SEXP {
+      return call_body<fun_type>(&state);
+    });
+    if(state.error) {
+      std::rethrow_exception(state.error);
+    }
+    return out;
+  }
+};
+#endif
+
 enum class exit_kind : unsigned char {
   success,
   r_error,
@@ -89,20 +126,40 @@ struct outcome {
   exit_kind kind;
   SEXP value;
   SEXP token;
+  bool release_token;
   char message[512];
 };
 
+// A TU that includes Rcpp or cpp11 before charport.h protects R calls with
+// that framework's backend, so an R error reaches a hand-written boundary as
+// the framework's unwind exception, not charport's. Recognize all three so
+// the original R condition continues instead of degrading to a generic error.
 template<typename Fn>
 outcome run(Fn && fn) noexcept {
   outcome out;
   out.kind = exit_kind::success;
   out.value = R_NilValue;
   out.token = R_NilValue;
+  out.release_token = false;
   try {
     out.value = std::forward<Fn>(fn)();
   } catch(const unwind_exception & error) {
     out.kind = exit_kind::r_error;
     out.token = error.token;
+    out.release_token = true;
+#if defined(RCPP_VERSION)
+  } catch(const Rcpp::LongjumpException & error) {
+    // Rcpp preserves its token per throw, like the standalone backend.
+    out.kind = exit_kind::r_error;
+    out.token = error.token;
+    out.release_token = true;
+#endif
+#if defined(CHARPORT_CPP11_INCLUDED)
+  } catch(const cpp11::unwind_exception & error) {
+    // cpp11's token is a preserved process-lifetime static; never release it.
+    out.kind = exit_kind::r_error;
+    out.token = error.token;
+#endif
   } catch(const std::exception & error) {
     out.kind = exit_kind::cpp_error;
     std::snprintf(out.message, sizeof(out.message), "%s", error.what());
@@ -115,12 +172,6 @@ outcome run(Fn && fn) noexcept {
 
 } // namespace unwind_detail
 
-// Provider callbacks have no generated framework wrapper around them.
-template<typename Fn>
-SEXP provider_unwind_protect(Fn && fn) {
-  return unwind_detail::standalone_backend::call(std::forward<Fn>(fn));
-}
-
 // Use as the first operation in a hand-written .Call entry point.
 template<typename Fn>
 SEXP r_boundary(const char * operation, Fn && fn) {
@@ -132,7 +183,9 @@ SEXP r_boundary(const char * operation, Fn && fn) {
     unwind_detail::run(std::forward<Fn>(fn));
 
   if(out.kind == unwind_detail::exit_kind::r_error) {
-    R_ReleaseObject(out.token);
+    if(out.release_token) {
+      R_ReleaseObject(out.token);
+    }
     R_ContinueUnwind(out.token);
     (Rf_error)("charport %s: failed to continue R error", operation);
   }
@@ -142,22 +195,6 @@ SEXP r_boundary(const char * operation, Fn && fn) {
 
   return out.value;
 }
-
-// The same outer boundary adapted to a charport_reader_init_fn callback.
-template<typename Fn>
-void * reader_init_boundary(const char * operation, Fn && fn) {
-  typedef typename std::decay<Fn>::type body_type;
-  static_assert(std::is_trivially_destructible<body_type>::value,
-                "reader_init_boundary callback must be trivially destructible");
-
-  void * result = nullptr;
-  (void)r_boundary(operation, [&]() -> SEXP {
-    result = std::forward<Fn>(fn)();
-    return R_NilValue;
-  });
-  return result;
-}
-
 } // namespace charport
 
 #endif

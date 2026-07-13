@@ -1,22 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
   <title id="title">charport logo</title>
-  <desc id="desc">A hexagonal badge with a sailboat, waves, and the charport name.</desc>
-  <defs>
-    <linearGradient id="dusk" x1="80" y1="70" x2="430" y2="450" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#26323d"/>
-      <stop offset="1" stop-color="#3d575b"/>
-    </linearGradient>
-  </defs>
-  <polygon points="256,28 452,142 452,370 256,484 60,370 60,142" fill="url(#dusk)"/>
-  <polygon points="256,48 434,152 434,360 256,464 78,360 78,152" fill="none" stroke="#f2ead9" stroke-width="5" opacity="0.9"/>
+  <desc id="desc">A large slate and teal sailboat riding two waves inside a white hexagon.</desc>
+  <path d="M256 28 452 142V370L256 484 60 370V142Z" fill="#33454e"/>
+  <path d="M256 48 434 152V360L256 464 78 360V152Z" fill="#ffffff"/>
 
-  <path d="M160 302 C193 284 225 284 258 302 C291 320 323 320 356 302" fill="none" stroke="#98c0bc" stroke-width="9" stroke-linecap="round"/>
-  <path d="M191 331 C214 320 237 320 260 331 C283 342 306 342 329 331" fill="none" stroke="#f2ead9" stroke-width="5" stroke-linecap="round" opacity="0.52"/>
+  <!-- The hull rests on the first crest; the two waves occupy separate bands. -->
+  <path d="M142 301C180 283 218 283 256 301S332 319 370 301"
+        fill="none" stroke="#5f9b94" stroke-width="10" stroke-linecap="round"/>
+  <path d="M180 337C205 326 230 326 256 337S307 348 332 337"
+        fill="none" stroke="#a9c8c4" stroke-width="5" stroke-linecap="round"/>
 
-  <path d="M190 260 H322 L304 286 H207 Z" fill="#d2a66e"/>
-  <path d="M255 260 V187" stroke="#f2ead9" stroke-width="5" stroke-linecap="round"/>
-  <path d="M263 192 L263 258 L314 258 Z" fill="#f2ead9"/>
-  <path d="M247 202 L247 258 L211 258 Z" fill="#98c0bc"/>
+  <path d="M166 251H346L322 284H191Z" fill="#d2a66e"/>
+  <path d="M256 251V150" stroke="#33454e" stroke-width="6" stroke-linecap="round"/>
+  <path d="M266 157V248H338Z" fill="#33454e"/>
+  <path d="M246 169V248H190Z" fill="#6fa8a0"/>
 
-  <text x="256" y="389" text-anchor="middle" font-family="Inter, Avenir, Helvetica, Arial, sans-serif" font-size="57" font-weight="740" letter-spacing="0" fill="#f2ead9">charport</text>
+  <text x="256" y="394" text-anchor="middle" font-family="Inter, Avenir, Helvetica, Arial, sans-serif"
+        font-size="51" font-weight="740" fill="#2f4149">charport</text>
 </svg>
