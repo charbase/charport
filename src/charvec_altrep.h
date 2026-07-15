@@ -235,6 +235,100 @@ inline const char * charvec_serialized_payload(const unsigned char *& data_offse
   return ptr;
 }
 
+namespace charvec_detail {
+
+inline cpv::Store rebuild_store(const cpc::RecordTable & source) {
+  cpv::Store out(source.size(), 0);
+  const size_t max_block = static_cast<size_t>(std::numeric_limits<uint32_t>::max());
+  size_t i = 0;
+
+  while(i < source.size()) {
+    size_t block_bytes = 0;
+    size_t j = i;
+    while(j < source.size()) {
+      const charport_strview record = source.view(j);
+      const size_t len = record.is_na() ? 0 : static_cast<size_t>(record.len);
+      if(len > max_block - block_bytes) {
+        break;
+      }
+      block_bytes += len;
+      ++j;
+    }
+
+    if(block_bytes > 0) {
+      char * write_ptr = out.slices.push_front(block_bytes);
+      for(size_t k = i; k < j; ++k) {
+        const charport_strview record = source.view(k);
+        if(record.is_na()) {
+          continue;
+        }
+        if(record.len == 0) {
+          out.records.set(k, cpc::empty_data(), 0, record.enc);
+          continue;
+        }
+        std::memcpy(write_ptr, record.ptr, static_cast<size_t>(record.len));
+        out.records.set(k, write_ptr, record.len, record.enc);
+        write_ptr += record.len;
+      }
+    } else {
+      for(size_t k = i; k < j; ++k) {
+        const charport_strview record = source.view(k);
+        if(!record.is_na() && record.len == 0) {
+          out.records.set(k, cpc::empty_data(), 0, record.enc);
+        }
+      }
+    }
+    i = (j > i) ? j : i + 1;
+  }
+
+  return out;
+}
+
+inline cpv::Store deep_copy_store(const cpv::Store & source) {
+  return rebuild_store(source.records);
+}
+
+inline char * store_reserve(cpv::Store & store, size_t idx, size_t len,
+                            cetype_ext_t enc) {
+  const int stored_len = cpc::checked_string_size(len, "stored string length");
+  if(idx >= store.records.size()) {
+    throw std::runtime_error("charvec store assignment out of bounds");
+  }
+
+  const charport_strview current = store.records.view(idx);
+  if(enc == cetype_ext_t::CE_NA) {
+    store.records.set_na(idx);
+    return nullptr;
+  }
+  if(stored_len == 0) {
+    store.records.set(idx, cpc::empty_data(), 0, enc);
+    return const_cast<char*>(cpc::empty_data());
+  }
+  if(!current.is_na() && current.len >= stored_len) {
+    store.records.set(idx, current.ptr, stored_len, enc);
+    return const_cast<char*>(current.ptr);
+  }
+
+  char * dest = store.slices.push_front(static_cast<size_t>(stored_len));
+  store.records.set(idx, dest, stored_len, enc);
+  return dest;
+}
+
+inline void store_assign(cpv::Store & store, size_t idx,
+                         const charport_strview & value) {
+  const size_t len = value.is_na() ? 0 : static_cast<size_t>(value.len);
+  char * dest = store_reserve(store, idx, len, value.enc);
+  if(dest != nullptr && len > 0) {
+    std::memmove(dest, value.ptr, len);
+  }
+}
+
+inline void compact_store(cpv::Store & store) {
+  store = rebuild_store(store.records);
+}
+
+} // namespace charvec_detail
+
 struct charvec_altrep {
   static R_altrep_class_t class_t;
 
@@ -329,7 +423,7 @@ struct charvec_altrep {
       return Rf_duplicate(data2);
     }
     return charport_sexp_guard("charvec Duplicate", [&]() -> SEXP {
-      return MakeOwned(new cpv::Store(Get(vec)));
+      return MakeOwned(new cpv::Store(charvec_detail::deep_copy_store(Get(vec))));
     });
   }
 
@@ -368,7 +462,8 @@ struct charvec_altrep {
       return;
     }
     charport_sexp_guard("charvec Set_elt", [&]() -> SEXP {
-      Get(vec).assign(static_cast<size_t>(i), cpi::charsxp_to_view(new_val));
+      charvec_detail::store_assign(
+        Get(vec), static_cast<size_t>(i), cpi::charsxp_to_view(new_val));
       return R_NilValue;
     });
   }
@@ -408,41 +503,40 @@ struct charvec_altrep {
     }
     return charport_sexp_guard("charvec Extract_subset", [&]() -> SEXP {
       const R_xlen_t xlen = static_cast<R_xlen_t>(Get(x).size());
+      const R_xlen_t len = Rf_xlength(indx);
 
-      auto copy_element = [&](cpc::BuilderShard & sh, cpc::RecordTable & recs,
-                              size_t out_i, R_xlen_t zero_based) {
+      charport::charvec::Builder out(len);
+      auto copy_element = [&](size_t out_i, R_xlen_t zero_based) {
         if(zero_based < 0 || zero_based >= xlen) {
           return;
         }
         const charport_strview rec = Get(x).view(static_cast<size_t>(zero_based));
         if(!rec.is_na()) {
-          cpc::copy_record(sh, recs, out_i, rec);
+          out.set(static_cast<R_xlen_t>(out_i), rec);
         }
       };
 
-      const R_xlen_t len = Rf_xlength(indx);
-      auto out = charport::charvec::Builder::build_store(static_cast<size_t>(len),
-        [&](cpc::BuilderShard & sh, cpc::RecordTable & rec) {
-          if(TYPEOF(indx) == INTSXP) {
-            const int * idx = INTEGER(indx);
-            for(R_xlen_t i = 0; i < len; ++i) {
-              if(idx[i] != NA_INTEGER) {
-                copy_element(sh, rec, static_cast<size_t>(i), static_cast<R_xlen_t>(idx[i]) - 1);
-              }
-            }
-          } else {
-            const double * idx = REAL(indx);
-            for(R_xlen_t i = 0; i < len; ++i) {
-              const double one_based = idx[i];
-              if(R_FINITE(one_based) && one_based >= 1.0 &&
-                 one_based <= static_cast<double>(xlen)) {
-                copy_element(sh, rec, static_cast<size_t>(i),
-                             static_cast<R_xlen_t>(one_based) - 1);
-              }
-            }
+      if(TYPEOF(indx) == INTSXP) {
+        const int * idx = INTEGER(indx);
+        for(R_xlen_t i = 0; i < len; ++i) {
+          if(idx[i] != NA_INTEGER) {
+            copy_element(static_cast<size_t>(i), static_cast<R_xlen_t>(idx[i]) - 1);
           }
-        });
-      return MakeOwned(out.release());
+        }
+      } else {
+        const double * idx = REAL(indx);
+        for(R_xlen_t i = 0; i < len; ++i) {
+          const double one_based = idx[i];
+          if(R_FINITE(one_based) && one_based >= 1.0 &&
+             one_based <= static_cast<double>(xlen)) {
+            copy_element(static_cast<size_t>(i),
+                         static_cast<R_xlen_t>(one_based) - 1);
+          }
+        }
+      }
+
+      cpv::Store store = out.release_store();
+      return MakeOwned(new cpv::Store(std::move(store)));
     });
   }
 
@@ -510,44 +604,43 @@ struct charvec_altrep {
       const unsigned char * enc_offset = layout.enc_offset;
       const unsigned char * data_offset = layout.data_offset;
 
-      auto ret = charport::charvec::Builder::build_store(static_cast<R_xlen_t>(layout.n),
-        [&](cpc::BuilderShard & sh, cpc::RecordTable & rec) {
-          for(size_t i = 0; i < layout.n; ++i) {
-            const uint32_t size = charvec_read_u32_advance(size_offset, layout.swap);
-            if(!cpi::check_r_string_len(size)) {
-              throw std::runtime_error("serialized string size exceeds R string size");
-            }
-            const cetype_ext_t encoding = static_cast<cetype_ext_t>(*enc_offset++);
-            const size_t stored_len = static_cast<size_t>(size);
-            const char * payload = charvec_serialized_payload(data_offset, layout.data_end, stored_len);
-            // Untrusted input: accept every encoding a record can legitimately
-            // hold (the store keeps encodings verbatim, so any of these can have
-            // been serialized) and reject only an out-of-range encoding byte.
-            switch(encoding) {
-            case cetype_ext_t::CE_ASCII:
-            case cetype_ext_t::CE_UTF8:
-            case cetype_ext_t::CE_ASCII_OR_UTF8:
-            case cetype_ext_t::CE_LATIN1:
-            case cetype_ext_t::CE_NATIVE:
-            case cetype_ext_t::CE_BYTES:
-              cpc::copy_record(sh, rec, i, payload, stored_len, encoding);
-              break;
-            case cetype_ext_t::CE_NA:
-              if(stored_len != 0) {
-                throw std::runtime_error("serialized NA string must have zero length");
-              }
-              cpc::copy_record(sh, rec, i, nullptr, 0, cetype_ext_t::CE_NA);
-              break;
-            default:
-              throw std::runtime_error("invalid string encoding in serialized_state");
-            }
+      charport::charvec::Builder out(static_cast<R_xlen_t>(layout.n));
+      for(size_t i = 0; i < layout.n; ++i) {
+        const uint32_t size = charvec_read_u32_advance(size_offset, layout.swap);
+        if(!cpi::check_r_string_len(size)) {
+          throw std::runtime_error("serialized string size exceeds R string size");
+        }
+        const cetype_ext_t encoding = static_cast<cetype_ext_t>(*enc_offset++);
+        const size_t stored_len = static_cast<size_t>(size);
+        const char * payload = charvec_serialized_payload(data_offset, layout.data_end, stored_len);
+        // Untrusted input: accept every encoding a record can legitimately
+        // hold (the store keeps encodings verbatim, so any of these can have
+        // been serialized) and reject only an out-of-range encoding byte.
+        switch(encoding) {
+        case cetype_ext_t::CE_ASCII:
+        case cetype_ext_t::CE_UTF8:
+        case cetype_ext_t::CE_ASCII_OR_UTF8:
+        case cetype_ext_t::CE_LATIN1:
+        case cetype_ext_t::CE_NATIVE:
+        case cetype_ext_t::CE_BYTES:
+          out.set(static_cast<R_xlen_t>(i), payload, stored_len, encoding);
+          break;
+        case cetype_ext_t::CE_NA:
+          if(stored_len != 0) {
+            throw std::runtime_error("serialized NA string must have zero length");
           }
-        });
+          out.set_na(static_cast<R_xlen_t>(i));
+          break;
+        default:
+          throw std::runtime_error("invalid string encoding in serialized_state");
+        }
+      }
 
       if(data_offset != layout.data_end) {
         throw std::runtime_error("serialized_state has trailing bytes");
       }
-      return MakeOwned(ret.release());
+      cpv::Store store = out.release_store();
+      return MakeOwned(new cpv::Store(std::move(store)));
     });
   }
 

@@ -71,8 +71,9 @@ The payload is stored in slices instead of one giant buffer or one allocation pe
 The builders expose different amounts of control because producers know different things:
 
 - `Builder` handles ordinary serial output when strings arrive one at a time.
-- `DirectBuilder` is for producers that already know the byte layout and want to write bytes and metadata directly.
 - `ParallelBuilder` gives each worker its own slice chain while sharing the final metadata arrays. That avoids concurrent writes to the same byte buffer while still producing one `charvec`.
+- `GrowableBuilder` handles serial output whose final length is discovered while appending.
+- Direct `Store` access lets a producer manage slices and record metadata when it already owns the byte layout.
 
 When a `charvec` is fully materialized, it caches an ordinary STRSXP in ALTREP `data2` and releases the native store. At that point R has the representation it asked for, and keeping duplicate native storage would waste memory. The reader then naturally uses the ordinary fallback path over the cached STRSXP.
 

@@ -461,6 +461,7 @@ Conceptually:
 
 ``` cpp
 class Store {
+public:
   SliceChain slices;
   RecordTable records;
 };
@@ -475,9 +476,9 @@ class RecordTable {
 
 For non-empty strings, `ptrs[i]` points into one of the byte slices. Empty strings point at shared empty storage. Missing strings are stored as `ptrs[i] = nullptr`, `lens[i] = NA_INTEGER`, and `encs[i] = cetype_ext_t::CE_NA`.
 
-### Constructing a `charvec` with `charvec::Builder`
+### `Builder`: basic fixed-length construction
 
-`charvec::Builder` builds a `charvec` one string at a time. The constructor takes the vector length, and byte slices are allocated as strings are written. Each automatically managed slice is one allocation: a small typed header for the next-slice link, followed immediately by string bytes. For multi-string vectors, the initial slice size scales with vector length and is capped at 16 KiB. Later slices grow to a size of half the bytes already allocated, rounded to 64-byte boundaries, with a 256 KiB per-slice cap.
+Use `charvec::Builder` for the common case: the output length is known, and one serial producer fills elements by index. The builder packs small strings into shared slices. Its first slice scales with the vector length up to 16 KiB, and later slices grow up to 256 KiB. A string larger than that cap gets an exact-fit slice.
 
 A string can be inserted into a builder with either `set` or `reserve`.
 
@@ -495,16 +496,25 @@ char * dst = b.reserve(i, len, cetype_ext_t::CE_UTF8);
 // write to dst directly
 ```
 
-When you are done, export the ALTREP vector with `to_sexp()`. `reset()` prepares the builder for another result.
+Call `to_sexp()` on the main R thread when the vector is ready. `reset()` prepares the builder for another fixed-length result.
 
 ``` cpp
 SEXP out = b.to_sexp();
 b.reset(n);
 ```
 
-### Constructing a `charvec` with `charvec::ParallelBuilder`
+If construction finishes on a worker thread, use `release_store()` there. It returns a `Store` by value and does not call R. Move the store across the thread boundary, then wrap it on the main thread.
 
-Use `charvec::ParallelBuilder` for parallel construction. The builder owns a fixed set of shards. Each worker writes through its own shard index with `set` or `reserve`, and `to_sexp()` combines the shards on the main thread.
+``` cpp
+charvec::Store store = b.release_store();
+
+// On the main R thread:
+SEXP out = charvec::wrap(std::move(store));
+```
+
+### `ParallelBuilder`: advanced sharded construction
+
+Use `charvec::ParallelBuilder` when several workers fill disjoint ranges of one fixed-length vector. It keeps separate slice state for each shard while sharing the final record table. `Builder` remains the cheaper serial path.
 
 In pseudocode:
 
@@ -525,32 +535,60 @@ parallel_for_each_worker(worker_id, n_workers) {
 SEXP out = b.to_sexp();
 ```
 
-### Constructing a `charvec` with `charvec::DirectBuilder`
+Join every worker before calling `release_store()` or `to_sexp()`. The latter calls R and belongs on the main thread.
 
-`charvec::DirectBuilder` is for advanced cases where you already know the total byte size of your vector or want to control slice growth yourself. It exposes slice data and metadata arrays directly, so the caller is responsible for keeping pointers, lengths, encodings, and slices consistent.
+### `GrowableBuilder`: advanced discovered-length construction
+
+Use `charvec::GrowableBuilder` when the output length becomes known only while producing it. It is serial, so one thread owns each builder. This fits operations where workers independently build the inner vectors of a list.
 
 ``` cpp
-charvec::DirectBuilder b(n, total_bytes);
+charvec::GrowableBuilder b;
 
-char * data = b.data_slice(0); // 0 is the index of the slice
-const char ** ptrs = b.ptrs();
-int * lens = b.lengths();
-cetype_ext_t * encs = b.encodings();
+b.append(view);
+b.append(ptr, len, cetype_ext_t::CE_UTF8);
 
-std::memcpy(data, src, total_bytes);
-ptrs[0] = data + offset0;
-lens[0] = len0;
-encs[0] = cetype_ext_t::CE_UTF8;
+char * dst = b.append_reserve(len, cetype_ext_t::CE_UTF8);
+// write to dst directly
 
-ptrs[1] = nullptr;
-lens[1] = NA_INTEGER;
-encs[1] = cetype_ext_t::CE_NA;
+size_t n = b.size();
+charvec::Store store = b.release_store();
 
-SEXP out = b.to_sexp();
-b.reset(n, total_bytes);
+// On the main R thread:
+SEXP out = charvec::wrap(std::move(store));
 ```
 
-`allocate_next_slice(bytes)` allocates another slice and returns its data pointer.
+`append()` copies bytes. `append_reserve()` adds one record and returns its writable storage. Pass `cetype_ext_t::CE_NA` to append a missing value; the returned pointer is `nullptr`. A zero-length non-missing value returns a valid pointer that does not need to be written.
+
+### Manipulating `Store` directly: advanced mechanism access
+
+`charvec::Store` exposes `records` and `slices` for producers that already know their byte layout or need manual slice growth. The constructor allocates a fixed record table and, when `initial_slice_bytes` is nonzero, one payload slice. The caller must keep every record pointer, length, encoding, and owned slice consistent.
+
+This pre-sized producer writes two strings and one missing value into a single slice:
+
+``` cpp
+charvec::Store store(3, total_bytes);
+
+char * data = store.slices.front_data();
+std::memcpy(data, src, total_bytes);
+
+store.records.set(0, data + offset0, len0, cetype_ext_t::CE_UTF8);
+store.records.set(1, data + offset1, len1, cetype_ext_t::CE_LATIN1);
+store.records.set_na(2);
+
+SEXP out = charvec::wrap(std::move(store));
+```
+
+Allocate another slice with `store.slices.push_front(bytes)`. It returns the new slice's data pointer. Existing slice pointers stay valid.
+
+For a one-element result, `Store::scalar()` copies the bytes and fills record zero:
+
+``` cpp
+charvec::Store store =
+  charvec::Store::scalar(ptr, len, cetype_ext_t::CE_UTF8);
+SEXP out = charvec::wrap(std::move(store));
+```
+
+For a missing scalar, pass `nullptr`, zero bytes, and `cetype_ext_t::CE_NA`. `charvec::wrap()` moves the Store to the heap and transfers it to R. Do not access the Store after moving it.
 
 ## ABI Compatibility {#abi-compatibility-guard}
 
@@ -576,9 +614,10 @@ Every package compiled against `charport` should call `check_abi()` during packa
 
 ### Checklist for Using `charvec` Directly
 
-1.  Use `charvec::build_scalar()` for one-element output.
-2.  Use `charvec::Builder` for ordinary serial construction.
-3.  Use `charvec::ParallelBuilder` for parallel construction.
-4.  Use `charvec::DirectBuilder` only when you need to manage slices and metadata directly.
-5.  Store missing values as `ptr = nullptr`, `len = NA_INTEGER`, and `enc = cetype_ext_t::CE_NA`.
-6.  Call `to_sexp()` only after all writes are complete, and on the main R thread.
+1.  Use `charvec::Builder` for ordinary fixed-length serial construction.
+2.  Use `charvec::ParallelBuilder` when workers fill disjoint shards of one fixed-length vector.
+3.  Use `charvec::GrowableBuilder` for serial output whose length is discovered while appending.
+4.  Manipulate `charvec::Store` directly only when the producer owns the byte layout and metadata.
+5.  Use `charvec::Store::scalar()` for a one-element Store.
+6.  Store missing values as `ptr = nullptr`, `len = NA_INTEGER`, and `enc = cetype_ext_t::CE_NA`.
+7.  Call `to_sexp()` or `charvec::wrap()` only after all writes are complete, and on the main R thread.

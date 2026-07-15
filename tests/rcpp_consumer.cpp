@@ -41,9 +41,7 @@ extern "C" SEXP C_rcpp_charport_test(SEXP x, SEXP expression, SEXP environment) 
   BEGIN_RCPP
   cleanup_probe probe;
   if(environment == R_NilValue) {
-    return charport::charvec::builder_detail::wrap_store<
-      charport::detail::selected_backend
-    >([]() -> std::unique_ptr<charport::charvec::Store> {
+    return charport::unwind_protect([]() -> SEXP {
       throw std::runtime_error("injected builder C++ error");
     });
   }

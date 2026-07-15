@@ -43,6 +43,9 @@ consumer_symbol <- function(name) getNativeSymbolInfo(name, PACKAGE = dll[["name
 rebuild2 <- function(x, n_threads = 2L) {
   .Call(consumer_symbol("C_consumer_threaded_rebuild"), x, as.integer(n_threads))
 }
+split_build2 <- function(x, n_threads = 2L) {
+  .Call(consumer_symbol("C_consumer_threaded_split"), x, as.integer(n_threads))
+}
 
 catn("consumer load-time ABI check passes")
 stopifnot(isTRUE(.Call(consumer_symbol("C_consumer_abi_ok"))))
@@ -60,10 +63,21 @@ stopifnot(is_charvec(out))
 stopifnot(!charvec_stats(x)$materialized)   # input never materialized
 stopifnot(marks_identical(out, big_input))
 
+catn("workers release growable Stores; main thread wraps and assembles")
+parts <- split_build2(x)
+stopifnot(length(parts) == 2L, all(vapply(parts, is_charvec, logical(1))))
+cut <- length(big_input) %/% 2L
+stopifnot(marks_identical(parts[[1L]], big_input[seq_len(cut)]))
+stopifnot(marks_identical(parts[[2L]], big_input[seq.int(cut + 1L, length(big_input))]))
+stopifnot(!charvec_stats(x)$materialized)
+
 catn("threaded rebuild edge cases")
 stopifnot(length(rebuild2(charvec())) == 0L)           # n < threads
 out <- rebuild2(as_charvec(c("a", NA)))
 stopifnot(identical(as.character(out), c("a", NA)))
+parts <- split_build2(charvec())
+stopifnot(length(parts) == 2L, all(vapply(parts, is_charvec, logical(1))))
+stopifnot(all(lengths(parts) == 0L))
 
 catn("worker errors are caught, joined, and re-raised")
 worker_throws <- function() .Call(consumer_symbol("C_consumer_worker_throws"))

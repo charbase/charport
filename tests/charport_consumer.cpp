@@ -12,6 +12,28 @@ static_assert(
   "a generic unwind macro must not select cpp11"
 );
 
+static_assert(
+  std::is_same<
+    decltype(std::declval<charport::charvec::Builder &>().release_store()),
+    charport::charvec::Store
+  >::value,
+  "Builder::release_store() must return Store by value"
+);
+static_assert(
+  std::is_same<
+    decltype(std::declval<charport::charvec::ParallelBuilder &>().release_store()),
+    charport::charvec::Store
+  >::value,
+  "ParallelBuilder::release_store() must return Store by value"
+);
+static_assert(
+  std::is_same<
+    decltype(std::declval<charport::charvec::GrowableBuilder &>().release_store()),
+    charport::charvec::Store
+  >::value,
+  "GrowableBuilder::release_store() must return Store by value"
+);
+
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -524,7 +546,11 @@ SEXP C_consumer_build_scalar(SEXP x) {
     if(r.size() < 1) {
       throw std::runtime_error("x must have length at least 1");
     }
-    return charport::charvec::build_scalar(r.view(0));
+    const charport::StrView value = r.view(0);
+    const size_t len = value.is_na() ? 0 : static_cast<size_t>(value.len);
+    charport::charvec::Store store =
+      charport::charvec::Store::scalar(value.ptr, len, value.enc);
+    return charport::charvec::wrap(std::move(store));
   });
 }
 
@@ -595,32 +621,72 @@ SEXP C_consumer_builder_reserve(SEXP x, SEXP n_shards_) {
 
 SEXP C_consumer_builder_direct(void) {
   return test_r_boundary("builder_direct", []() -> SEXP {
-    charport::charvec::DirectBuilder b(6, 9);
-    char * first = b.data_slice();
+    charport::charvec::Store store(6, 9);
+    char * first = store.slices.front_data();
     std::memcpy(first, "alphabeta", 9);
 
-    char * second = b.allocate_next_slice(5);
+    char * second = store.slices.push_front(5);
     std::memcpy(second, "gamma", 5);
 
-    if(b.data_slice(0) != second || b.data_slice(1) != first) {
+    if(store.slices.data_slice(0) != second || store.slices.data_slice(1) != first) {
       throw std::runtime_error("unexpected direct slice order");
     }
-    if(!throws_exception([&]() { (void)b.data_slice(2); })) {
-      throw std::runtime_error("out-of-range direct slice did not throw");
+    if(store.slices.data_slice(2) != nullptr) {
+      throw std::runtime_error("out-of-range direct slice was not null");
     }
 
-    const char ** ptrs = b.ptrs();
-    int * lens = b.lengths();
-    cetype_ext_t * encs = b.encodings();
+    store.records.set(0, first, 5, cetype_ext_t::CE_ASCII);
+    store.records.set(1, first + 5, 4, cetype_ext_t::CE_ASCII);
+    store.records.set_na(2);
+    store.records.set(3, first, 0, cetype_ext_t::CE_ASCII);
+    store.records.set(4, second, 5, cetype_ext_t::CE_ASCII);
+    store.records.set(5, second, 5, cetype_ext_t::CE_ASCII);
 
-    ptrs[0] = first;     lens[0] = 5;              encs[0] = cetype_ext_t::CE_ASCII;
-    ptrs[1] = first + 5; lens[1] = 4;              encs[1] = cetype_ext_t::CE_ASCII;
-    ptrs[2] = nullptr;   lens[2] = NA_INTEGER;      encs[2] = cetype_ext_t::CE_NA;
-    ptrs[3] = first;     lens[3] = 0;              encs[3] = cetype_ext_t::CE_ASCII;
-    ptrs[4] = second;    lens[4] = 5;              encs[4] = cetype_ext_t::CE_ASCII;
-    ptrs[5] = second;    lens[5] = 5;              encs[5] = cetype_ext_t::CE_ASCII;
+    return charport::charvec::wrap(std::move(store));
+  });
+}
 
-    return b.to_sexp();
+SEXP C_consumer_growable_from_reader(SEXP x) {
+  return test_r_boundary("growable_from_reader", [&]() -> SEXP {
+    charport::Reader reader(x);
+    charport::charvec::GrowableBuilder builder;
+    if(builder.size() != 0) {
+      throw std::runtime_error("new growable builder is not empty");
+    }
+
+    for(R_xlen_t i = 0; i < reader.size(); ++i) {
+      const charport::StrView value = reader.view(i);
+      switch(i % 3) {
+      case 0:
+        builder.append(value);
+        break;
+      case 1:
+        builder.append(
+          value.ptr, value.is_na() ? 0 : static_cast<size_t>(value.len), value.enc);
+        break;
+      default: {
+        const size_t len = value.is_na() ? 0 : static_cast<size_t>(value.len);
+        char * dest = builder.append_reserve(len, value.enc);
+        if(value.is_na()) {
+          if(dest != nullptr) {
+            throw std::runtime_error("NA append_reserve returned storage");
+          }
+        } else if(len > 0) {
+          std::memcpy(dest, value.ptr, len);
+        } else if(dest == nullptr) {
+          throw std::runtime_error("empty append_reserve returned null");
+        }
+        break;
+      }
+      }
+
+      if(builder.size() != static_cast<size_t>(i + 1)) {
+        throw std::runtime_error("unexpected growable builder size");
+      }
+    }
+
+    charport::charvec::Store store = builder.release_store();
+    return charport::charvec::wrap(std::move(store));
   });
 }
 

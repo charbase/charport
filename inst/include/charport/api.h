@@ -27,11 +27,11 @@ static SEXP unwind_protect(Fn && fn) {
 namespace charvec {
 
 using Builder = BasicBuilder<detail::selected_backend>;
-using DirectBuilder = BasicDirectBuilder<detail::selected_backend>;
 using ParallelBuilder = BasicParallelBuilder<detail::selected_backend>;
+using GrowableBuilder = BasicGrowableBuilder<detail::selected_backend>;
 
-static inline SEXP build_scalar(const StrView & value) {
-  return build_scalar_with<detail::selected_backend>(value);
+static inline SEXP wrap(Store && store) {
+  return builder_detail::wrap_store<detail::selected_backend>(std::move(store));
 }
 
 } // namespace charvec

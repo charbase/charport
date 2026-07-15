@@ -52,20 +52,18 @@ extern "C" SEXP C_as_charvec(SEXP x) {
     }
     const R_xlen_t n = Rf_xlength(x);
     const SEXP * ptr = STRING_PTR_RO(x);
-    auto store = charport::charvec::Builder::build_store(n,
-      [&](cpc::BuilderShard & shard, cpc::RecordTable & rec) {
-        for(R_xlen_t i = 0; i < n; ++i) {
-          cpc::copy_record(shard, rec, static_cast<size_t>(i),
-                           cpi::charsxp_to_view(ptr[i]));
-        }
-      });
-    return charvec_altrep::MakeOwned(store.release());
+    charport::charvec::Builder builder(n);
+    for(R_xlen_t i = 0; i < n; ++i) {
+      builder.set(i, cpi::charsxp_to_view(ptr[i]));
+    }
+    cpv::Store store = builder.release_store();
+    return charvec_altrep::MakeOwned(new cpv::Store(std::move(store)));
   });
 }
 
 extern "C" SEXP C_charvec_alloc(SEXP n_) {
   return charport_sexp_guard("charvec_alloc", [&]() -> SEXP {
-    return charvec_altrep::MakeOwned(new cpv::Store(checked_len_arg(n_)));
+    return charvec_altrep::MakeOwned(new cpv::Store(checked_len_arg(n_), 0));
   });
 }
 
@@ -100,7 +98,7 @@ extern "C" SEXP C_charvec_stats(SEXP x) {
     } else {
       auto & store = checked_store(x);
       SET_VECTOR_ELT(out, 0, Rf_ScalarReal(static_cast<double>(store.size())));
-      SET_VECTOR_ELT(out, 1, Rf_ScalarReal(static_cast<double>(store.slice_count())));
+      SET_VECTOR_ELT(out, 1, Rf_ScalarReal(static_cast<double>(store.slices.count())));
     }
     SET_VECTOR_ELT(out, 2, Rf_ScalarLogical(materialized ? TRUE : FALSE));
     UNPROTECT(1);
@@ -128,7 +126,7 @@ extern "C" SEXP C_charvec_assign(SEXP x, SEXP i_, SEXP value) {
 
 extern "C" SEXP C_charvec_compact(SEXP x) {
   return charport_sexp_guard("charvec_compact", [&]() -> SEXP {
-    checked_store(x).compact();
+    charvec_detail::compact_store(checked_store(x));
     return x;
   });
 }
