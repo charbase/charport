@@ -104,6 +104,32 @@ The include order lets `charport.h` select the matching adapter. You do not need
 an additional `r_boundary()` because the generated wrapper already supplies
 the outer boundary. `charport::unwind_protect()` uses the selected framework.
 
+### Foreign Error-Handler Macros
+
+A package that already has its own error-handler macro system can integrate
+charport's standalone backend at that boundary. Catch `charport::r_unwind`,
+record its token, and leave the catch block before continuing the R unwind:
+
+``` cpp
+SEXP unwind_token = R_NilValue;
+try {
+  charport::Reader input(x);
+  // ...
+} catch(const charport::r_unwind& error) {
+  cleanup();
+  unwind_token = error.token;
+}
+
+if(unwind_token != R_NilValue) {
+  charport::continue_r_unwind(unwind_token);
+}
+```
+
+Do not call `R_ContinueUnwind()` or otherwise long-jump from inside the live
+catch block: doing so skips destruction of the in-flight C++ exception object.
+The standalone token is preserved separately for each throw, and
+`continue_r_unwind()` releases it before resuming the original R condition.
+
 ## Keep Protected Calls Narrow
 
 Keep C++ objects that need reliable destruction outside the protected

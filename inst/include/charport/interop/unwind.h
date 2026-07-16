@@ -172,6 +172,20 @@ outcome run(Fn && fn) noexcept {
 
 } // namespace unwind_detail
 
+// Public standalone-backend unwind type. Consumers using foreign boundary
+// machinery without Rcpp or cpp11 can catch this type and continue the R error
+// after leaving the catch block.
+using r_unwind = unwind_detail::unwind_exception;
+
+// Continue a standalone/Rcpp-style R unwind whose token was preserved for this
+// throw. This releases the preserved token before resuming the original R
+// condition.
+[[noreturn]] inline void continue_r_unwind(SEXP token) {
+  R_ReleaseObject(token);
+  R_ContinueUnwind(token);
+  (Rf_error)("charport: failed to continue R error");
+}
+
 // Use as the first operation in a hand-written .Call entry point.
 template<typename Fn>
 SEXP r_boundary(const char * operation, Fn && fn) {
