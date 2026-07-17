@@ -116,6 +116,28 @@ b <- rawToChar(as.raw(0xE9)); Encoding(b) <- "bytes"
 cassign(x, 2, b)
 stopifnot(marks_identical(x, c(latin1_word, b)))
 
+catn("in-place mutation keeps the string_Elt cache coherent")
+# x[[i]] routes through string_Elt and populates the per-element CHARSXP
+# cache; a later record mutation must be visible through Elt, both before
+# and after full materialization (which promotes the cache to data2).
+x <- as_charvec(c("one", "two", "three", ""))
+stopifnot(identical(x[[2L]], "two"), identical(x[[4L]], ""))  # cache warm
+cassign(x, 2, "TWO")
+cassign(x, 4, "FOUR")
+stopifnot(!stats(x)$materialized)
+stopifnot(identical(x[[2L]], "TWO"), identical(x[[4L]], "FOUR"))
+cassign(x, 2, NA)
+stopifnot(identical(x[[2L]], NA_character_))
+charport_materialize(x)
+stopifnot(identical(as.character(x), c("one", NA, "three", "FOUR")))
+
+catn("materialization promotes the Elt cache")
+x <- as_charvec(c("alpha", "", "gamma"))
+stopifnot(identical(x[[1L]], "alpha"))   # cached
+y <- charport_materialize(x)
+stopifnot(stats(x)$materialized,
+          identical(as.character(x), c("alpha", "", "gamma")))
+
 catn("helper error paths")
 x <- alloc(3)
 expect_error_matching(cassign(x, 0, "a"), "out of bounds")

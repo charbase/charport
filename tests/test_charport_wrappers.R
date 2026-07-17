@@ -337,6 +337,20 @@ for (trial in 1:15) {
   stopifnot(marks_identical(out, as.character(x)))
 }
 
+catn("string_Elt results stay rooted when held across allocations")
+# The consumer stashes every STRING_ELT result in a C container (invisible to
+# the GC) before storing them, as base R and stringi do with ordinary
+# STRSXPs. paste0 at runtime + gc() keeps the strings out of any live STRSXP,
+# so a fresh unrooted CHARSXP from Elt would be collected by the allocation
+# in between (deterministic under gctorture).
+x <- as_charvec(paste0("elt-root-", seq_len(20000), "-", sample(1e9, 20000)))
+gc()
+stopifnot(is_charvec(x), !charport_info(x)$is_materialized)
+gctorture(TRUE)
+held <- .Call(consumer_symbol("C_consumer_elt_hold_across_alloc"), x)
+gctorture(FALSE)
+stopifnot(identical(held, as.character(x)))
+
 invisible(.Call(consumer_symbol("C_consumer_unregister_release_test")))
 for (framework_dll in framework_dlls) {
   dyn.unload(framework_dll[["path"]])

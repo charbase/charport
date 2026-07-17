@@ -38,6 +38,7 @@ static_assert(
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 
@@ -771,6 +772,25 @@ SEXP C_consumer_context_cpp_error(void) {
       throw std::runtime_error("injected context C++ error");
     });
   });
+}
+
+// C consumers routinely gather STRING_ELT results into C containers (which
+// R's GC cannot see) before storing them, relying on the source vector to
+// keep every element alive — true of any ordinary STRSXP. string_Elt must
+// therefore never hand out an unrooted CHARSXP. Run under gctorture to make
+// a violation deterministic.
+SEXP C_consumer_elt_hold_across_alloc(SEXP x) {
+  const R_xlen_t n = Rf_xlength(x);
+  std::vector<SEXP> held(static_cast<size_t>(n));
+  for (R_xlen_t i = 0; i < n; ++i) {
+    held[static_cast<size_t>(i)] = STRING_ELT(x, i);
+  }
+  SEXP out = PROTECT(Rf_allocVector(STRSXP, n)); // GC may run here
+  for (R_xlen_t i = 0; i < n; ++i) {
+    SET_STRING_ELT(out, i, held[static_cast<size_t>(i)]);
+  }
+  UNPROTECT(1);
+  return out;
 }
 
 } // extern "C"

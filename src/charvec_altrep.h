@@ -314,6 +314,11 @@ inline char * store_reserve(cpv::Store & store, size_t idx, size_t len,
   return dest;
 }
 
+// INVARIANT: mutating a record of a wrapped charvec must keep the Elt cache
+// (the STRSXP in the data1 external pointer's protected slot) coherent —
+// write the new value through, or re-punch the hole with R_BlankString.
+// Every mutation currently funnels through charvec_altrep::string_Set_elt,
+// which writes through; a new caller of store_assign must do the same.
 inline void store_assign(cpv::Store & store, size_t idx,
                          const charport_strview & value) {
   const size_t len = value.is_na() ? 0 : static_cast<size_t>(value.len);
@@ -405,12 +410,22 @@ struct charvec_altrep {
     }
     auto & data1 = Get(vec);
     const R_xlen_t n = static_cast<R_xlen_t>(data1.size());
-    data2 = PROTECT(Rf_allocVector(STRSXP, n));
+    // Promote the Elt cache instead of converting from scratch: fill the
+    // remaining holes from the store and move the vector to data2, so
+    // elements string_Elt already minted are not converted twice. Filling a
+    // hole and re-filling a genuinely empty element are the same write, so
+    // the R_BlankString marker stays unambiguous.
+    data2 = PROTECT(EltCache(vec));
     for(R_xlen_t i = 0; i < n; ++i) {
-      SET_STRING_ELT(data2, i, cpi::make_charsxp(data1.view(static_cast<size_t>(i))));
+      if(STRING_ELT(data2, i) == R_BlankString) {
+        SET_STRING_ELT(data2, i, cpi::make_charsxp(data1.view(static_cast<size_t>(i))));
+      }
     }
     R_set_altrep_data2(vec, data2);
     Finalize(R_altrep_data1(vec));
+    // data2 serves every later access; the external pointer's handle on the
+    // same vector would only pin a duplicate reference.
+    R_SetExternalPtrProtected(R_altrep_data1(vec), R_NilValue);
     UNPROTECT(1);
     return data2;
   }
@@ -445,13 +460,47 @@ struct charvec_altrep {
     return const_cast<void*>(static_cast<const void*>(STRING_PTR_RO(MaterializeGuarded(vec))));
   }
 
+  // Lazy per-element CHARSXP cache backing string_Elt, kept in the protected
+  // slot of the data1 external pointer so the GC traces it. This is NOT
+  // materialization: data2 stays R_NilValue, so Dataptr_or_null, Duplicate,
+  // and Serialized_state still see an unmaterialized charvec. R initializes
+  // STRSXP elements to R_BlankString, which doubles as the hole marker:
+  // "" and NA_STRING are permanent singletons that never need rooting, so
+  // an empty-string element can safely be re-minted on every access.
+  // The cache length is fixed at creation, which is sound because a wrapped
+  // store's record count is immutable (store_assign is bounds-checked and no
+  // post-wrap API grows records; R cannot resize a vector in place). Record
+  // mutations must keep the cache coherent — see store_assign.
+  static SEXP EltCache(SEXP vec) {
+    SEXP xp = R_altrep_data1(vec);
+    SEXP cache = R_ExternalPtrProtected(xp);
+    if(cache == R_NilValue) {
+      cache = Rf_allocVector(STRSXP, static_cast<R_xlen_t>(Get(vec).size()));
+      R_SetExternalPtrProtected(xp, cache);
+    }
+    return cache;
+  }
+
   static SEXP string_Elt(SEXP vec, R_xlen_t i) {
     SEXP data2 = R_altrep_data2(vec);
     if(data2 != R_NilValue) {
       return STRING_ELT(data2, i);
     }
+    // Callers may hold Elt results across allocations, relying on the source
+    // vector to keep them alive (true of any ordinary STRSXP), so a CHARSXP
+    // minted from the store must be rooted before it is handed out. Root it
+    // in the per-element cache rather than materializing: staying lazy under
+    // Elt is part of the charvec contract.
     return charport_sexp_guard("charvec Elt", [&]() -> SEXP {
-      return cpi::make_charsxp(Get(vec).view(static_cast<size_t>(i)));
+      SEXP cache = EltCache(vec);
+      SEXP elt = STRING_ELT(cache, i);
+      if(elt == R_BlankString) {
+        elt = cpi::make_charsxp(Get(vec).view(static_cast<size_t>(i)));
+        if(elt != R_BlankString) {
+          SET_STRING_ELT(cache, i, elt);
+        }
+      }
+      return elt;
     });
   }
 
@@ -464,6 +513,10 @@ struct charvec_altrep {
     charport_sexp_guard("charvec Set_elt", [&]() -> SEXP {
       charvec_detail::store_assign(
         Get(vec), static_cast<size_t>(i), cpi::charsxp_to_view(new_val));
+      SEXP cache = R_ExternalPtrProtected(R_altrep_data1(vec));
+      if(cache != R_NilValue) {
+        SET_STRING_ELT(cache, i, new_val);  // keep the Elt cache coherent
+      }
       return R_NilValue;
     });
   }
