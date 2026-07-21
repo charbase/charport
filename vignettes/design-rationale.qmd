@@ -14,59 +14,59 @@ vignette: >
   %\VignetteEncoding{UTF-8}
 ---
 
-`charport` exists because ALTREP strings have a practical gap. A consumer can ask for `STRING_ELT()` one element at a time, but that asks the ALTSTRING class to produce CHARSXPs. Or it can ask for `STRING_PTR_RO()` and possibly force a full materialized string pointer array. Neither path is a good fit for compiled code that wants to process string bytes at vector scale.
+`charport` exists because ALTREP strings have a practical gap. A consumer can ask for `STRING_ELT()` one element at a time, but that asks the ALTSTRING class to produce CHARSXPs. Or it can ask for `STRING_PTR_RO()` and possibly force a full materialized string pointer array. Neither path is a good fit for code that processes lots of string data.
 
-`charport` supplies that middle path. It is deliberately narrow: bytes, lengths, encoding marks, and enough lifetime information for a consumer to know what it may safely do with the returned pointers.
+`charport` supplies a more efficient path. It is deliberately narrow: bytes, lengths, encoding marks, and enough lifetime information for a consumer to know what it may safely do with the returned pointers.
 
-## Plain Data at the Boundary
+## Range access first
 
-R package entry points are C entry points, so the shared boundary is C-shaped. `charport` keeps that boundary made of plain data: function pointers, `SEXP`, lengths, booleans, and small structs.
+Range access fits R's vectorized style. `charport` uses range and indexed callbacks instead of scalar callbacks, with separate entry points for string views, byte views, lengths, and encodings. The producer fills caller-owned arrays for the shape the consumer requested. This gives consumers a bulk path without forcing either side to allocate one wrapper object per element. It also lets producers optimize the common contiguous case with `memcpy` when their storage is already arranged that way.
 
-C++ packages still get a small wrapper API in `charport.h`, but the exported interface stays C-compatible. That makes the fewest assumptions about object layout, exception handling, and framework dependencies. Callbacks may use C++ internally, but C++ exceptions must not cross the boundary.
+## No pointer-only access
 
-## Why Range Access Comes First
+A `const char *` returned by `charport` is a byte pointer, not necessarily a null-terminated C string. Without the byte length, a consumer cannot know where the string ends, and calling `strlen()` may read past the view. Requiring every provider to add a terminator would rule out useful storage layouts or force a copy solely to satisfy the access API.
 
-Element-wise access is easy to expose, but it is a poor center of gravity for this interface. It pays callback overhead once per element, encourages scalar loops, and produces CHARSXPs during ordinary ALTSTRING access. R is a vector system, so moving a range of records at a time is the natural fast path.
+For that reason, `byteviews()` returns pointers and lengths together. A length is useful by itself for tasks such as sizing an output buffer, so `lengths()` also has its own entry point. A pointer by itself is not a complete view, so there is no corresponding pointer-only entry point.
 
-`charport` uses range and indexed callbacks instead, with separate registered entry points for string views, byte views, lengths, and encodings. The producer fills caller-owned arrays for the shape the consumer requested. This gives consumers a bulk path without forcing either side to allocate one wrapper object per element. It also lets producers optimize the common contiguous case with `memcpy` when their storage is already arranged that way.
-
-The separate entry points are intentional. A request for lengths reaches a lengths callback directly rather than a generic string-view callback that infers the request from missing output buffers. The ABI stays explicit, and producers can specialize metadata-only access without extra branching.
-
-Scalar methods remain as conveniences. They are not the center of the design.
-
-## When `Reader` Falls Back
+## `Reader` fallback
 
 `Reader` first uses ordinary R storage when it is already available: `DATAPTR_OR_NULL(x)` gives a direct pointer array without forcing. That path has persistent views, but it is still R-managed storage, so `charport` does not advertise concurrent access.
 
 If the vector is ALTREP and its class is registered, `Reader` asks the class to start a borrow. A registered class may still decline a particular vector by returning `NULL` from its init callback. In that case, or when the ALTREP class is not registered, `Reader` falls back to `STRING_PTR_RO(x)`.
 
-That fallback is intentionally plain R behavior. It may materialize the ALTREP, but it preserves correctness for every character vector. `charport` is an escape hatch from materialization when a producer can make a stronger promise; it is not a second, incompatible character-vector semantics.
+That fallback is intentionally plain R behavior. It may materialize the ALTREP, but it preserves correctness for every character vector. `charport` is an escape hatch from materialization when a producer can make a stronger promise.
 
-## Why These Two Capability Bits
+## Capability Bits
 
 The two capabilities record the promises a consumer actually needs after a bulk read.
 
-`persistent_views` answers a practical question: can the returned byte pointers survive the next reader call? If false, use a pointer before calling the Reader again. If true, views can be collected and processed later while the borrow is active.
+`Reader::persistent_views()` answers a practical question: can the returned byte pointers survive the next reader call? If false, use a pointer before calling the Reader again. If true, views can be collected and processed later while the borrow is active.
 
-`concurrent_access` answers whether reader callbacks may run on multiple threads, including worker threads. This is separate from pointer lifetime. A reader might return stable pointers but use R APIs or mutable scratch state in its callbacks. Another reader might be thread-safe but return pointers into a temporary buffer. Consumers need both facts.
+`Reader::concurrent_access()` answers a slightly different question, whether reader callbacks may run on multiple threads, including worker threads.
 
-`reentrant` is therefore derived, not stored: it is the case where both promises are true. Other possible traits are deliberately left out. Sortedness, absence of missing values, normalization, ownership model, and string semantics belong either to R, to the producer class, or to higher-level string code. They are not needed to decide whether a byte-view read is safe.
+`Reader::reentrant()` is therefore derived, not stored: it is the case where both promises are true.
 
 ## Why `cetype_ext_t`
 
-`charport` carries encoding marks because bytes alone are not enough to reconstruct R strings correctly. But it does not use R's `cetype_t` directly as the ABI type.
+`charport` carries encoding marks because bytes alone are not enough to reconstruct R strings correctly. Rather than use R's `cetype_t` directly, it uses an equivalent and efficient enum for string data.
 
-`cetype_ext_t` provides a small, fixed representation that is also usable from C. It is one byte, has explicit values, and includes `CE_NA` so a full string view can carry missingness without consulting a separate convention. It also distinguishes ASCII and ASCII-compatible UTF-8. Base R can collapse those cases when making a `CHARSXP`, while byte-oriented consumers and `charvec` storage can preserve the distinction.
+`cetype_ext_t` provides a small, fixed representation. It takes up less space using one byte (instead of R's plain int enum), carries comprehensive encoding information, and includes `CE_NA` so an encoding view can carry missingness without consulting separate parts.
 
-This is still an encoding mark, not an encoding policy. `charport` does not translate, normalize, or reinterpret string bytes.
+It also distinguishes ASCII with `CE_ASCII`. R stores an ASCII bit for every string. When it is set, it always co-occurs with `CE_NATIVE`, so `CE_ASCII` represents a mutually exclusive state.
 
-## Why `charvec` Looks the Way It Does
+`CE_ASCII_OR_UTF8` lets a producer report if a string is UTF-8-compatible without scanning bytes to decide whether the string is also ASCII. R makes that check when it creates a `CHARSXP`, so doing it in the producer can duplicate work. Base R always checks if a string is ASCII during materialization or CHARSXP creation. So forcing ASCII vs. UTF8 resolution would frequently become a redundant calculation if the string data source doesn't distinguish between ASCII and UTF8. Data sources outside of R usually don't and R will determine the resolution later anyway.
+
+`cetype_ext_t` is complete for string data: it represents every encoding state R uses for CHARSXPs, along with `CE_ASCII`, `CE_ASCII_OR_UTF8`, and `CE_NA`. The two omitted cetype_t values, `CE_SYMBOL` and `CE_ANY`, are unused as encoding states for CHARSXPs.
+
+## `charvec`: efficient and flexible ALTREP storage
 
 `charvec` is both a reference implementation and a useful output class. Its storage is shaped for the reader contract: three fixed metadata arrays for pointers, byte lengths, and encoding marks, plus owned byte slices that hold the payload.
 
 The separate metadata arrays make contiguous reads cheap. For `charvec`, a range request can copy pointers, lengths, and encodings directly into the consumer's output arrays. The byte payload stays where it is.
 
-The payload is stored in slices instead of one giant buffer or one allocation per string. One giant buffer requires knowing the final byte size up front and is awkward for streaming writers. One allocation per string is expensive and fragmented. Slices give a middle ground: append-friendly construction, stable pointers during a read-only borrow, bounded allocation sizes, and simple cleanup. Slice growth is capped so one large output does not permanently push later allocations into huge blocks.
+The payload is stored in slices instead of one giant buffer or one allocation per string. One giant buffer requires knowing the final byte size up front and is awkward for streaming writers. One allocation per string is expensive and fragmented.
+
+Slices give a middle ground: append-friendly construction, stable pointers during a read-only borrow and fewer allocation calls.
 
 The builders expose different amounts of control because producers know different things:
 
@@ -75,6 +75,4 @@ The builders expose different amounts of control because producers know differen
 - `GrowableBuilder` handles serial output whose final length is discovered while appending.
 - Direct `Store` access lets a producer manage slices and record metadata when it already owns the byte layout.
 
-When a `charvec` is fully materialized, it caches an ordinary STRSXP in ALTREP `data2` and releases the native store. At that point R has the representation it asked for, and keeping duplicate native storage would waste memory. The reader then naturally uses the ordinary fallback path over the cached STRSXP.
-
-Serialization follows the same design. An unmaterialized `charvec` serializes lengths, encoding bytes, and payload bytes, not a list of CHARSXPs. A materialized `charvec` serializes as the ordinary string vector it has become.
+When a `charvec` is fully materialized, it caches an ordinary STRSXP in ALTREP `data2` and releases the `charvec::Store` held in `data1`. The reader then naturally uses the ordinary fallback path over the cached STRSXP.

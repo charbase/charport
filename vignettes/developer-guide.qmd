@@ -16,11 +16,11 @@ vignette: >
 
 ## Overview
 
-`charport` lets ALTREP string producers expose read-only byte views to other packages. Consumers use one interface without knowing the producer's storage layout or forcing materialization.
+At its core, `charport` is a small contract between ALTREP producer and consumer packages. ALTREP producers expose read-only byte views to other packages. Consumers use one safe read-only interface.
 
-A package may produce an ALTREP string class, consume ALTREP strings, or use `charvec`, a built-in ALTREP class, directly. The diagram below shows how those roles are organized in this package.
+A package can register ALTREP strings, consume ALTREP strings, or use `charvec`, a built-in ALTREP class, directly. The diagram below shows how those roles are organized in this package.
 
-![charport developer integration flowchart](../man/figures/developer-flow.svg)
+![](../man/figures/developer-flow.svg)
 
 The guide goes through three main use cases:
 
@@ -32,7 +32,7 @@ All three use cases start the same way: link to `charport` and include the heade
 
 ## Linking to `charport` {#linking-to-charport}
 
-There is one public header: `charport.h`. If the package uses Rcpp or cpp11, include its framework header first, as shown in the Reader examples below.
+There is one public header: `charport.h`. If you use Rcpp or cpp11, include its those headers first, as shown in the Reader examples below.
 
 In `DESCRIPTION`, declare both the runtime dependency and the header dependency:
 
@@ -66,7 +66,7 @@ import(charport)
 
 ## Using the Universal Reader {#universal-reader}
 
-`charport::Reader` provides the same read-only interface for ordinary character vectors and ALTREP strings. Registered ALTREP classes can supply views without materializing a CHARSXP for every element. A Reader should typically be kept as a stack object for the duration of the read.
+`charport::Reader` provides the same read-only interface for both ordinary (non-ALTREP) strings and ALTREP strings. For ordinary strings, there is no per-element overhead. For ALTREP strings, producer packages can supply views without materializing a CHARSXP for every element.
 
 ### Range Access
 
@@ -159,7 +159,7 @@ extern "C" SEXP C_process_strings(SEXP x) {
 
 `r_boundary()` handles the R errors that the Rcpp and cpp11 wrappers would otherwise handle for you. [Error Handling](error-handling.qmd) covers the details.
 
-Missing strings are reported as `ptr = nullptr` and `len = NA_INTEGER`. String pointers are **not guaranteed to be null-terminated**, so always read through the pointer and length together.
+Missing strings are reported as `ptr = nullptr` and `len = NA_INTEGER`. String pointers are **not guaranteed to be null-terminated**, so always read pointer and length together.
 
 Besides `byteviews()` there are several additional access methods:
 
@@ -181,19 +181,18 @@ if(!s.is_na()) {
 }
 ```
 
-`r.byteview(i)`, `r.length(i)`, and `r.encoding(i)` return the narrower scalar forms. `operator[]` is an alias for `r.view(i)`.
+`r.byteview(i)`, `r.length(i)`, and `r.encoding(i)` return the narrower scalar forms. `operator[i]` is an alias for `r.view(i)`.
 
 ### Indexed Reader Access
 
-Indexed access gathers arbitrary 0-based positions into output arrays. The output order matches the index order:
+Indexed access gathers arbitrary 0-based positions into output arrays. This matches R's index selection (but is zero-based):
 
 ``` cpp
 charport::Reader r(robj);
-R_xlen_t idx[] = {0, 10, 20};
-const R_xlen_t len = 3;
+std::vector<R_xlen_t> idx = {0, 10, 20};
 
-charport::ByteViews byteviews(len);
-r.byteviews(&idx[0], len, byteviews); // outputs elements 0, 10 and 20
+charport::ByteViews byteviews(idx.size());
+r.byteviews(idx.data(), idx.size(), byteviews); // outputs elements 0, 10 and 20
 ```
 
 ### Encoding
@@ -210,9 +209,13 @@ r.byteviews(&idx[0], len, byteviews); // outputs elements 0, 10 and 20
 | `cetype_ext_t::CE_ASCII` | ASCII bytes, equivalent to `Rf_charIsASCII(x)`. |
 | `cetype_ext_t::CE_NA` | Missing string. `ptr` is `NULL` and `len` is `NA_INTEGER`. |
 
-R's encoding scheme is aggregated into this single enum. `CE_ASCII`, `CE_ASCII_OR_UTF8`, and `CE_NA` are simplifications: `CE_ASCII` corresponds to the ASCII mark available from `Rf_charIsASCII()`; `CE_ASCII_OR_UTF8` exists because base R materialization always checks whether a string is ASCII, so differentiating ASCII and UTF-8 early is often redundant work; and `CE_NA` carries the missing-string case alongside the pointer and length.
+R's encoding scheme is aggregated into this single enum. `CE_ASCII`, `CE_ASCII_OR_UTF8`, and `CE_NA` are simplifications: `CE_ASCII` corresponds to the ASCII mark available from `Rf_charIsASCII()`. In R, the ASCII mark **always** occurs with `CE_NATIVE` so it represents a mutually exclusive state.
 
-Ordinary `cetype_t` values correspond to `cetype_ext_t` values, so a `static_cast` preserves R's encoding marks when you already have a `cetype_t`:
+`CE_ASCII_OR_UTF8` exists because base R materialization always checks whether a string is ASCII, so differentiating ASCII and UTF-8 early is often redundant work.
+
+`CE_NA` carries the missing-string case alongside the pointer and length.
+
+Ordinary `cetype_t` values correspond to `cetype_ext_t` values, so you can `static_cast` R's encoding mark when you already have a `cetype_t`:
 
 ``` cpp
 cetype_ext_t enc = static_cast<cetype_ext_t>(Rf_getCharCE(x));
@@ -222,7 +225,7 @@ That cast preserves the encoding marks for native, UTF-8, Latin-1 and byte strin
 
 ### Reader Lifetime and Multithreading
 
-In Rust terms, initializing the `Reader` should be treated as a strict borrow. The `Reader` is a temporary view of the vector's current string storage, valid only while that storage remains protected and unmodified. Access to and modification of the original R object (`STRING_ELT`, `STRING_PTR_RO`, `DATAPTR_RO`, etc.) can invalidate the `Reader`.
+In Rust terms, initializing the `Reader` is a strict borrow. The `Reader` is a temporary view of the vector's current string storage, valid only while that storage remains protected and unmodified. Access to and modification of the original R object (`STRING_ELT`, `STRING_PTR_RO`, `DATAPTR_RO`, etc.) can invalidate the `Reader`.
 
 An exception is attributes; you can handle attributes on the original R object while `Reader` exists.
 
@@ -282,7 +285,7 @@ struct charport_reader_capabilities {
 
 Returning `NULL` from `init` means this particular vector cannot satisfy the reader contract, so `charport` falls back to default access.
 
-Range callbacks fill output arrays for the 0-based interval `[start, start + size)`. Implement all four callbacks:
+While `charport` asks for many callback functions during registration, they are all pretty similar and can be built from the same boilerplate. Range callbacks (`charport_reader_range_fns`) fill output arrays for the 0-based interval `[start, start + size)`:
 
 ``` cpp
 void range_strviews(void * state, R_xlen_t start, R_xlen_t size,
@@ -299,7 +302,7 @@ void range_encodings(void * state, R_xlen_t start, R_xlen_t size,
                      cetype_ext_t * out_encs);
 ```
 
-Indexed callbacks take `const R_xlen_t * indices` in place of `start`; everything else matches the range forms.
+Similarly, indexed callbacks (`charport_reader_index_fns`) take `const R_xlen_t * indices` in place of `start`; everything else matches the range forms.
 
 Missing strings should be reported as `ptr = nullptr`, `len = NA_INTEGER`, and `enc = cetype_ext_t::CE_NA`.
 
@@ -438,13 +441,13 @@ extern "C" void R_unload_ExamplePackage(DllInfo * dll) {
 
 ### Error Handling
 
-Registered callbacks cross a package boundary, so each one has a clear rule based on when it is called:
+Registered callbacks cross a package boundary, so each callback has a matching rule based on when it is called:
 
 | Code | Rule |
 |------------------------------------|------------------------------------|
 | `charport_reader_init_fn` | `Rf_error` only, no C++ exceptions |
 | `charport_reader_release_fn` | No errors/exceptions |
-| Range and indexed access functions | Do not call R or let C++ exceptions escape. These hot paths have no error-handling overhead. |
+| Range and indexed access functions | No exceptions allowed; these hot paths have no error-handling overhead. |
 
 See [Error Handling](error-handling.qmd) for examples and the rationale behind these choices.
 
@@ -452,7 +455,7 @@ See [Error Handling](error-handling.qmd) for examples and the rationale behind t
 
 `charvec` is `charport`'s built-in general-purpose ALTREP string class. It is an efficient drop-in representation that you can use for many applications, especially for large string output.
 
-Each `charvec` has a native `charvec::Store` behind its R external pointer. The store owns two things:
+Each `charvec` is backed by a `charvec::Store` behind its R external pointer. The store owns two things:
 
 1.  `SliceChain`, a linked list of large contiguous byte slices holding the string data.
 2.  `RecordTable`, the per-string metadata: a pointer into the `SliceChain`, a byte length, and an encoding mark.
@@ -478,7 +481,7 @@ For non-empty strings, `ptrs[i]` points into one of the byte slices. Empty strin
 
 ### `Builder`: basic fixed-length construction
 
-Use `charvec::Builder` for the common case: the output length is known, and one serial producer fills elements by index. The builder packs small strings into shared slices. Its first slice scales with the vector length up to 16 KiB, and later slices grow up to 256 KiB. A string larger than that cap gets an exact-fit slice.
+Use `charvec::Builder` for the common case: the output length is known, and one serial producer fills elements by index. The builder packs small strings into shared slices; its first slice scales with the vector length up to 16 KiB, and later slices grow up to 256 KiB. A string larger than that cap gets an exact-fit slice.
 
 A string can be inserted into a builder with either `set` or `reserve`.
 
@@ -496,27 +499,26 @@ char * dst = b.reserve(i, len, cetype_ext_t::CE_UTF8);
 // write to dst directly
 ```
 
-Call `to_sexp()` on the main R thread when the vector is ready. `reset()` prepares the builder for another fixed-length result.
+Call `to_sexp()` on the main R thread when the vector is done building: the `Builder` gives up its storage to the returned ALTREP `SEXP`. `Builder::reset(n)` can be used to re-use the same object for building a subsequent vector.
 
 ``` cpp
 SEXP out = b.to_sexp();
 b.reset(n);
 ```
 
-If construction finishes on a worker thread, use `release_store()` there. It returns a `Store` by value and does not call R. Move the store across the thread boundary, then wrap it on the main thread.
+If construction finishes on a worker thread, you can instead use `release_store()` to release a `charvec::Store` by value. This object can then later be wrapped to an ALTREP `SEXP`:
 
 ``` cpp
+// worker thread
 charvec::Store store = b.release_store();
 
-// On the main R thread:
+// On the main R thread
 SEXP out = charvec::wrap(std::move(store));
 ```
 
-### `ParallelBuilder`: advanced sharded construction
+### `ParallelBuilder`: sharded construction
 
-Use `charvec::ParallelBuilder` when several workers fill disjoint ranges of one fixed-length vector. It keeps separate slice state for each shard while sharing the final record table. `Builder` remains the cheaper serial path.
-
-In pseudocode:
+You can use `charvec::ParallelBuilder` when several workers fill disjoint ranges of one fixed-length vector, via `RcppParallel`, `RcppThread`, `OMP`, etc. It keeps separate slice state for each shard while sharing the final record table, and then combines the slices on the main thread.
 
 ``` cpp
 charvec::ParallelBuilder b(n, n_workers);
@@ -532,14 +534,13 @@ parallel_for_each_worker(worker_id, n_workers) {
   }
 }
 
+// main thread
 SEXP out = b.to_sexp();
 ```
 
-Join every worker before calling `release_store()` or `to_sexp()`. The latter calls R and belongs on the main thread.
+### `GrowableBuilder`: discovered-length construction
 
-### `GrowableBuilder`: advanced discovered-length construction
-
-Use `charvec::GrowableBuilder` when the output length becomes known only while producing it. It is serial, so one thread owns each builder. This fits operations where workers independently build the inner vectors of a list.
+Use `charvec::GrowableBuilder` when the output length is not known ahead of time. This is like building a `std::vector` by sequential `push_back()`.
 
 ``` cpp
 charvec::GrowableBuilder b;
@@ -551,19 +552,16 @@ char * dst = b.append_reserve(len, cetype_ext_t::CE_UTF8);
 // write to dst directly
 
 size_t n = b.size();
-charvec::Store store = b.release_store();
-
-// On the main R thread:
-SEXP out = charvec::wrap(std::move(store));
+SEXP out = b.to_sexp();
 ```
 
-`append()` copies bytes. `append_reserve()` adds one record and returns its writable storage. Pass `cetype_ext_t::CE_NA` to append a missing value; the returned pointer is `nullptr`. A zero-length non-missing value returns a valid pointer that does not need to be written.
+`append()` copies bytes. `append_reserve()` adds one record and returns its writable storage.
 
-### Manipulating `Store` directly: advanced mechanism access
+### Manipulating `Store` directly (low-level usage)
 
-`charvec::Store` exposes `records` and `slices` for producers that already know their byte layout or need manual slice growth. The constructor allocates a fixed record table and, when `initial_slice_bytes` is nonzero, one payload slice. The caller must keep every record pointer, length, encoding, and owned slice consistent.
+`charvec::Store` is a public struct with `records` and `slices` for producers that already know their byte layout or need manual slice growth. The constructor allocates a fixed record table and, when `initial_slice_bytes` is nonzero, one payload slice. The caller must keep every record pointer, length, encoding, and owned slice consistent.
 
-This pre-sized producer writes two strings and one missing value into a single slice:
+Example:
 
 ``` cpp
 charvec::Store store(3, total_bytes);
@@ -583,16 +581,13 @@ Allocate another slice with `store.slices.push_front(bytes)`. It returns the new
 For a one-element result, `Store::scalar()` copies the bytes and fills record zero:
 
 ``` cpp
-charvec::Store store =
-  charvec::Store::scalar(ptr, len, cetype_ext_t::CE_UTF8);
+charvec::Store store = charvec::Store::scalar(ptr, len, cetype_ext_t::CE_UTF8);
 SEXP out = charvec::wrap(std::move(store));
 ```
 
-For a missing scalar, pass `nullptr`, zero bytes, and `cetype_ext_t::CE_NA`. `charvec::wrap()` moves the Store to the heap and transfers it to R. Do not access the Store after moving it.
-
 ## ABI Compatibility {#abi-compatibility-guard}
 
-Every package compiled against `charport` should call `check_abi()` during package loading, before registering a class or using Reader and Builder entry points. The registration examples above include the check. A consumer-only package should make the same call from its manual, Rcpp, or cpp11 initialization hook.
+Every package compiled against `charport` should call `check_abi()` during package loading, before registering a class or using Reader and Builder entry points. The registration examples above include the check. A consumer-only package should make the same call from its initialization hook.
 
 ## Summary Checklists
 
@@ -600,9 +595,8 @@ Every package compiled against `charport` should call `check_abi()` during packa
 
 1.  Construct `Reader` objects on the main R thread.
 2.  Prefer range access for large vectors.
-3.  Use scalar access only when the algorithm is naturally element-wise.
-4.  Respect the borrow rule: no R access to the source vector or aliases during active reads.
-5.  Call `Reader` access from worker threads only when `r.concurrent_access()` is true.
+3.  Respect the borrow semantics: no R access to the source vector or aliases during active reads.
+4.  Call `Reader` access from worker threads only when `r.concurrent_access()` is true.
 
 ### Checklist for Registering an ALTREP Class
 
@@ -614,10 +608,7 @@ Every package compiled against `charport` should call `check_abi()` during packa
 
 ### Checklist for Using `charvec` Directly
 
-1.  Use `charvec::Builder` for ordinary fixed-length serial construction.
-2.  Use `charvec::ParallelBuilder` when workers fill disjoint shards of one fixed-length vector.
-3.  Use `charvec::GrowableBuilder` for serial output whose length is discovered while appending.
-4.  Manipulate `charvec::Store` directly only when the producer owns the byte layout and metadata.
-5.  Use `charvec::Store::scalar()` for a one-element Store.
-6.  Store missing values as `ptr = nullptr`, `len = NA_INTEGER`, and `enc = cetype_ext_t::CE_NA`.
-7.  Call `to_sexp()` or `charvec::wrap()` only after all writes are complete, and on the main R thread.
+1.  Use `charvec::Builder` (or a different builder class) to construct a `charvec`
+2.  Use `charvec::Store::scalar()` for a one-element construction.
+3.  Store missing values as `ptr = nullptr`, `len = NA_INTEGER`, and `enc = cetype_ext_t::CE_NA`.
+4.  Call `to_sexp()` or `charvec::wrap()` only after all writes are complete, and only on the main R thread.

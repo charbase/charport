@@ -234,31 +234,39 @@ cat("\nall hashes verified equal across paths\n")
 
 # Plot -----------------------------------------------------------------
 
+# Palette shared with the flowchart figures (man/figures/*.svg): a
+# Material-style look on a transparent background. Every label rides on a
+# white card, so the figure reads on both light and dark pages.
+col_card     <- "#ffffff"
+col_border   <- "#b9a9df"
+col_baseline <- "#c9bce7"
+col_charport <- "#6a4fa6"
+col_ink      <- "#2c1f57"
+col_axis     <- "#8670bf"
+
+roundrect <- function(x0, y0, x1, y1, rx, ry, ...) {
+  a <- seq(0, pi / 2, length.out = 14)
+  xs <- c(x1 - rx + rx * cos(a),      x0 + rx + rx * cos(a + pi / 2),
+          x0 + rx + rx * cos(a + pi), x1 - rx + rx * cos(a + 3 * pi / 2))
+  ys <- c(y1 - ry + ry * sin(a),      y1 - ry + ry * sin(a + pi / 2),
+          y0 + ry + ry * sin(a + pi), y0 + ry + ry * sin(a + 3 * pi / 2))
+  polygon(xs, ys, ...)
+}
+
 plot_panel <- function(rows, title) {
-  theme_bg <- "#26323d"
-  theme_panel <- "#2f4147"
-  theme_text <- "#f2ead9"
-  theme_muted <- "#9aa5aa"
-  theme_accent <- "#80cbc4"
   gbps <- rev(vapply(rows, `[[`, numeric(1), "gbps"))
   labels <- rev(vapply(rows, `[[`, character(1), "label"))
   cols <- rev(vapply(rows, function(r)
-                       if (isTRUE(r$baseline)) theme_muted else theme_accent,
+                       if (isTRUE(r$baseline)) col_baseline else col_charport,
                      character(1)))
-  par(bg = theme_bg)
-  plot.new()
-  usr <- par("usr")
-  rect(usr[1], usr[3], usr[2], usr[4], col = theme_panel, border = NA)
-  par(new = TRUE)
-  name_cex <- if (length(rows) > 3) 1.04 else 1.18
   bp <- barplot(gbps, horiz = TRUE, names.arg = labels, col = cols,
                 border = NA, xlab = "GB/s", main = title,
-                xlim = c(0, max(gbps) * 1.18), cex.names = name_cex,
-                cex.axis = 1.05, cex.lab = 1.1, cex.main = 1.28,
-                font.main = 2, col.axis = theme_text, col.lab = theme_text,
-                col.main = theme_text, axes = TRUE)
-  text(gbps, bp, sprintf("%.2f", gbps), pos = 4, cex = 1.02,
-       xpd = NA, col = theme_text)
+                xlim = c(0, max(gbps) * 1.22), cex.names = 1.02,
+                cex.axis = 1.0, cex.lab = 1.05, cex.main = 1.24,
+                font.main = 2, col.axis = col_axis, col.lab = col_ink,
+                col.main = col_ink, fg = col_axis)
+  text(gbps, bp, sprintf("%.2f", gbps), pos = 4, cex = 1.0,
+       xpd = NA, col = col_ink, font = 2)
 }
 
 png_path <- if (dir.exists(file.path("man", "figures"))) {
@@ -266,10 +274,19 @@ png_path <- if (dir.exists(file.path("man", "figures"))) {
 } else {
   file.path("local", "bench.png")
 }
-png(png_path, width = 1700, height = 1350, res = 180)
-par(mfrow = c(2, 1), mar = c(4.2, 11.2, 2.8, 1.4), mgp = c(2.4, 0.75, 0),
-    las = 1, bg = "#26323d", fg = "#f2ead9")
+png(png_path, width = 1700, height = 1350, res = 180, bg = "transparent")
+# two white cards on a transparent field, drawn in device coordinates first
+par(fig = c(0, 1, 0, 1), mar = c(0, 0, 0, 0))
+plot.new()
+plot.window(c(0, 1), c(0, 1), xaxs = "i", yaxs = "i")
+roundrect(0.015, 0.515, 0.985, 0.985, 0.011, 0.014,
+          col = col_card, border = col_border, lwd = 2.4)
+roundrect(0.015, 0.015, 0.985, 0.485, 0.011, 0.014,
+          col = col_card, border = col_border, lwd = 2.4)
+par(las = 1, mgp = c(2.4, 0.7, 0))
+par(fig = c(0.03, 0.99, 0.515, 0.985), mar = c(4.0, 11.2, 2.6, 1.6), new = TRUE)
 plot_panel(read_rows, "read path (hash data)")
+par(fig = c(0.03, 0.99, 0.015, 0.485), mar = c(4.0, 11.2, 2.6, 1.6), new = TRUE)
 plot_panel(build_rows, "write path")
 dev.off()
 cat(sprintf("plot written to %s\n", png_path))
