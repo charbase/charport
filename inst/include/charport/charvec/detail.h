@@ -10,11 +10,9 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <memory>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
-#include <utility>
 
 #if defined(__AVX2__)
 #include <immintrin.h>
@@ -58,15 +56,6 @@ inline bool check_ascii(const void * ptr, size_t len) noexcept {
 constexpr uint32_t r_string_size_max() noexcept {
   return static_cast<uint32_t>(std::numeric_limits<int>::max());
 }
-
-#if defined(__cpp_lib_make_unique) || (defined(__cplusplus) && __cplusplus >= 201402L)
-using std::make_unique;
-#else
-template<typename T, typename... Args>
-inline std::unique_ptr<T> make_unique(Args&&... args) {
-  return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
-}
-#endif
 
 template<typename POD>
 inline bool check_r_string_len_impl(const POD value, std::true_type) noexcept {

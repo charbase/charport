@@ -151,6 +151,18 @@ typedef SEXP (*charport_charvec_wrap_t)(void * store);
 #include <stdexcept>
 #include <vector>
 
+#if defined(_MSVC_LANG)
+#  if _MSVC_LANG >= 201703L
+#    define CHARPORT_READER_NODISCARD [[nodiscard]]
+#  else
+#    define CHARPORT_READER_NODISCARD
+#  endif
+#elif __cplusplus >= 201703L
+#  define CHARPORT_READER_NODISCARD [[nodiscard]]
+#else
+#  define CHARPORT_READER_NODISCARD
+#endif
+
 namespace charport {
 
 using StrView = charport_strview;
@@ -173,6 +185,7 @@ inline int loaded_abi_version() {
 
 } // namespace detail
 
+CHARPORT_READER_NODISCARD
 inline charport_reader resolve(SEXP x) {
   static charport_resolve_t fn = nullptr;
   if(fn == nullptr) {
@@ -459,6 +472,8 @@ private:
 };
 
 } // namespace charport
+
+#undef CHARPORT_READER_NODISCARD
 
 #endif // __cplusplus
 

@@ -334,6 +334,23 @@ SEXP C_consumer_reader_roundtrip(SEXP x) {
   });
 }
 
+SEXP C_consumer_resolved_reader_roundtrip(SEXP x) {
+  return test_r_boundary("resolved_reader_roundtrip", [&]() -> SEXP {
+    // The test controls these producers, so it can exercise the raw resolved
+    // lease without the generic Reader(SEXP) unwind adapter.
+    charport::Reader r(charport::resolve(x));
+    return charport::unwind_protect([&]() -> SEXP {
+      SEXP out = PROTECT(Rf_allocVector(STRSXP, r.size()));
+      R_xlen_t i = 0;
+      for(charport::StrView s : r) {
+        SET_STRING_ELT(out, i++, make_charsxp(s));
+      }
+      UNPROTECT(1);
+      return out;
+    });
+  });
+}
+
 SEXP C_consumer_reader_range_roundtrip(SEXP x) {
   return test_r_boundary("reader_range_roundtrip", [&]() -> SEXP {
     charport::Reader r(x);
@@ -688,6 +705,89 @@ SEXP C_consumer_growable_from_reader(SEXP x) {
 
     charport::charvec::Store store = builder.release_store();
     return charport::charvec::wrap(std::move(store));
+  });
+}
+
+SEXP C_consumer_growable_state(void) {
+  return test_r_boundary("growable_state", []() -> SEXP {
+    typedef charport::charvec::components::RecordTable RecordTable;
+    bool ok = true;
+
+    RecordTable records;
+    ok = ok && records.size() == 0 && records.capacity() == 0;
+    for(size_t i = 0; i < 257; ++i) {
+      if(i % 3 == 0) {
+        records.push_back(charport::charvec::components::na_record());
+      } else if(i % 3 == 1) {
+        records.push_back(
+          charport::charvec::components::empty_record(cetype_ext_t::CE_ASCII));
+      } else {
+        records.push_back(make_strview("x", 1, cetype_ext_t::CE_ASCII));
+      }
+    }
+    ok = ok && records.size() == 257 && records.capacity() > records.size();
+
+    const size_t size_before = records.size();
+    const size_t capacity_before = records.capacity();
+    ok = ok && throws_exception([&]() {
+      records.reserve(std::numeric_limits<size_t>::max());
+    });
+    ok = ok && records.size() == size_before;
+    ok = ok && records.capacity() == capacity_before;
+
+    RecordTable moved_records(std::move(records));
+    ok = ok && records.size() == 0 && records.capacity() == 0;
+    ok = ok && moved_records.size() == 257;
+    ok = ok && moved_records.capacity() == capacity_before;
+    for(size_t i = 0; i < moved_records.size(); ++i) {
+      const charport_strview value = moved_records.view(i);
+      if(i % 3 == 0) {
+        ok = ok && value.is_na();
+      } else if(i % 3 == 1) {
+        ok = ok && !value.is_na() && value.len == 0;
+      } else {
+        ok = ok && value.len == 1 && value.ptr[0] == 'x';
+      }
+    }
+    records.push_back(make_strview("r", 1, cetype_ext_t::CE_ASCII));
+    ok = ok && records.size() == 1 && records.view(0).ptr[0] == 'r';
+
+    charport::charvec::GrowableBuilder source;
+    for(size_t i = 0; i < 257; ++i) {
+      source.append("x", 1, cetype_ext_t::CE_ASCII);
+    }
+    charport::charvec::GrowableBuilder builder(std::move(source));
+    ok = ok && source.size() == 0 && builder.size() == 257;
+
+    charport::charvec::Store first = builder.release_store();
+    ok = ok && builder.size() == 0 && first.size() == 257;
+    ok = ok && first.records.capacity() > first.records.size();
+    ok = ok && first.slices.count() > 1;
+    for(size_t i = 0; i < first.size(); ++i) {
+      const charport_strview value = first.view(i);
+      ok = ok && value.len == 1 && value.ptr[0] == 'x';
+    }
+
+    builder.append("z", 1, cetype_ext_t::CE_ASCII);
+    charport::charvec::Store second = builder.release_store();
+    ok = ok && builder.size() == 0 && second.size() == 1;
+    ok = ok && second.view(0).len == 1 && second.view(0).ptr[0] == 'z';
+    ok = ok && first.size() == 257 && first.view(0).ptr[0] == 'x';
+
+    charport::charvec::GrowableBuilder no_payload;
+    no_payload.append(nullptr, 0, cetype_ext_t::CE_NA);
+    no_payload.append("", 0, cetype_ext_t::CE_ASCII);
+    charport::charvec::Store no_payload_store = no_payload.release_store();
+    ok = ok && no_payload_store.size() == 2;
+    ok = ok && no_payload_store.slices.empty();
+
+    charport::charvec::Builder fixed(257);
+    charport::charvec::Store fixed_store = fixed.release_store();
+    ok = ok && fixed_store.records.capacity() == fixed_store.records.size();
+
+    return charport::unwind_protect([ok]() -> SEXP {
+      return Rf_ScalarLogical(ok ? TRUE : FALSE);
+    });
   });
 }
 

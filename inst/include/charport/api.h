@@ -31,7 +31,7 @@ using ParallelBuilder = BasicParallelBuilder<detail::selected_backend>;
 using GrowableBuilder = BasicGrowableBuilder<detail::selected_backend>;
 
 static inline SEXP wrap(Store && store) {
-  return builder_detail::wrap_store<detail::selected_backend>(std::move(store));
+  return builder_detail::wrap_store(std::move(store));
 }
 
 } // namespace charvec

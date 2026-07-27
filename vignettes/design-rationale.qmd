@@ -60,7 +60,7 @@ It also distinguishes ASCII with `CE_ASCII`. R stores an ASCII bit for every str
 
 ## `charvec`: efficient and flexible ALTREP storage
 
-`charvec` is both a reference implementation and a useful output class. Its storage is shaped for the reader contract: three fixed metadata arrays for pointers, byte lengths, and encoding marks, plus owned byte slices that hold the payload.
+`charvec` is both a reference implementation and a useful output class. Its storage is shaped for the reader contract: three contiguous metadata arrays for pointers, byte lengths, and encoding marks, plus owned byte slices that hold the payload.
 
 The separate metadata arrays make contiguous reads cheap. For `charvec`, a range request can copy pointers, lengths, and encodings directly into the consumer's output arrays. The byte payload stays where it is.
 
@@ -68,11 +68,15 @@ The payload is stored in slices instead of one giant buffer or one allocation pe
 
 Slices give a middle ground: append-friendly construction, stable pointers during a read-only borrow and fewer allocation calls.
 
+For fixed-length output, the metadata arrays are allocated once. `GrowableBuilder` expands the same `RecordTable` geometrically and moves it into the finished `Store`, so releasing the result does not allocate and copy a second set of arrays. Its first payload slice is based on the first actual payload instead of a guessed vector length.
+
 The builders expose different amounts of control because producers know different things:
 
 - `Builder` handles ordinary serial output when strings arrive one at a time.
 - `ParallelBuilder` gives each worker its own slice chain while sharing the final metadata arrays. That avoids concurrent writes to the same byte buffer while still producing one `charvec`.
 - `GrowableBuilder` handles serial output whose final length is discovered while appending.
 - Direct `Store` access lets a producer manage slices and record metadata when it already owns the byte layout.
+
+Builder conversion uses the ownership sequence common to vroom and Arrow ALTREP producers: create an external pointer, register its finalizer, then create the ALTREP object. Reader construction remains unwind-protected because it may acquire a foreign object whose initialization calls R.
 
 When a `charvec` is fully materialized, it caches an ordinary STRSXP in ALTREP `data2` and releases the `charvec::Store` held in `data1`. The reader then naturally uses the ordinary fallback path over the cached STRSXP.

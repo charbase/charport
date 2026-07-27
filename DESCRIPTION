@@ -3,9 +3,9 @@ Title: ALTREP String Interoperability
 Version: 0.1.0
 Date: 2026-07-20
 Authors@R: c(
-    person("Travers", "Ching", email = "traversc@gmail.com", role = c("aut", "cre", "cph")))
-Author: Travers Ching [aut, cre, cph]
-Maintainer: Travers Ching <traversc@gmail.com>
+    person("Travers", "Ching", email = "traversc@gmail.com", role = c("aut", "cre", "cph")),
+    person("R Consortium", role = "fnd",
+           comment = "Infrastructure Steering Committee grant: Universal ALTREP Interoperability for Strings"))
 Description: Infrastructure for ALTREP character vectors: a reference
     ALTREP string class ('charvec') backed by stable memory slices with a
     parallel-constructible builder, a runtime registration interface for
@@ -13,6 +13,11 @@ Description: Infrastructure for ALTREP character vectors: a reference
     so consumer packages can iterate over any character vector with a
     single code path.
 License: MIT + file LICENSE
+Copyright: Benchmark measurements use the enwik8 corpus, the first 10^8 bytes
+    of the English Wikipedia XML dump of 2006-03-03, whose text carries
+    Wikipedia's own terms: the Creative Commons Attribution-ShareAlike License
+    and the GNU Free Documentation License. No Wikipedia data is included in
+    this package; the benchmark script downloads the corpus on demand.
 Encoding: UTF-8
 Suggests:
     cpp11,

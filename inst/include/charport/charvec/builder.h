@@ -13,6 +13,18 @@
 #include <utility>
 #include <vector>
 
+#if defined(_MSVC_LANG)
+#  if _MSVC_LANG >= 201703L
+#    define CHARPORT_CHARVEC_NODISCARD [[nodiscard]]
+#  else
+#    define CHARPORT_CHARVEC_NODISCARD
+#  endif
+#elif __cplusplus >= 201703L
+#  define CHARPORT_CHARVEC_NODISCARD [[nodiscard]]
+#else
+#  define CHARPORT_CHARVEC_NODISCARD
+#endif
+
 namespace charport {
 namespace charvec {
 
@@ -30,10 +42,6 @@ inline size_t initial_slice_heuristic(size_t vector_len) noexcept {
   }
   const size_t scaled = internal::next_power_of_two(vector_len * vector_len_scale());
   return std::min(std::max(min_multi_string_slice_bytes(), scaled), max_initial_slice_bytes());
-}
-
-inline size_t growable_vector_length_hint() noexcept {
-  return max_initial_slice_bytes() / vector_len_scale();
 }
 
 struct Shard {
@@ -110,14 +118,13 @@ inline charport_charvec_wrap_t wrap_callable() {
   return fn;
 }
 
-template<typename Backend>
 inline SEXP wrap_store(Store && source) {
-  std::unique_ptr<Store> store;
-  return Backend::call([&]() -> SEXP {
-    charport_charvec_wrap_t wrap = wrap_callable();
-    store.reset(new Store(std::move(source)));
-    return wrap(store.release());
-  });
+  charport_charvec_wrap_t wrap = wrap_callable();
+  // This is a terminal ownership transfer, like the raw ALTREP construction
+  // used by vroom and Arrow. Reader acquisition remains unwind-protected;
+  // Builder conversion follows the conventional R extension failure model,
+  // including the rare case where no external pointer can be allocated.
+  return wrap(new Store(std::move(source)));
 }
 
 } // namespace builder_detail
@@ -163,6 +170,7 @@ public:
     set(i, nullptr, 0, cetype_ext_t::CE_NA);
   }
 
+  CHARPORT_CHARVEC_NODISCARD
   char * reserve(R_xlen_t i, size_t len, cetype_ext_t enc) {
     return builder_detail::fill_record(
       shard_, records_, static_cast<size_t>(i), len, enc);
@@ -177,7 +185,7 @@ public:
   }
 
   SEXP to_sexp() {
-    return builder_detail::wrap_store<Backend>(release_store());
+    return builder_detail::wrap_store(release_store());
   }
 
 private:
@@ -236,6 +244,7 @@ public:
     set(shard, i, nullptr, 0, cetype_ext_t::CE_NA);
   }
 
+  CHARPORT_CHARVEC_NODISCARD
   char * reserve(size_t shard, R_xlen_t i, size_t len, cetype_ext_t enc) {
     return builder_detail::fill_record(
       shard_at(shard), records_, static_cast<size_t>(i), len, enc);
@@ -252,7 +261,7 @@ public:
   }
 
   SEXP to_sexp() {
-    return builder_detail::wrap_store<Backend>(release_store());
+    return builder_detail::wrap_store(release_store());
   }
 
 private:
@@ -287,7 +296,7 @@ public:
 
   void append(const char * ptr, size_t len, cetype_ext_t enc) {
     if(ptr == nullptr || enc == cetype_ext_t::CE_NA) {
-      append_reserve(0, cetype_ext_t::CE_NA);
+      (void)append_reserve(0, cetype_ext_t::CE_NA);
       return;
     }
     char * dest = append_reserve(len, enc);
@@ -296,21 +305,22 @@ public:
     }
   }
 
+  CHARPORT_CHARVEC_NODISCARD
   char * append_reserve(size_t len, cetype_ext_t enc) {
     const int stored_len = components::checked_string_size(len, "stored string length");
+    records_.reserve_for_append();
     if(enc == cetype_ext_t::CE_NA) {
-      records_.push_back(components::na_record());
+      records_.push_back_reserved(components::na_record());
       return nullptr;
     }
     if(stored_len == 0) {
-      records_.push_back(components::empty_record(enc));
+      records_.push_back_reserved(components::empty_record(enc));
       return const_cast<char*>(components::empty_data());
     }
 
     char * dest = builder_detail::allocate_bytes(
-      shard_, static_cast<uint32_t>(stored_len),
-      builder_detail::growable_vector_length_hint());
-    records_.push_back(make_strview(dest, stored_len, enc));
+      shard_, static_cast<uint32_t>(stored_len), 0);
+    records_.push_back_reserved(make_strview(dest, stored_len, enc));
     return dest;
   }
 
@@ -319,27 +329,27 @@ public:
   }
 
   Store release_store() {
-    Store out(records_.size(), 0);
-    for(size_t i = 0; i < records_.size(); ++i) {
-      const charport_strview record = records_[i];
-      out.records.set(i, record.ptr, record.len, record.enc);
-    }
+    Store out(0, 0);
+    out.records = std::move(records_);
     out.slices.prepend(shard_.slices);
-    records_.clear();
     shard_ = builder_detail::Shard();
     return out;
   }
 
   SEXP to_sexp() {
-    return builder_detail::wrap_store<Backend>(release_store());
+    return builder_detail::wrap_store(release_store());
   }
 
 private:
-  std::vector<charport_strview> records_;
+  // Growing RecordTable directly lets release_store() move the three metadata
+  // arrays into Store without a final allocation and repack.
+  components::RecordTable records_;
   builder_detail::Shard shard_;
 };
 
 } // namespace charvec
 } // namespace charport
+
+#undef CHARPORT_CHARVEC_NODISCARD
 
 #endif

@@ -474,6 +474,7 @@ class RecordTable {
   std::unique_ptr<int[]> lens;           // length of each string
   std::unique_ptr<cetype_ext_t[]> encs;  // encoding of each string
   size_t vector_length;
+  size_t capacity;
 };
 ```
 
@@ -499,7 +500,9 @@ char * dst = b.reserve(i, len, cetype_ext_t::CE_UTF8);
 // write to dst directly
 ```
 
-Call `to_sexp()` on the main R thread when the vector is done building: the `Builder` gives up its storage to the returned ALTREP `SEXP`. `Builder::reset(n)` can be used to re-use the same object for building a subsequent vector.
+Call `to_sexp()` on the main R thread when the vector is done building: the `Builder` gives up its storage to the returned ALTREP `SEXP`. The terminal conversion uses the conventional ALTREP ownership order: it creates the external pointer, registers its finalizer, and then creates the ALTREP object. See [Error Handling](error-handling.qmd) for the distinction between this transfer and protected `Reader` acquisition.
+
+`Builder::reset(n)` reuses the same builder object for a subsequent vector. This is useful when one operation returns several string vectors of known length.
 
 ``` cpp
 SEXP out = b.to_sexp();
@@ -557,6 +560,8 @@ SEXP out = b.to_sexp();
 
 `append()` copies bytes. `append_reserve()` adds one record and returns its writable storage.
 
+The record table grows geometrically as elements are appended. `release_store()` moves those arrays into the finished `Store`; it does not allocate and repack a second metadata table. Payload slices start from the first payload request instead of using an assumed output length, then follow the normal slice growth policy.
+
 ### Manipulating `Store` directly (low-level usage)
 
 `charvec::Store` is a public struct with `records` and `slices` for producers that already know their byte layout or need manual slice growth. The constructor allocates a fixed record table and, when `initial_slice_bytes` is nonzero, one payload slice. The caller must keep every record pointer, length, encoding, and owned slice consistent.
@@ -584,6 +589,10 @@ For a one-element result, `Store::scalar()` copies the bytes and fills record ze
 charvec::Store store = charvec::Store::scalar(ptr, len, cetype_ext_t::CE_UTF8);
 SEXP out = charvec::wrap(std::move(store));
 ```
+
+## C++ standard
+
+The installed headers require C++11. They also compile as C++14, C++17, C++20, and C++23, so a consuming package may use a newer standard. Where it improves diagnostics without changing the C++11 API, charport enables newer language features conditionally. For example, writable reserve functions and the raw `resolve()` lease are `[[nodiscard]]` under C++17 and later.
 
 ## ABI Compatibility {#abi-compatibility-guard}
 

@@ -1,7 +1,7 @@
 #ifndef CHARPORT_CHARVEC_STORE_H
 #define CHARPORT_CHARVEC_STORE_H
 
-// Native charvec payload: fixed record array plus owned payload slices.
+// Native charvec payload: contiguous record arrays plus owned payload slices.
 
 #include "detail.h"
 
@@ -10,6 +10,7 @@
 #include <limits>
 #include <memory>
 #include <new>
+#include <stdexcept>
 
 namespace charport {
 namespace charvec {
@@ -136,24 +137,24 @@ struct RecordTable {
   std::unique_ptr<int[]> lens_;
   std::unique_ptr<cetype_ext_t[]> encs_;
   size_t vector_length_;
+  size_t capacity_;
 
-  RecordTable() noexcept : ptrs_(), lens_(), encs_(), vector_length_(0) {}
+  RecordTable() noexcept
+    : ptrs_(), lens_(), encs_(), vector_length_(0), capacity_(0) {}
 
   explicit RecordTable(size_t vector_length)
-    : ptrs_(vector_length ? new const char *[vector_length] : nullptr),
-      lens_(vector_length ? new int[vector_length] : nullptr),
-      encs_(vector_length ? new cetype_ext_t[vector_length] : nullptr),
-      vector_length_(vector_length) {
+    : RecordTable() {
+    reserve(vector_length);
+    vector_length_ = vector_length;
     for(size_t i = 0; i < vector_length; ++i) {
       set_na(i);
     }
   }
 
   RecordTable(const RecordTable & other)
-    : ptrs_(other.vector_length_ ? new const char *[other.vector_length_] : nullptr),
-      lens_(other.vector_length_ ? new int[other.vector_length_] : nullptr),
-      encs_(other.vector_length_ ? new cetype_ext_t[other.vector_length_] : nullptr),
-      vector_length_(other.vector_length_) {
+    : RecordTable() {
+    reserve(other.capacity_);
+    vector_length_ = other.vector_length_;
     if(vector_length_ > 0) {
       std::copy(other.ptrs_.get(), other.ptrs_.get() + vector_length_, ptrs_.get());
       std::copy(other.lens_.get(), other.lens_.get() + vector_length_, lens_.get());
@@ -171,20 +172,27 @@ struct RecordTable {
     : ptrs_(std::move(other.ptrs_)),
       lens_(std::move(other.lens_)),
       encs_(std::move(other.encs_)),
-      vector_length_(other.vector_length_) {
+      vector_length_(other.vector_length_),
+      capacity_(other.capacity_) {
     other.vector_length_ = 0;
+    other.capacity_ = 0;
   }
 
   RecordTable & operator=(RecordTable && other) noexcept {
-    ptrs_ = std::move(other.ptrs_);
-    lens_ = std::move(other.lens_);
-    encs_ = std::move(other.encs_);
-    vector_length_ = other.vector_length_;
-    other.vector_length_ = 0;
+    if(this != &other) {
+      ptrs_ = std::move(other.ptrs_);
+      lens_ = std::move(other.lens_);
+      encs_ = std::move(other.encs_);
+      vector_length_ = other.vector_length_;
+      capacity_ = other.capacity_;
+      other.vector_length_ = 0;
+      other.capacity_ = 0;
+    }
     return *this;
   }
 
   size_t size() const noexcept { return vector_length_; }
+  size_t capacity() const noexcept { return capacity_; }
   const char ** ptrs() noexcept { return ptrs_.get(); }
   const char * const * ptrs() const noexcept { return ptrs_.get(); }
   int * lengths() noexcept { return lens_.get(); }
@@ -211,6 +219,64 @@ struct RecordTable {
 
   void set_na(size_t i) noexcept {
     set(i, nullptr, NA_INTEGER, cetype_ext_t::CE_NA);
+  }
+
+  void reserve(size_t new_capacity) {
+    if(new_capacity <= capacity_) {
+      return;
+    }
+    if(new_capacity > max_capacity()) {
+      throw std::length_error("charvec record table capacity exceeds maximum");
+    }
+
+    std::unique_ptr<const char *[]> ptrs(new const char *[new_capacity]);
+    std::unique_ptr<int[]> lens(new int[new_capacity]);
+    std::unique_ptr<cetype_ext_t[]> encs(new cetype_ext_t[new_capacity]);
+    if(vector_length_ > 0) {
+      std::copy(ptrs_.get(), ptrs_.get() + vector_length_, ptrs.get());
+      std::copy(lens_.get(), lens_.get() + vector_length_, lens.get());
+      std::copy(encs_.get(), encs_.get() + vector_length_, encs.get());
+    }
+    ptrs_.swap(ptrs);
+    lens_.swap(lens);
+    encs_.swap(encs);
+    capacity_ = new_capacity;
+  }
+
+  void reserve_for_append() {
+    if(vector_length_ < capacity_) {
+      return;
+    }
+    const size_t maximum = max_capacity();
+    const size_t next = capacity_ == 0
+      ? 1
+      : (capacity_ > maximum / 2 ? maximum : capacity_ * 2);
+    if(next <= capacity_) {
+      throw std::length_error("charvec record table capacity exceeds maximum");
+    }
+    reserve(next);
+  }
+
+  void push_back(const charport_strview & value) {
+    reserve_for_append();
+    push_back_reserved(value);
+  }
+
+  // Precondition: reserve_for_append() has succeeded. GrowableBuilder uses
+  // this form after reserving metadata but before committing payload bytes.
+  void push_back_reserved(const charport_strview & value) noexcept {
+    set(vector_length_, value.ptr, value.len, value.enc);
+    ++vector_length_;
+  }
+
+private:
+  static size_t max_capacity() noexcept {
+    const size_t maximum = std::numeric_limits<size_t>::max();
+    return std::min(
+      static_cast<size_t>(R_XLEN_T_MAX),
+      std::min(
+        maximum / sizeof(const char *),
+        std::min(maximum / sizeof(int), maximum / sizeof(cetype_ext_t))));
   }
 };
 

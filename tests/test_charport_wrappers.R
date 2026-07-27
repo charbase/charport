@@ -21,6 +21,9 @@ dll <- compile_test_dso("charport_consumer.cpp", label = "charport wrapper consu
 stats     <- charvec_stats
 consumer_symbol <- function(name) getNativeSymbolInfo(name, PACKAGE = dll[["name"]])
 roundtrip <- function(x) .Call(consumer_symbol("C_consumer_reader_roundtrip"), x)
+resolved_roundtrip <- function(x) {
+  .Call(consumer_symbol("C_consumer_resolved_reader_roundtrip"), x)
+}
 range_roundtrip <- function(x) {
   .Call(consumer_symbol("C_consumer_reader_range_roundtrip"), x)
 }
@@ -37,6 +40,7 @@ direct_build <- function() .Call(consumer_symbol("C_consumer_builder_direct"))
 growable_build <- function(x) {
   .Call(consumer_symbol("C_consumer_growable_from_reader"), x)
 }
+growable_state <- function() .Call(consumer_symbol("C_consumer_growable_state"))
 builder_errors <- function() .Call(consumer_symbol("C_consumer_builder_errors"))
 read_scalar <- function(x) .Call(consumer_symbol("C_consumer_read_scalar"), x)
 build_scalar <- function(x) .Call(consumer_symbol("C_consumer_build_scalar"), x)
@@ -88,6 +92,13 @@ for (input in inputs) {
   stopifnot(identical(reader_byte_lengths(input), expected_lengths))
   stopifnot(length(reader_encodings(input)) == length(input))
 }
+
+# Raw resolution is an opt-in contract, so exercise it only with storage this
+# test controls. `inputs[[4L]]` is R's foreign deferred-string ALTREP and stays
+# on the protected generic Reader path above.
+for (input in inputs[-4L]) {
+  stopifnot(marks_identical(resolved_roundtrip(input), as.character(input)))
+}
 expect_error_matching(roundtrip(1:3), "character")
 
 catn("scalar reads and Store::scalar build one-element views")
@@ -119,8 +130,14 @@ invisible(.Call(consumer_symbol("C_consumer_register_release_test")))
 before <- release_test_count()
 stopifnot(identical(read_scalar(release_test_vector()), "alpha"))
 stopifnot(identical(release_test_count(), before + 1L))
+before <- release_test_count()
+stopifnot(identical(
+  resolved_roundtrip(release_test_vector()),
+  c("alpha", "beta")
+))
+stopifnot(identical(release_test_count(), before + 1L))
 
-catn("R errors unwind Reader and Builder state")
+catn("explicit R boundaries unwind Reader and Builder state")
 condition <- structure(
   list(message = "injected R error", code = 42L),
   class = c("charport_test_error", "error", "condition")
@@ -285,6 +302,7 @@ stopifnot(is_charvec(out))
 stopifnot(marks_identical(out, c("alpha", "beta", NA, "", "gamma", "gamma")))
 
 catn("growable builder appends discovered-length output")
+stopifnot(isTRUE(growable_state()))
 growable_input <- c("ascii", NA, "", w_utf8[[1L]], latin1_word, b, NA)
 out <- growable_build(growable_input)
 stopifnot(is_charvec(out), marks_identical(out, growable_input))

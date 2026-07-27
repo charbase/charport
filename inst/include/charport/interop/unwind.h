@@ -57,9 +57,10 @@ struct standalone_backend {
     jump_buffer jump;
     // A fresh token costs ~20ns over a cpp11-style preserved static (measured;
     // the R_UnwindProtect context setup dominates either way). We pay it: this
-    // bridge runs once per Reader/Builder operation, not per element, and a
-    // static token is shared state whose safety rests on every caller's
-    // destructor discipline. Revisit only if this ever shows up in a profile.
+    // bridge runs once per generic Reader resolution or explicitly protected
+    // R call, not per element. A static token is shared state whose safety
+    // rests on every caller's destructor discipline. Revisit only if this ever
+    // shows up in a profile.
     SEXP token = PROTECT(R_MakeUnwindCont());
 
     if(setjmp(jump.value) != 0) {

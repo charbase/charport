@@ -6,6 +6,12 @@ template:
   bslib:
     font-size-base: "0.9rem"
 
+# The funder holds the fnd role, which pkgdown would otherwise print in the
+# "Developed by" footer alongside the author. The authors page credits both.
+authors:
+  footer:
+    roles: [aut, cre]
+
 navbar:
   structure:
     left: [developer_guide, error_handling, design_rationale, reference]

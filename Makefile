@@ -12,7 +12,8 @@ RHUB_ALL_PLATFORMS := c( \
   "ubuntu-clang","ubuntu-gcc12","ubuntu-next", "ubuntu-release","valgrind" \
 )
 
-.PHONY: doc build install check check-no-vignette check-rhub test bench vignette \
+.PHONY: doc build install check check-no-vignette check-rhub test test-cxx \
+	bench bench-list vignette \
 	reflow-docs pkgdown pkgdown-index clean-pkgdown clean clean-native \
 	clean-build-products
 
@@ -47,8 +48,14 @@ test: install
 	  Rscript $$f || exit 1; \
 	done
 
+test-cxx:
+	bash tools/check-cxx-standards.sh
+
 bench:
 	Rscript inst/extra/benchmark.R 5
+
+bench-list:
+	Rscript inst/extra/benchmark_list.R 5 1 100000
 
 # ASan + UBSan over the full test suite. Only the package (and the
 # test-compiled consumer library, via R_MAKEVARS_USER) is instrumented -- R
@@ -99,6 +106,10 @@ pkgdown: clean-native clean-pkgdown doc
 	XDG_CACHE_HOME=$(CURDIR)/local/cache R_USER_CACHE_DIR=$(CURDIR)/local/cache/R \
 	  IN_PKGDOWN=true Rscript -e 'pkgdown::build_site(new_process = FALSE, install = FALSE, quiet = FALSE, override = list(home = list(sidebar = FALSE)))'
 	Rscript tools/quarto-tabsets-to-bootstrap.R docs/articles/*.html
+	# pkgdown turns every root-level .md into a page and its file list is hard
+	# coded, so CLAUDE.md becomes CLAUDE.html with no way to configure it out.
+	# The CI workflow that publishes the site drops the same two files.
+	rm -f docs/CLAUDE.html docs/CLAUDE.md
 	$(MAKE) clean-native
 
 pkgdown-index:

@@ -27,5 +27,10 @@ Authors:
   \item Travers Ching \email{traversc@gmail.com} [copyright holder]
 }
 
+Other contributors:
+\itemize{
+  \item R Consortium (Infrastructure Steering Committee grant: Universal ALTREP Interoperability for Strings) [funder]
+}
+
 }
 \keyword{internal}

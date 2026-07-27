@@ -337,33 +337,19 @@ inline void compact_store(cpv::Store & store) {
 struct charvec_altrep {
   static R_altrep_class_t class_t;
 
-  struct make_owned_context {
-    cpv::Store * data;
-  };
-
-  static SEXP MakeOwnedBody(void * ptr) {
-    make_owned_context * ctx = static_cast<make_owned_context *>(ptr);
-    SEXP xp = PROTECT(R_MakeExternalPtr(ctx->data, R_NilValue, R_NilValue));
-    SEXP res = PROTECT(R_new_altrep(class_t, xp, R_NilValue));
-    R_RegisterCFinalizerEx(xp, charvec_altrep::Finalize, TRUE);
-    ctx->data = nullptr;
-    UNPROTECT(2);
-    return res;
-  }
-
-  static void MakeOwnedCleanup(void * ptr) {
-    make_owned_context * ctx = static_cast<make_owned_context *>(ptr);
-    delete ctx->data;
-    ctx->data = nullptr;
-  }
-
   static SEXP MakeOwned(cpv::Store * data) {
     if(data == nullptr) {
       Rf_error("charvec MakeOwned: data is NULL");
     }
-    // R allocation can longjmp; keep native ownership until finalizer install.
-    make_owned_context ctx{data};
-    return R_ExecWithCleanup(MakeOwnedBody, &ctx, MakeOwnedCleanup, &ctx);
+    // Follow the usual ALTREP ownership order used by vroom and Arrow: create
+    // the external pointer, install its finalizer, then create the ALTREP.
+    // Builder conversion deliberately does not add a second unwind layer; if
+    // external-pointer allocation fails, there is not yet an R owner.
+    SEXP xp = PROTECT(R_MakeExternalPtr(data, R_NilValue, R_NilValue));
+    R_RegisterCFinalizerEx(xp, charvec_altrep::Finalize, TRUE);
+    SEXP out = PROTECT(R_new_altrep(class_t, xp, R_NilValue));
+    UNPROTECT(2);
+    return out;
   }
 
   static void Finalize(SEXP xp) {
