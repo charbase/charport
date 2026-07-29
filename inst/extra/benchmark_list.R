@@ -47,7 +47,10 @@ if (max_lines > 0L) {
 include_dir <- system.file("include", package = "charport")
 build_dir <- file.path(tempdir(), "charport-bench-list")
 dir.create(build_dir, showWarnings = FALSE)
-sources <- file.path("inst", "extra", c("benchmark.cpp", "benchmark_list.cpp"))
+sources <- c(
+  file.path("inst", "extra", c("benchmark.cpp", "benchmark_list.cpp")),
+  file.path("tests", "consumer-boundary.h")
+)
 if (!all(file.copy(sources, build_dir, overwrite = TRUE))) {
   stop("could not copy benchmark sources")
 }
@@ -201,7 +204,7 @@ read_plain_reader <- show_timing(
   elapsed_ms(function() .Call("C_benchl_hash_reader", list_plain))
 )
 read_plain_resolved <- show_timing(
-  "raw resolved Reader, STRSXP list",
+  "protected resolve + Reader, STRSXP list",
   elapsed_ms(function() .Call("C_benchl_hash_resolved_reader", list_plain))
 )
 read_builder <- show_timing(
@@ -209,7 +212,7 @@ read_builder <- show_timing(
   elapsed_ms(function() .Call("C_benchl_hash_reader", list_builder))
 )
 read_builder_resolved <- show_timing(
-  "raw resolved Reader, Builder list",
+  "protected resolve + Reader, Builder list",
   elapsed_ms(function() .Call("C_benchl_hash_resolved_reader", list_builder))
 )
 read_scalar <- NULL
@@ -220,7 +223,7 @@ if (!is.null(list_scalar)) {
     elapsed_ms(function() .Call("C_benchl_hash_reader", list_scalar))
   )
   read_scalar_resolved <- show_timing(
-    "raw resolved Reader, Store::scalar list",
+    "protected resolve + Reader, Store::scalar list",
     elapsed_ms(function() {
       .Call("C_benchl_hash_resolved_reader", list_scalar)
     })
@@ -249,7 +252,7 @@ access_plain_reader <- show_timing(
   elapsed_ms(function() .Call("C_benchl_sumlen_reader", list_plain))
 )
 access_plain_resolved <- show_timing(
-  "raw resolved Reader, STRSXP list",
+  "protected resolve + Reader, STRSXP list",
   elapsed_ms(function() .Call("C_benchl_sumlen_resolved_reader", list_plain))
 )
 access_builder <- show_timing(
@@ -257,7 +260,7 @@ access_builder <- show_timing(
   elapsed_ms(function() .Call("C_benchl_sumlen_reader", list_builder))
 )
 access_builder_resolved <- show_timing(
-  "raw resolved Reader, Builder list",
+  "protected resolve + Reader, Builder list",
   elapsed_ms(function() .Call("C_benchl_sumlen_resolved_reader", list_builder))
 )
 access_scalar <- NULL
@@ -268,7 +271,7 @@ if (!is.null(list_scalar)) {
     elapsed_ms(function() .Call("C_benchl_sumlen_reader", list_scalar))
   )
   access_scalar_resolved <- show_timing(
-    "raw resolved Reader, Store::scalar list",
+    "protected resolve + Reader, Store::scalar list",
     elapsed_ms(function() {
       .Call("C_benchl_sumlen_resolved_reader", list_scalar)
     })

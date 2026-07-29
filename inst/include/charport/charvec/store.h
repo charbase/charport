@@ -287,6 +287,8 @@ public:
   components::SliceChain slices;
   components::RecordTable records;
 
+  Store() noexcept : slices(), records() {}
+
   Store(size_t vector_size, size_t initial_slice_bytes)
     : slices(), records(vector_size) {
     if(initial_slice_bytes > 0) {

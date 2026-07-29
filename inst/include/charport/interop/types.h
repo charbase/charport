@@ -17,6 +17,12 @@
 #include <type_traits>
 #endif
 
+/* Only zero means success. Unknown nonzero values are generic failures. */
+#define CHARPORT_STATUS_OK 0
+#define CHARPORT_STATUS_ERROR 1
+#define CHARPORT_STATUS_NO_MEMORY 2
+#define CHARPORT_STATUS_OUT_OF_RANGE 3
+
 #ifdef __cplusplus
 enum class cetype_ext_t : uint8_t {
     CE_NATIVE        = 0,

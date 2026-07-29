@@ -14,11 +14,12 @@ strings, and that step can be costly.
 
 The goal of `charport` is to remove that materialization cost by making
 ALTREP strings interoperable between packages. The hope is that ALTREP
-strings stop being a package-local optimization and become something
-packages share.
+strings stop being a package-local optimization and become shared
+infrastructure.
 
-*The work in this package is funded by the R Consortium Infrastructure
-Steering Committee.*
+*This work is supported by the R Consortium Infrastructure Steering
+Committee, under the grant Universal ALTREP Interoperability for
+Strings.*
 
 ## ALTREP string access
 

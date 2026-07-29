@@ -20,17 +20,7 @@
 #define CHARPORT_CPP11_INCLUDED 1
 #endif
 
-#if defined(RCPP_VERSION) && defined(CHARPORT_CPP11_INCLUDED)
-#error "charport.h cannot choose between Rcpp and cpp11 in one translation unit"
-#elif defined(RCPP_VERSION)
-#define CHARPORT_UNWIND_BACKEND ::charport::unwind_detail::rcpp_backend
-#elif defined(CHARPORT_CPP11_INCLUDED)
-#define CHARPORT_UNWIND_BACKEND ::charport::unwind_detail::cpp11_backend
-#else
-#define CHARPORT_UNWIND_BACKEND ::charport::unwind_detail::standalone_backend
-#endif
 #include "charport/api.h"
-#undef CHARPORT_UNWIND_BACKEND
 #undef CHARPORT_CPP11_INCLUDED
 #else
 #include "charport/interop/reader.h"

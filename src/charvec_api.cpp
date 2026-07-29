@@ -1,6 +1,8 @@
 #include "charvec_altrep.h"
 #include "charport_registry.h"
 
+#include <cstdio>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -34,15 +36,100 @@ size_t checked_len_arg(SEXP n_) {
   return static_cast<size_t>(n);
 }
 
+bool valid_bulk_encoding(cetype_ext_t enc) noexcept {
+  switch(enc) {
+  case cetype_ext_t::CE_NATIVE:
+  case cetype_ext_t::CE_UTF8:
+  case cetype_ext_t::CE_LATIN1:
+  case cetype_ext_t::CE_BYTES:
+  case cetype_ext_t::CE_ASCII_OR_UTF8:
+  case cetype_ext_t::CE_ASCII:
+  case cetype_ext_t::CE_NA:
+    return true;
+  }
+  return false;
+}
+
+bool bulk_view_is_na(const char * ptr, int len, cetype_ext_t enc) noexcept {
+  return ptr == nullptr || len == NA_INTEGER || enc == cetype_ext_t::CE_NA;
+}
+
+struct bulk_builder_state {
+  charport::charvec::Builder * builder;
+};
+
+SEXP bulk_builder_to_sexp(void * data) noexcept {
+  bulk_builder_state * state = static_cast<bulk_builder_state *>(data);
+  return state->builder->to_sexp();
+}
+
+void bulk_builder_cleanup(void * data, Rboolean) noexcept {
+  bulk_builder_state * state = static_cast<bulk_builder_state *>(data);
+  delete state->builder;
+  state->builder = nullptr;
+}
+
 } // namespace
 
 extern "C" SEXP charport_charvec_wrap(void * store_) {
-  if(store_ == nullptr) {
-    Rf_error("charport charvec wrap: store is NULL");
+  return charvec_altrep::MoveStore(static_cast<cpv::Store *>(store_));
+}
+
+extern "C" SEXP charport_charvec_from_views_impl(
+    R_xlen_t n, const char * const * ptrs, const int * lengths,
+    const cetype_ext_t * encodings) {
+  if(n < 0) {
+    Rf_error("charport charvec from views: negative length");
   }
-  return charport_sexp_guard("charvec wrap", [&]() -> SEXP {
-    return charvec_altrep::MakeOwned(static_cast<cpv::Store *>(store_));
-  });
+  if(n > 0 && (ptrs == nullptr || lengths == nullptr || encodings == nullptr)) {
+    Rf_error("charport charvec from views: input arrays must not be NULL");
+  }
+  for(R_xlen_t i = 0; i < n; ++i) {
+    if(!valid_bulk_encoding(encodings[i])) {
+      Rf_error("charport charvec from views: invalid encoding at index %lld",
+               static_cast<long long>(i));
+    }
+    if(!bulk_view_is_na(ptrs[i], lengths[i], encodings[i]) && lengths[i] < 0) {
+      Rf_error("charport charvec from views: negative length at index %lld",
+               static_cast<long long>(i));
+    }
+  }
+
+  SEXP token = PROTECT(R_MakeUnwindCont());
+  charport::charvec::Builder * builder = nullptr;
+  char message[512];
+  bool cpp_error = false;
+  try {
+    builder = new charport::charvec::Builder(n);
+    for(R_xlen_t i = 0; i < n; ++i) {
+      if(bulk_view_is_na(ptrs[i], lengths[i], encodings[i])) {
+        builder->set_na(i);
+      } else {
+        builder->set(i, ptrs[i], static_cast<size_t>(lengths[i]), encodings[i]);
+      }
+    }
+  } catch(const std::exception & error) {
+    std::snprintf(message, sizeof(message), "%s", error.what());
+    cpp_error = true;
+  } catch(...) {
+    std::snprintf(message, sizeof(message), "unknown C++ exception");
+    cpp_error = true;
+  }
+
+  if(cpp_error) {
+    delete builder;
+    UNPROTECT(1);
+    Rf_error("charport charvec from views: %s", message);
+  }
+
+  bulk_builder_state state{builder};
+  SEXP out = R_UnwindProtect(
+    &bulk_builder_to_sexp, &state,
+    &bulk_builder_cleanup, &state, token
+  );
+  SETCAR(token, R_NilValue);
+  UNPROTECT(1);
+  return out;
 }
 
 extern "C" SEXP C_as_charvec(SEXP x) {
@@ -57,13 +144,14 @@ extern "C" SEXP C_as_charvec(SEXP x) {
       builder.set(i, cpi::charsxp_to_view(ptr[i]));
     }
     cpv::Store store = builder.release_store();
-    return charvec_altrep::MakeOwned(new cpv::Store(std::move(store)));
+    return charvec_altrep::MoveStore(&store);
   });
 }
 
 extern "C" SEXP C_charvec_alloc(SEXP n_) {
   return charport_sexp_guard("charvec_alloc", [&]() -> SEXP {
-    return charvec_altrep::MakeOwned(new cpv::Store(checked_len_arg(n_), 0));
+    cpv::Store store(checked_len_arg(n_), 0);
+    return charvec_altrep::MoveStore(&store);
   });
 }
 

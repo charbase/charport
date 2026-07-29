@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <new>
 
 namespace cpi = charport::internal;
 namespace cpv = charport::charvec;
@@ -337,17 +338,21 @@ inline void compact_store(cpv::Store & store) {
 struct charvec_altrep {
   static R_altrep_class_t class_t;
 
-  static SEXP MakeOwned(cpv::Store * data) {
-    if(data == nullptr) {
-      Rf_error("charvec MakeOwned: data is NULL");
+  static SEXP MoveStore(cpv::Store * source) noexcept {
+    if(source == nullptr) {
+      Rf_error("charvec MoveStore: source is NULL");
     }
-    // Follow the usual ALTREP ownership order used by vroom and Arrow: create
-    // the external pointer, install its finalizer, then create the ALTREP.
-    // Builder conversion deliberately does not add a second unwind layer; if
-    // external-pointer allocation fails, there is not yet an R owner.
-    SEXP xp = PROTECT(R_MakeExternalPtr(data, R_NilValue, R_NilValue));
+    SEXP xp = PROTECT(R_MakeExternalPtr(nullptr, R_NilValue, R_NilValue));
     R_RegisterCFinalizerEx(xp, charvec_altrep::Finalize, TRUE);
     SEXP out = PROTECT(R_new_altrep(class_t, xp, R_NilValue));
+
+    // Build the R shell before moving source. After the move, installing the
+    // address cannot allocate, so the external pointer owns the Store.
+    cpv::Store * data = new(std::nothrow) cpv::Store(std::move(*source));
+    if(data == nullptr) {
+      Rf_error("charvec MoveStore: could not allocate Store owner");
+    }
+    R_SetExternalPtrAddr(xp, data);
     UNPROTECT(2);
     return out;
   }
@@ -424,7 +429,8 @@ struct charvec_altrep {
       return Rf_duplicate(data2);
     }
     return charport_sexp_guard("charvec Duplicate", [&]() -> SEXP {
-      return MakeOwned(new cpv::Store(charvec_detail::deep_copy_store(Get(vec))));
+      cpv::Store store = charvec_detail::deep_copy_store(Get(vec));
+      return MoveStore(&store);
     });
   }
 
@@ -575,7 +581,7 @@ struct charvec_altrep {
       }
 
       cpv::Store store = out.release_store();
-      return MakeOwned(new cpv::Store(std::move(store)));
+      return MoveStore(&store);
     });
   }
 
@@ -679,7 +685,7 @@ struct charvec_altrep {
         throw std::runtime_error("serialized_state has trailing bytes");
       }
       cpv::Store store = out.release_store();
-      return MakeOwned(new cpv::Store(std::move(store)));
+      return MoveStore(&store);
     });
   }
 
@@ -694,11 +700,11 @@ struct charvec_altrep {
     return Ptr(x);
   }
 
-  static void reader_strviews_range(void * state, R_xlen_t start, R_xlen_t size,
-                                    const char ** out_ptrs, int * out_lens,
-                                    cetype_ext_t * out_encs) {
+  static int reader_strviews_range(
+      void * state, R_xlen_t start, R_xlen_t size, const char ** out_ptrs,
+      int * out_lens, cetype_ext_t * out_encs) {
     if(size == 0) {
-      return;
+      return CHARPORT_STATUS_OK;
     }
     const cpv::Store * data = static_cast<cpv::Store *>(state);
     const size_t offset = static_cast<size_t>(start);
@@ -709,11 +715,12 @@ struct charvec_altrep {
                 count * sizeof(int));
     std::memcpy(out_encs, data->records.encodings() + offset,
                 count * sizeof(cetype_ext_t));
+    return CHARPORT_STATUS_OK;
   }
 
-  static void reader_strviews_index(void * state, const R_xlen_t * indices,
-                                    R_xlen_t size, const char ** out_ptrs,
-                                    int * out_lens, cetype_ext_t * out_encs) {
+  static int reader_strviews_index(
+      void * state, const R_xlen_t * indices, R_xlen_t size,
+      const char ** out_ptrs, int * out_lens, cetype_ext_t * out_encs) {
     const cpv::Store * data = static_cast<cpv::Store *>(state);
     for(R_xlen_t j = 0; j < size; ++j) {
       const size_t i = static_cast<size_t>(indices[j]);
@@ -721,12 +728,14 @@ struct charvec_altrep {
       out_lens[j] = data->records.lengths()[i];
       out_encs[j] = data->records.encodings()[i];
     }
+    return CHARPORT_STATUS_OK;
   }
 
-  static void reader_byteviews_range(void * state, R_xlen_t start, R_xlen_t size,
-                                     const char ** out_ptrs, int * out_lens) {
+  static int reader_byteviews_range(
+      void * state, R_xlen_t start, R_xlen_t size, const char ** out_ptrs,
+      int * out_lens) {
     if(size == 0) {
-      return;
+      return CHARPORT_STATUS_OK;
     }
     const cpv::Store * data = static_cast<cpv::Store *>(state);
     const size_t offset = static_cast<size_t>(start);
@@ -735,59 +744,66 @@ struct charvec_altrep {
                 count * sizeof(const char *));
     std::memcpy(out_lens, data->records.lengths() + offset,
                 count * sizeof(int));
+    return CHARPORT_STATUS_OK;
   }
 
-  static void reader_byteviews_index(void * state, const R_xlen_t * indices,
-                                     R_xlen_t size, const char ** out_ptrs,
-                                     int * out_lens) {
+  static int reader_byteviews_index(
+      void * state, const R_xlen_t * indices, R_xlen_t size,
+      const char ** out_ptrs, int * out_lens) {
     const cpv::Store * data = static_cast<cpv::Store *>(state);
     for(R_xlen_t j = 0; j < size; ++j) {
       const size_t i = static_cast<size_t>(indices[j]);
       out_ptrs[j] = data->records.ptrs()[i];
       out_lens[j] = data->records.lengths()[i];
     }
+    return CHARPORT_STATUS_OK;
   }
 
-  static void reader_lengths_range(void * state, R_xlen_t start, R_xlen_t size,
-                                   int * out_lens) {
+  static int reader_lengths_range(
+      void * state, R_xlen_t start, R_xlen_t size, int * out_lens) {
     if(size == 0) {
-      return;
+      return CHARPORT_STATUS_OK;
     }
     const cpv::Store * data = static_cast<cpv::Store *>(state);
     const size_t offset = static_cast<size_t>(start);
     const size_t count = static_cast<size_t>(size);
     std::memcpy(out_lens, data->records.lengths() + offset,
                 count * sizeof(int));
+    return CHARPORT_STATUS_OK;
   }
 
-  static void reader_lengths_index(void * state, const R_xlen_t * indices,
-                                   R_xlen_t size, int * out_lens) {
+  static int reader_lengths_index(
+      void * state, const R_xlen_t * indices, R_xlen_t size, int * out_lens) {
     const cpv::Store * data = static_cast<cpv::Store *>(state);
     for(R_xlen_t j = 0; j < size; ++j) {
       const size_t i = static_cast<size_t>(indices[j]);
       out_lens[j] = data->records.lengths()[i];
     }
+    return CHARPORT_STATUS_OK;
   }
 
-  static void reader_encodings_range(void * state, R_xlen_t start, R_xlen_t size,
-                                     cetype_ext_t * out_encs) {
+  static int reader_encodings_range(
+      void * state, R_xlen_t start, R_xlen_t size, cetype_ext_t * out_encs) {
     if(size == 0) {
-      return;
+      return CHARPORT_STATUS_OK;
     }
     const cpv::Store * data = static_cast<cpv::Store *>(state);
     const size_t offset = static_cast<size_t>(start);
     const size_t count = static_cast<size_t>(size);
     std::memcpy(out_encs, data->records.encodings() + offset,
                 count * sizeof(cetype_ext_t));
+    return CHARPORT_STATUS_OK;
   }
 
-  static void reader_encodings_index(void * state, const R_xlen_t * indices,
-                                     R_xlen_t size, cetype_ext_t * out_encs) {
+  static int reader_encodings_index(
+      void * state, const R_xlen_t * indices, R_xlen_t size,
+      cetype_ext_t * out_encs) {
     const cpv::Store * data = static_cast<cpv::Store *>(state);
     for(R_xlen_t j = 0; j < size; ++j) {
       const size_t i = static_cast<size_t>(indices[j]);
       out_encs[j] = data->records.encodings()[i];
     }
+    return CHARPORT_STATUS_OK;
   }
 
   static void Init(DllInfo * dll) {

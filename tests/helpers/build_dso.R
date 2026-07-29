@@ -9,6 +9,16 @@ compile_test_dso <- function(src, extra_makevars = character(), label = src) {
   build_dir <- tempfile(paste0(stem, "_build_"))
   dir.create(build_dir)
   file.copy(src, file.path(build_dir, basename(src)), overwrite = TRUE)
+  boundary_header <- "consumer-boundary.h"
+  if (!file.exists(boundary_header)) {
+    boundary_header <- file.path("tests", "consumer-boundary.h")
+  }
+  stopifnot(file.exists(boundary_header))
+  file.copy(
+    boundary_header,
+    file.path(build_dir, "consumer-boundary.h"),
+    overwrite = TRUE
+  )
   writeLines(c(
     sprintf('PKG_CPPFLAGS = -I"%s"', include_dir),
     extra_makevars

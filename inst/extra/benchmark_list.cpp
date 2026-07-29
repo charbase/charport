@@ -3,6 +3,7 @@
 // R driver compiles this file with benchmark.cpp and checks every result.
 
 #include "charport.h"
+#include "consumer-boundary.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -13,7 +14,7 @@ namespace {
 
 template<typename Fn>
 SEXP guarded(const char * operation, Fn fn) {
-  return charport::r_boundary(operation, fn);
+  return charport_consumer::boundary(operation, fn);
 }
 
 R_xlen_t checked_chunk(int value) {
@@ -43,7 +44,7 @@ SEXP hash_result(uint64_t hash, R_xlen_t n_na) {
 }
 
 SEXP protected_hash_result(uint64_t hash, R_xlen_t n_na) {
-  return charport::unwind_protect(
+  return charport_consumer::unwind_protect(
     [hash, n_na]() -> SEXP { return hash_result(hash, n_na); }
   );
 }
@@ -69,7 +70,7 @@ extern "C" SEXP C_benchl_build_builder_list(SEXP x, SEXP chunk_) {
     charport::Reader reader(x);
     const R_xlen_t n = reader.size();
     const R_xlen_t n_out = output_size(n, chunk);
-    SEXP out = charport::unwind_protect(
+    SEXP out = charport_consumer::unwind_protect(
       [n_out]() -> SEXP { return Rf_allocVector(VECSXP, n_out); }
     );
     PROTECT(out);
@@ -95,7 +96,7 @@ extern "C" SEXP C_benchl_build_scalar_list(SEXP x) {
   return guarded("build_scalar_list", [&]() -> SEXP {
     charport::Reader reader(x);
     const R_xlen_t n = reader.size();
-    SEXP out = charport::unwind_protect(
+    SEXP out = charport_consumer::unwind_protect(
       [n]() -> SEXP { return Rf_allocVector(VECSXP, n); }
     );
     PROTECT(out);
@@ -125,7 +126,7 @@ extern "C" SEXP C_benchl_build_strsxp_list(SEXP x, SEXP chunk_) {
     const R_xlen_t n = reader.size();
     const R_xlen_t n_out = output_size(n, chunk);
 
-    return charport::unwind_protect([&]() -> SEXP {
+    return charport_consumer::unwind_protect([&]() -> SEXP {
       SEXP out = PROTECT(Rf_allocVector(VECSXP, n_out));
       for(R_xlen_t j = 0; j < n_out; ++j) {
         const R_xlen_t lo = j * chunk;
@@ -170,25 +171,28 @@ extern "C" SEXP C_benchl_hash_reader(SEXP list) {
   });
 }
 
-// This benchmark constructs every list child itself. Its direct and charvec
-// resolution paths therefore avoid allocation/error-capable R paths and
-// unknown provider code. This isolates generic Reader acquisition from the
-// access callbacks.
+// Measure one consumer-owned unwind boundary around the complete traversal.
+// Each resolve finishes before its Reader is constructed, and access callbacks
+// cannot call R, so no Reader is live when an R error can occur.
 extern "C" SEXP C_benchl_hash_resolved_reader(SEXP list) {
   return guarded("hash_resolved_reader_list", [&]() -> SEXP {
     const R_xlen_t n = Rf_xlength(list);
     uint64_t hash = 14695981039346656037ULL;
     R_xlen_t n_na = 0;
-    for(R_xlen_t j = 0; j < n; ++j) {
-      charport::Reader reader(charport::resolve(VECTOR_ELT(list, j)));
-      for(charport::StrView value : reader) {
-        if(value.is_na()) {
-          ++n_na;
-        } else {
-          hash = fnv1a(value.ptr, static_cast<uint32_t>(value.len), hash);
+    charport_consumer::unwind_protect([&]() -> SEXP {
+      for(R_xlen_t j = 0; j < n; ++j) {
+        charport_reader resolved = charport::resolve(VECTOR_ELT(list, j));
+        charport::Reader reader(resolved);
+        for(charport::StrView value : reader) {
+          if(value.is_na()) {
+            ++n_na;
+          } else {
+            hash = fnv1a(value.ptr, static_cast<uint32_t>(value.len), hash);
+          }
         }
       }
-    }
+      return R_NilValue;
+    });
     return protected_hash_result(hash, n_na);
   });
 }
@@ -228,7 +232,7 @@ extern "C" SEXP C_benchl_sumlen_reader(SEXP list) {
         }
       }
     }
-    return charport::unwind_protect(
+    return charport_consumer::unwind_protect(
       [total]() -> SEXP { return Rf_ScalarReal(total); }
     );
   });
@@ -238,16 +242,20 @@ extern "C" SEXP C_benchl_sumlen_resolved_reader(SEXP list) {
   return guarded("sumlen_resolved_reader_list", [&]() -> SEXP {
     const R_xlen_t n = Rf_xlength(list);
     double total = 0;
-    for(R_xlen_t j = 0; j < n; ++j) {
-      charport::Reader reader(charport::resolve(VECTOR_ELT(list, j)));
-      for(R_xlen_t i = 0; i < reader.size(); ++i) {
-        const int len = reader.length(i);
-        if(len >= 0) {
-          total += static_cast<double>(len);
+    charport_consumer::unwind_protect([&]() -> SEXP {
+      for(R_xlen_t j = 0; j < n; ++j) {
+        charport_reader resolved = charport::resolve(VECTOR_ELT(list, j));
+        charport::Reader reader(resolved);
+        for(R_xlen_t i = 0; i < reader.size(); ++i) {
+          const int len = reader.length(i);
+          if(len >= 0) {
+            total += static_cast<double>(len);
+          }
         }
       }
-    }
-    return charport::unwind_protect(
+      return R_NilValue;
+    });
+    return charport_consumer::unwind_protect(
       [total]() -> SEXP { return Rf_ScalarReal(total); }
     );
   });
@@ -267,7 +275,7 @@ extern "C" SEXP C_benchl_sumlen_elt(SEXP list) {
         }
       }
     }
-    return charport::unwind_protect(
+    return charport_consumer::unwind_protect(
       [total]() -> SEXP { return Rf_ScalarReal(total); }
     );
   });

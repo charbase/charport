@@ -27,6 +27,11 @@ include_dir <- system.file("include", package = "charport")
 build_dir <- file.path(tempdir(), "charport-bench")
 dir.create(build_dir, showWarnings = FALSE)
 invisible(file.copy(file.path("inst", "extra", "benchmark.cpp"), build_dir, overwrite = TRUE))
+invisible(file.copy(
+  file.path("tests", "consumer-boundary.h"),
+  file.path(build_dir, "consumer-boundary.h"),
+  overwrite = TRUE
+))
 writeLines(c(
   sprintf("PKG_CPPFLAGS = -I\"%s\"", include_dir),
   "PKG_CXXFLAGS = -pthread",

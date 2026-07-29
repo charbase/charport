@@ -1,8 +1,8 @@
-# charport:: consumer-wrapper semantics, exercised by charport consuming its own
-# public header through R_GetCCallable: charport::Reader must agree with the raw
-# resolve loop, and charport::charvec::Builder / ParallelBuilder must reproduce any
-# reader's content as a fresh charvec (the end-to-end interop scenario:
-# read via reader, build via builder, no CHARSXPs in between).
+# charport:: consumer-wrapper semantics, exercised by charport consuming its
+# own public header through R_GetCCallable. Ordinary Reader acquisition and
+# acquisition protected by this test consumer must agree. The charvec builder
+# variants must reproduce any reader's content as a fresh charvec, with no
+# CHARSXPs between the read and build paths.
 
 suppressPackageStartupMessages(library(charport))
 
@@ -17,9 +17,14 @@ source(helper)
 
 catn("compiling the charport wrapper consumer (R CMD SHLIB)")
 dll <- compile_test_dso("charport_consumer.cpp", label = "charport wrapper consumer")
+catn("compiling the charport C consumer (R CMD SHLIB)")
+c_dll <- compile_test_dso("charport_c_header.c", label = "charport C consumer")
 
 stats     <- charvec_stats
 consumer_symbol <- function(name) getNativeSymbolInfo(name, PACKAGE = dll[["name"]])
+c_consumer_symbol <- function(name) {
+  getNativeSymbolInfo(name, PACKAGE = c_dll[["name"]])
+}
 roundtrip <- function(x) .Call(consumer_symbol("C_consumer_reader_roundtrip"), x)
 resolved_roundtrip <- function(x) {
   .Call(consumer_symbol("C_consumer_resolved_reader_roundtrip"), x)
@@ -42,6 +47,18 @@ growable_build <- function(x) {
 }
 growable_state <- function() .Call(consumer_symbol("C_consumer_growable_state"))
 builder_errors <- function() .Call(consumer_symbol("C_consumer_builder_errors"))
+c_from_views <- function(x) {
+  .Call(c_consumer_symbol("C_charport_c_from_views"), x)
+}
+c_header_probe <- function() {
+  .Call(c_consumer_symbol("C_charport_c_header_probe"))
+}
+c_abi_ok <- function() {
+  .Call(c_consumer_symbol("C_charport_c_abi_ok"))
+}
+c_reader_roundtrip <- function(x) {
+  .Call(c_consumer_symbol("C_charport_c_reader_roundtrip"), x)
+}
 read_scalar <- function(x) .Call(consumer_symbol("C_consumer_read_scalar"), x)
 build_scalar <- function(x) .Call(consumer_symbol("C_consumer_build_scalar"), x)
 reader_lengths <- function(x) .Call(consumer_symbol("C_consumer_reader_lengths"), x)
@@ -73,6 +90,7 @@ b <- rawToChar(as.raw(0xE9)); Encoding(b) <- "bytes"
 set.seed(20260611)
 
 catn("charport::Reader agrees with R's character view")
+stopifnot(isTRUE(c_abi_ok()))
 inputs <- list(
   character(0),
   c("plain", NA, "", w_utf8[1:5], w_latin1[6:10], b),
@@ -83,6 +101,7 @@ x <- as_charvec(c("m", NA)); charport_materialize(x)
 inputs <- c(inputs, list(x))
 for (input in inputs) {
   stopifnot(marks_identical(roundtrip(input), as.character(input)))
+  stopifnot(marks_identical(c_reader_roundtrip(input), as.character(input)))
   stopifnot(marks_identical(range_roundtrip(input), as.character(input)))
   stopifnot(marks_identical(index_roundtrip(input), rev(as.character(input))))
   expected_lengths <- nchar(as.character(input), type = "bytes", allowNA = TRUE)
@@ -93,13 +112,12 @@ for (input in inputs) {
   stopifnot(length(reader_encodings(input)) == length(input))
 }
 
-# Raw resolution is an opt-in contract, so exercise it only with storage this
-# test controls. `inputs[[4L]]` is R's foreign deferred-string ALTREP and stays
-# on the protected generic Reader path above.
-for (input in inputs[-4L]) {
+# Explicitly protected resolution has the same values for every input class.
+for (input in inputs) {
   stopifnot(marks_identical(resolved_roundtrip(input), as.character(input)))
 }
 expect_error_matching(roundtrip(1:3), "character")
+expect_error_matching(c_reader_roundtrip(1:3), "character")
 
 catn("scalar reads and Store::scalar build one-element views")
 x <- as_charvec(c("scalar", "tail"))
@@ -118,15 +136,64 @@ release_test_count <- function() .Call(consumer_symbol("C_consumer_release_test_
 release_test_vector <- function() .Call(consumer_symbol("C_consumer_release_test_vector"))
 unwind_probe_count <- function() .Call(consumer_symbol("C_consumer_unwind_probe_count"))
 unwind_probe_reset <- function() invisible(.Call(consumer_symbol("C_consumer_unwind_probe_reset")))
-release_test_init_failure <- function(value) {
-  invisible(.Call(consumer_symbol("C_consumer_release_test_init_failure"), value))
+release_test_init_condition <- function(value) {
+  invisible(.Call(
+    consumer_symbol("C_consumer_release_test_init_condition"),
+    value
+  ))
+}
+release_test_access_status <- function(value) {
+  invisible(.Call(
+    consumer_symbol("C_consumer_release_test_access_status"),
+    as.integer(value)
+  ))
 }
 reader_open <- function(x) .Call(consumer_symbol("C_consumer_reader_open"), x)
+reader_open_protected <- function(first, second) {
+  .Call(
+    consumer_symbol("C_consumer_reader_open_protected"),
+    first,
+    second
+  )
+}
+reader_access_kind <- function(x, path) {
+  .Call(
+    consumer_symbol("C_consumer_reader_access_kind"),
+    x,
+    as.integer(path)
+  )
+}
+reader_access_throw <- function(x) {
+  .Call(consumer_symbol("C_consumer_reader_access_throw"), x)
+}
+reader_access_recovers <- function(x) {
+  .Call(consumer_symbol("C_consumer_reader_access_recovers"), x)
+}
+convert_current_exception_to_status <- function(kind) {
+  .Call(
+    consumer_symbol("C_consumer_convert_current_exception_to_status"),
+    as.integer(kind)
+  )
+}
 context_cpp_error <- function() .Call(consumer_symbol("C_consumer_context_cpp_error"))
 reader_eval <- function(x, expression, environment = parent.frame()) {
   .Call(consumer_symbol("C_consumer_reader_eval"), x, expression, environment)
 }
 invisible(.Call(consumer_symbol("C_consumer_register_release_test")))
+before <- release_test_count()
+stopifnot(identical(
+  as.character(c_reader_roundtrip(release_test_vector())),
+  c("alpha", "beta")
+))
+stopifnot(identical(release_test_count(), before + 1L))
+release_test_access_status(1L)
+before <- release_test_count()
+expect_error_matching(
+  c_reader_roundtrip(release_test_vector()),
+  "status 1"
+)
+release_test_access_status(0L)
+stopifnot(identical(release_test_count(), before + 1L))
 before <- release_test_count()
 stopifnot(identical(read_scalar(release_test_vector()), "alpha"))
 stopifnot(identical(release_test_count(), before + 1L))
@@ -137,7 +204,7 @@ stopifnot(identical(
 ))
 stopifnot(identical(release_test_count(), before + 1L))
 
-catn("explicit R boundaries unwind Reader and Builder state")
+catn("consumer-owned R boundaries unwind Reader and Builder state")
 condition <- structure(
   list(message = "injected R error", code = 42L),
   class = c("charport_test_error", "error", "condition")
@@ -152,11 +219,11 @@ err <- tryCatch(
 stopifnot(identical(err$code, 42L), identical(conditionMessage(err), "injected R error"))
 stopifnot(identical(release_test_count(), before + 1L), identical(unwind_probe_count(), 1L))
 
-catn("Rcpp and cpp11 preserve R errors while unwinding Reader state")
+catn("Rcpp and cpp11 adapt Reader construction and charvec conversion errors")
 framework_dlls <- list()
 for (framework in c("Rcpp", "cpp11")) {
   if (!requireNamespace(framework, quietly = TRUE)) {
-    catn(sprintf("framework unwind test skipped: %s is unavailable", framework))
+    catn(sprintf("framework factory test skipped: %s is unavailable", framework))
     next
   }
 
@@ -164,10 +231,14 @@ for (framework in c("Rcpp", "cpp11")) {
   framework_dlls[[framework]] <- compile_test_dso(
     paste0(tolower(framework), "_consumer.cpp"),
     sprintf('PKG_CPPFLAGS += -I"%s"', include_dir),
-    paste0(framework, " unwind consumer")
+    paste0(framework, " Reader factory consumer")
   )
   framework_symbol <- getNativeSymbolInfo(
     paste0("C_", tolower(framework), "_charport_test"),
+    PACKAGE = framework_dlls[[framework]][["name"]]
+  )
+  wrap_symbol <- getNativeSymbolInfo(
+    paste0("C_", tolower(framework), "_charport_wrap_test"),
     PACKAGE = framework_dlls[[framework]][["name"]]
   )
   cleanup_symbol <- getNativeSymbolInfo(
@@ -178,71 +249,103 @@ for (framework in c("Rcpp", "cpp11")) {
 
   cleanup_before <- cleanup_count()
   before <- release_test_count()
-  err <- tryCatch(
-    .Call(framework_symbol, release_test_vector(), quote(stop(condition)), condition_env),
-    charport_test_error = identity
-  )
-  stopifnot(identical(err$code, 42L), identical(conditionMessage(err), "injected R error"))
-  stopifnot(identical(release_test_count(), before + 1L))
-  stopifnot(identical(cleanup_count(), cleanup_before + 1L))
-
-  cleanup_before <- cleanup_count()
-  before <- release_test_count()
-  out <- .Call(framework_symbol, release_test_vector(), NULL, baseenv())
+  out <- .Call(framework_symbol, release_test_vector())
   stopifnot(is_charvec(out), identical(as.character(out), c("alpha", "beta")))
   stopifnot(identical(release_test_count(), before + 1L))
   stopifnot(identical(cleanup_count(), cleanup_before + 1L))
 
-  cleanup_before <- cleanup_count()
-  err <- tryCatch(.Call(framework_symbol, NULL, NULL, NULL), error = identity)
-  stopifnot(grepl("injected builder C\\+\\+ error", conditionMessage(err)))
-  stopifnot(identical(cleanup_count(), cleanup_before + 1L))
+  wrapped <- .Call(wrap_symbol)
+  stopifnot(is_charvec(wrapped), identical(as.character(wrapped), "wrapped"))
 
   cleanup_before <- cleanup_count()
-  err <- tryCatch(.Call(framework_symbol, 1:3, NULL, baseenv()), error = identity)
+  err <- tryCatch(.Call(framework_symbol, 1:3), error = identity)
   stopifnot(grepl("character", conditionMessage(err)))
   stopifnot(identical(cleanup_count(), cleanup_before + 1L))
 
-  release_test_init_failure(1L)
+  release_test_init_condition(condition)
   cleanup_before <- cleanup_count()
-  err <- tryCatch(
-    .Call(framework_symbol, release_test_vector(), NULL, baseenv()),
-    error = identity,
-    finally = release_test_init_failure(0L)
+  err <- tryCatch({
+    .Call(framework_symbol, release_test_vector())
+    NULL
+  }, charport_test_error = identity, finally = release_test_init_condition(NULL))
+  stopifnot(
+    identical(err$code, 42L),
+    identical(conditionMessage(err), "injected R error")
   )
-  stopifnot(grepl("injected provider init R error", conditionMessage(err)))
   stopifnot(identical(cleanup_count(), cleanup_before + 1L))
-
-  # hand-written r_boundary in the same TU: the framework backend's unwind
-  # exception must continue the original R condition, not a generic error
-  boundary_symbol <- getNativeSymbolInfo(
-    paste0("C_", tolower(framework), "_charport_boundary"),
-    PACKAGE = framework_dlls[[framework]][["name"]]
-  )
-  cleanup_before <- cleanup_count()
-  before <- release_test_count()
-  err <- tryCatch(
-    .Call(boundary_symbol, release_test_vector(), quote(stop(condition)), condition_env),
-    charport_test_error = identity
-  )
-  stopifnot(identical(err$code, 42L), identical(conditionMessage(err), "injected R error"))
-  stopifnot(identical(release_test_count(), before + 1L))
-  stopifnot(identical(cleanup_count(), cleanup_before + 1L))
-
-  out <- .Call(boundary_symbol, release_test_vector(), quote("ok"), baseenv())
-  stopifnot(identical(out, "ok"))
 }
 
-catn("R errors during provider init unwind consumer state")
-unwind_probe_reset()
-release_test_init_failure(1L)
-err <- tryCatch(
-  reader_open(release_test_vector()),
-  error = identity,
-  finally = release_test_init_failure(0L)
+catn("ordinary Reader construction follows the provider's R error")
+release_test_init_condition(condition)
+err <- tryCatch({
+  reader_open(release_test_vector())
+  NULL
+}, charport_test_error = identity, finally = release_test_init_condition(NULL))
+stopifnot(
+  identical(err$code, 42L),
+  identical(conditionMessage(err), "injected R error")
 )
-stopifnot(grepl("injected provider init R error", conditionMessage(err)))
-stopifnot(identical(unwind_probe_count(), 1L))
+
+catn("a consumer boundary can protect acquisition while borrows are live")
+unwind_probe_reset()
+before <- release_test_count()
+stopifnot(is.null(reader_open_protected(
+  release_test_vector(),
+  release_test_vector()
+)))
+stopifnot(
+  identical(release_test_count(), before + 2L),
+  identical(unwind_probe_count(), 1L)
+)
+
+unwind_probe_reset()
+before <- release_test_count()
+expect_error_matching(
+  reader_open_protected(release_test_vector(), 1:3),
+  "character"
+)
+stopifnot(
+  identical(release_test_count(), before + 1L),
+  identical(unwind_probe_count(), 1L)
+)
+
+catn("access statuses become C++ exceptions and release the Reader")
+release_vector <- release_test_vector()
+expected_kind <- c(`1` = 1L, `2` = 2L, `3` = 3L, `99` = 1L)
+for (status in as.integer(names(expected_kind))) {
+  release_test_access_status(status)
+  before <- release_test_count()
+  kind <- reader_access_kind(release_vector, 0L)
+  release_test_access_status(0L)
+  stopifnot(
+    identical(kind, unname(expected_kind[[as.character(status)]])),
+    identical(release_test_count(), before + 1L)
+  )
+}
+
+release_test_access_status(3L)
+expect_error_matching(
+  reader_access_throw(release_vector),
+  "charport Reader access is out of range"
+)
+release_test_access_status(0L)
+
+release_test_access_status(1L)
+for (path in 0:8) {
+  before <- release_test_count()
+  stopifnot(identical(reader_access_kind(release_vector, path), 1L))
+  stopifnot(identical(release_test_count(), before + 1L))
+}
+expect_error_matching(reader_access_throw(release_vector), "charport Reader access failed")
+release_test_access_status(0L)
+
+before <- release_test_count()
+stopifnot(isTRUE(reader_access_recovers(release_vector)))
+stopifnot(identical(release_test_count(), before + 1L))
+stopifnot(identical(
+  vapply(0:4, convert_current_exception_to_status, integer(1)),
+  c(0L, 1L, 2L, 3L, 1L)
+))
 
 catn("C++ errors return through R frames before conversion")
 unwind_probe_reset()
@@ -277,6 +380,26 @@ catn("builder stores every reader view verbatim (ascii/bytes/NA)")
 plain <- c("abc", NA, "", b, "zz")
 out <- rebuild(plain, 2L)
 stopifnot(is_charvec(out), marks_identical(out, plain))
+
+catn("C bulk construction copies pointer, length and encoding arrays")
+stopifnot(isTRUE(c_header_probe()))
+c_input <- c("abc", NA, "", w_utf8[[1L]], w_latin1[[6L]], b)
+out <- c_from_views(c_input)
+stopifnot(is_charvec(out), marks_identical(out, c_input))
+out <- c_from_views(character())
+stopifnot(is_charvec(out), identical(as.character(out), character()))
+expect_error_matching(
+  .Call(c_consumer_symbol("C_charport_c_from_views_bad_length")),
+  "negative length"
+)
+expect_error_matching(
+  .Call(c_consumer_symbol("C_charport_c_from_views_bad_encoding")),
+  "invalid encoding"
+)
+expect_error_matching(
+  .Call(c_consumer_symbol("C_charport_c_from_views_null_arrays")),
+  "must not be NULL"
+)
 
 catn("latin1 views pass through the builder unchanged (no policy, no error)")
 latin1_word <- w_latin1[which(Encoding(w_latin1) == "latin1")[1L]]

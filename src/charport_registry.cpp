@@ -47,74 +47,85 @@ void direct_fill_byteview(SEXP cs, R_xlen_t out_i, const char ** out_ptrs,
   out_lens[out_i] = LENGTH(cs);
 }
 
-void direct_strviews_range(void * state, R_xlen_t start, R_xlen_t size,
-                           const char ** out_ptrs, int * out_lens,
-                           cetype_ext_t * out_encs) {
+int direct_strviews_range(
+    void * state, R_xlen_t start, R_xlen_t size, const char ** out_ptrs,
+    int * out_lens, cetype_ext_t * out_encs) {
   const SEXP * ptr = static_cast<const SEXP *>(state);
   for(R_xlen_t j = 0; j < size; ++j) {
     direct_fill_strview(ptr[start + j], j, out_ptrs, out_lens, out_encs);
   }
+  return CHARPORT_STATUS_OK;
 }
 
-void direct_strviews_index(void * state, const R_xlen_t * indices, R_xlen_t size,
-                           const char ** out_ptrs, int * out_lens,
-                           cetype_ext_t * out_encs) {
+int direct_strviews_index(
+    void * state, const R_xlen_t * indices, R_xlen_t size,
+    const char ** out_ptrs, int * out_lens, cetype_ext_t * out_encs) {
   const SEXP * ptr = static_cast<const SEXP *>(state);
   for(R_xlen_t j = 0; j < size; ++j) {
     direct_fill_strview(ptr[indices[j]], j, out_ptrs, out_lens, out_encs);
   }
+  return CHARPORT_STATUS_OK;
 }
 
-void direct_byteviews_range(void * state, R_xlen_t start, R_xlen_t size,
-                            const char ** out_ptrs, int * out_lens) {
+int direct_byteviews_range(
+    void * state, R_xlen_t start, R_xlen_t size, const char ** out_ptrs,
+    int * out_lens) {
   const SEXP * ptr = static_cast<const SEXP *>(state);
   for(R_xlen_t j = 0; j < size; ++j) {
     direct_fill_byteview(ptr[start + j], j, out_ptrs, out_lens);
   }
+  return CHARPORT_STATUS_OK;
 }
 
-void direct_byteviews_index(void * state, const R_xlen_t * indices, R_xlen_t size,
-                            const char ** out_ptrs, int * out_lens) {
+int direct_byteviews_index(
+    void * state, const R_xlen_t * indices, R_xlen_t size,
+    const char ** out_ptrs, int * out_lens) {
   const SEXP * ptr = static_cast<const SEXP *>(state);
   for(R_xlen_t j = 0; j < size; ++j) {
     direct_fill_byteview(ptr[indices[j]], j, out_ptrs, out_lens);
   }
+  return CHARPORT_STATUS_OK;
 }
 
-void direct_lengths_range(void * state, R_xlen_t start, R_xlen_t size,
-                          int * out_lens) {
+int direct_lengths_range(
+    void * state, R_xlen_t start, R_xlen_t size, int * out_lens) {
   const SEXP * ptr = static_cast<const SEXP *>(state);
   for(R_xlen_t j = 0; j < size; ++j) {
     const SEXP cs = ptr[start + j];
     out_lens[j] = cs == NA_STRING ? NA_INTEGER : LENGTH(cs);
   }
+  return CHARPORT_STATUS_OK;
 }
 
-void direct_lengths_index(void * state, const R_xlen_t * indices, R_xlen_t size,
-                          int * out_lens) {
+int direct_lengths_index(
+    void * state, const R_xlen_t * indices, R_xlen_t size, int * out_lens) {
   const SEXP * ptr = static_cast<const SEXP *>(state);
   for(R_xlen_t j = 0; j < size; ++j) {
     const SEXP cs = ptr[indices[j]];
     out_lens[j] = cs == NA_STRING ? NA_INTEGER : LENGTH(cs);
   }
+  return CHARPORT_STATUS_OK;
 }
 
-void direct_encodings_range(void * state, R_xlen_t start, R_xlen_t size,
-                            cetype_ext_t * out_encs) {
+int direct_encodings_range(
+    void * state, R_xlen_t start, R_xlen_t size, cetype_ext_t * out_encs) {
   const SEXP * ptr = static_cast<const SEXP *>(state);
   for(R_xlen_t j = 0; j < size; ++j) {
     const SEXP cs = ptr[start + j];
     out_encs[j] = cs == NA_STRING ? cetype_ext_t::CE_NA : cpi::classify_charsxp(cs);
   }
+  return CHARPORT_STATUS_OK;
 }
 
-void direct_encodings_index(void * state, const R_xlen_t * indices, R_xlen_t size,
-                            cetype_ext_t * out_encs) {
+int direct_encodings_index(
+    void * state, const R_xlen_t * indices, R_xlen_t size,
+    cetype_ext_t * out_encs) {
   const SEXP * ptr = static_cast<const SEXP *>(state);
   for(R_xlen_t j = 0; j < size; ++j) {
     const SEXP cs = ptr[indices[j]];
     out_encs[j] = cs == NA_STRING ? cetype_ext_t::CE_NA : cpi::classify_charsxp(cs);
   }
+  return CHARPORT_STATUS_OK;
 }
 
 const altrep_entry * find_registered_altrep(SEXP x) {
@@ -388,5 +399,9 @@ extern "C" void charport_registry_init(DllInfo * dll) {
                       reinterpret_cast<DL_FUNC>(&charport_abi_version));
   R_RegisterCCallable("charport", "charport_charvec_wrap",
                       reinterpret_cast<DL_FUNC>(&charport_charvec_wrap));
+  R_RegisterCCallable(
+    "charport", "charport_charvec_from_views",
+    reinterpret_cast<DL_FUNC>(&charport_charvec_from_views_impl)
+  );
   (void)dll;
 }

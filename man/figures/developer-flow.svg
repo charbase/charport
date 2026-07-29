@@ -76,9 +76,10 @@
   <text x="900" y="170" text-anchor="middle" class="muted">constructed from SEXP</text>
   <text x="900" y="189" text-anchor="middle" class="muted">resolves read path once</text>
 
-  <rect x="790" y="256" width="220" height="78" rx="10" class="lane"/>
+  <rect x="790" y="256" width="220" height="96" rx="10" class="lane"/>
   <text x="900" y="288" text-anchor="middle" class="mono">StrView</text>
   <text x="900" y="310" text-anchor="middle" class="muted">ptr + len + enc</text>
+  <text x="900" y="332" text-anchor="middle" class="muted">(non-materializing)</text>
 
   <rect x="790" y="388" width="220" height="52" rx="10" class="lane"/>
   <text x="900" y="420" text-anchor="middle" class="label">Consumer algorithm</text>
@@ -93,7 +94,7 @@
   <path d="M290 414 C345 414 346 306 402 306" class="arrow"/>
 
   <path d="M900 198 V252" class="arrow"/>
-  <path d="M900 334 V382" class="arrow"/>
+  <path d="M900 352 V382" class="arrow"/>
 
   <path d="M790 156 H678" class="arrow"/>
   <rect x="701" y="128" width="64" height="23" rx="7" class="echip"/>

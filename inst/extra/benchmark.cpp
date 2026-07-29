@@ -1,6 +1,7 @@
 // Benchmark kernels, compiled at bench time with R CMD SHLIB.
 
 #include "charport.h"
+#include "consumer-boundary.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -20,7 +21,7 @@ bool corpus_ready = false;
 
 template<typename Fn>
 SEXP guarded(const char * operation, Fn fn) {
-  return charport::r_boundary(operation, fn);
+  return charport_consumer::boundary(operation, fn);
 }
 
 static void join_all(std::vector<std::thread> & threads) {
@@ -48,7 +49,7 @@ static SEXP hash_to_sexp(uint64_t h, R_xlen_t n_na) {
 }
 
 static SEXP protected_hash_to_sexp(uint64_t h, R_xlen_t n_na) {
-  return charport::unwind_protect([&]() -> SEXP {
+  return charport_consumer::unwind_protect([&]() -> SEXP {
     return hash_to_sexp(h, n_na);
   });
 }
@@ -191,14 +192,14 @@ extern "C" SEXP C_prepare_data_for_benchmark(SEXP path_) {
 
     corpus_ready = true;
     buf.reset();
-    return charport::unwind_protect([]() -> SEXP { return corpus_info(); });
+    return charport_consumer::unwind_protect([]() -> SEXP { return corpus_info(); });
   });
 }
 
 extern "C" SEXP C_bench_SET_STRING_ELT(void) {
   return guarded("SET_STRING_ELT", []() -> SEXP {
     require_corpus();
-    return charport::unwind_protect([]() -> SEXP {
+    return charport_consumer::unwind_protect([]() -> SEXP {
       SEXP out = PROTECT(
         Rf_allocVector(STRSXP, static_cast<R_xlen_t>(corpus_lines.size()))
       );
@@ -383,7 +384,7 @@ extern "C" SEXP C_probe_charport_Reader_length_sum(SEXP x) {
       const int len = r.length(i);
       if(len >= 0) total += static_cast<double>(len);
     }
-    return charport::unwind_protect(
+    return charport_consumer::unwind_protect(
       [total]() -> SEXP { return Rf_ScalarReal(total); }
     );
   });
@@ -399,7 +400,7 @@ extern "C" SEXP C_probe_charport_Reader_length_sum_block1(SEXP x) {
       r.lengths(i, 1, &len);
       if(len >= 0) total += static_cast<double>(len);
     }
-    return charport::unwind_protect(
+    return charport_consumer::unwind_protect(
       [total]() -> SEXP { return Rf_ScalarReal(total); }
     );
   });
@@ -422,7 +423,7 @@ extern "C" SEXP C_probe_charport_Reader_length_sum_range(SEXP x) {
         if(value >= 0) total += static_cast<double>(value);
       }
     }
-    return charport::unwind_protect(
+    return charport_consumer::unwind_protect(
       [total]() -> SEXP { return Rf_ScalarReal(total); }
     );
   });

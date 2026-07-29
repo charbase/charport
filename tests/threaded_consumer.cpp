@@ -9,8 +9,9 @@
 // Worker exceptions are caught in the worker and re-raised after the join.
 
 #include "charport.h"
+#include "consumer-boundary.h"
 
-#include <cstdio>
+#include <cstring>
 #include <exception>
 #include <stdexcept>
 #include <thread>
@@ -20,7 +21,7 @@ namespace {
 
 template <typename Fun>
 SEXP guarded(const char * op, Fun fun) {
-  return charport::r_boundary(op, fun);
+  return charport_consumer::boundary(op, fun);
 }
 
 void join_all(std::vector<std::thread> & threads) {
@@ -29,6 +30,17 @@ void join_all(std::vector<std::thread> & threads) {
       thread.join();
     }
   }
+}
+
+int thread_error_strviews(
+    void *, R_xlen_t, R_xlen_t size, const char ** out_ptrs,
+    int * out_lens, cetype_ext_t * out_encodings) {
+  for(R_xlen_t i = 0; i < size; ++i) {
+    out_ptrs[i] = nullptr;
+    out_lens[i] = NA_INTEGER;
+    out_encodings[i] = cetype_ext_t::CE_NA;
+  }
+  return CHARPORT_STATUS_ERROR;
 }
 
 } // namespace
@@ -149,7 +161,7 @@ SEXP C_consumer_threaded_split(SEXP x, SEXP n_threads_) {
       }
     }
 
-    return charport::unwind_protect([&]() -> SEXP {
+    return charport_consumer::unwind_protect([&]() -> SEXP {
       SEXP out = PROTECT(Rf_allocVector(VECSXP, static_cast<R_xlen_t>(k)));
       for(int j = 0; j < k; ++j) {
         SET_VECTOR_ELT(
@@ -196,6 +208,55 @@ SEXP C_consumer_worker_throws(void) {
       }
     }
     return b.to_sexp();
+  });
+}
+
+SEXP C_consumer_threaded_access_errors(void) {
+  return guarded("threaded_access_errors", []() -> SEXP {
+    charport_reader raw{};
+    raw.n = 2;
+    raw.range.strviews = thread_error_strviews;
+    raw.capabilities = charport_reader_capabilities{false, true};
+    charport::Reader reader(raw);
+
+    std::vector<std::exception_ptr> errors(2);
+    std::vector<std::thread> threads;
+    threads.reserve(2);
+    try {
+      for(R_xlen_t i = 0; i < 2; ++i) {
+        threads.emplace_back([&reader, &errors, i]() {
+          try {
+            (void)reader.view(i);
+          } catch(...) {
+            errors[static_cast<size_t>(i)] = std::current_exception();
+          }
+        });
+      }
+    } catch(...) {
+      join_all(threads);
+      throw;
+    }
+    join_all(threads);
+
+    bool ok = true;
+    for(size_t i = 0; i < errors.size(); ++i) {
+      if(!errors[i]) {
+        ok = false;
+        continue;
+      }
+      try {
+        std::rethrow_exception(errors[i]);
+      } catch(const std::runtime_error & error) {
+        ok = ok &&
+          std::strcmp(error.what(), "charport Reader access failed") == 0;
+      } catch(...) {
+        ok = false;
+      }
+    }
+
+    return charport_consumer::unwind_protect(
+      [ok]() -> SEXP { return Rf_ScalarLogical(ok ? TRUE : FALSE); }
+    );
   });
 }
 

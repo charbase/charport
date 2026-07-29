@@ -15,6 +15,9 @@ charport_reader charport_resolve(SEXP x);
 charport_sexp_info charport_get_sexp_info(SEXP x);
 int charport_abi_version(void);
 SEXP charport_charvec_wrap(void * store);
+SEXP charport_charvec_from_views_impl(
+    R_xlen_t n, const char * const * ptrs, const int * lengths,
+    const cetype_ext_t * encodings);
 
 SEXP C_as_charvec(SEXP x);
 SEXP C_charvec_alloc(SEXP n);

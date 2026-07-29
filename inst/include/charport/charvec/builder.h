@@ -8,8 +8,8 @@
 
 #include <algorithm>
 #include <cstring>
-#include <memory>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -29,6 +29,9 @@ namespace charport {
 namespace charvec {
 
 namespace builder_detail {
+
+static_assert(std::is_nothrow_move_constructible<Store>::value,
+              "charvec Store transfer must not throw");
 
 constexpr size_t min_multi_string_slice_bytes() noexcept { return 64; }
 constexpr size_t max_initial_slice_bytes() noexcept { return 16U << 10; }
@@ -108,7 +111,14 @@ inline void copy_record(Shard & shard, components::RecordTable & records,
   }
 }
 
-inline charport_charvec_wrap_t wrap_callable() {
+inline size_t checked_vector_size(R_xlen_t n) {
+  if(n < 0) {
+    throw std::runtime_error("charvec builder: negative length");
+  }
+  return static_cast<size_t>(n);
+}
+
+inline charport_charvec_wrap_t wrap_callable() noexcept {
   static charport_charvec_wrap_t fn = nullptr;
   if(fn == nullptr) {
     fn = reinterpret_cast<charport_charvec_wrap_t>(
@@ -118,44 +128,57 @@ inline charport_charvec_wrap_t wrap_callable() {
   return fn;
 }
 
-inline SEXP wrap_store(Store && source) {
+inline SEXP wrap_store(Store & source) noexcept {
   charport_charvec_wrap_t wrap = wrap_callable();
-  // This is a terminal ownership transfer, like the raw ALTREP construction
-  // used by vroom and Arrow. Reader acquisition remains unwind-protected;
-  // Builder conversion follows the conventional R extension failure model,
-  // including the rare case where no external pointer can be allocated.
-  return wrap(new Store(std::move(source)));
+  return wrap(&source);
 }
 
 } // namespace builder_detail
 
-template<typename Backend>
-class BasicBuilder {
-public:
-  explicit BasicBuilder(R_xlen_t n) {
-    reset(n);
-  }
+inline SEXP wrap(Store && store) noexcept {
+  return builder_detail::wrap_store(store);
+}
 
-  BasicBuilder(const BasicBuilder &) = delete;
-  BasicBuilder & operator=(const BasicBuilder &) = delete;
-  BasicBuilder(BasicBuilder &&) noexcept = default;
-  BasicBuilder & operator=(BasicBuilder &&) noexcept = default;
+#if defined(RCPP_VERSION)
+inline SEXP wrap_with_rcpp(Store && store) {
+  return charport::detail::call_with_rcpp(
+    [&]() -> SEXP { return wrap(std::move(store)); }
+  );
+}
+#endif
+
+#if defined(CHARPORT_CPP11_INCLUDED)
+inline SEXP wrap_with_cpp11(Store && store) {
+  return charport::detail::call_with_cpp11(
+    [&]() -> SEXP { return wrap(std::move(store)); }
+  );
+}
+#endif
+
+class Builder {
+public:
+  explicit Builder(R_xlen_t n)
+    : store_(builder_detail::checked_vector_size(n), 0), shard_() {}
+
+  Builder(const Builder &) = delete;
+  Builder & operator=(const Builder &) = delete;
+  Builder(Builder &&) noexcept = default;
+  Builder & operator=(Builder &&) noexcept = default;
 
   void reset(R_xlen_t n) {
-    if(n < 0) {
-      throw std::runtime_error("charvec builder: negative length");
-    }
-    records_ = components::RecordTable(static_cast<size_t>(n));
+    Store next(builder_detail::checked_vector_size(n), 0);
+    store_ = std::move(next);
     shard_ = builder_detail::Shard();
   }
 
   void set(R_xlen_t i, const char * ptr, size_t len, cetype_ext_t enc) {
+    components::RecordTable & records = store_.records;
     if(ptr == nullptr || enc == cetype_ext_t::CE_NA) {
       builder_detail::copy_record(
-        shard_, records_, static_cast<size_t>(i), nullptr, 0, cetype_ext_t::CE_NA);
+        shard_, records, static_cast<size_t>(i), nullptr, 0, cetype_ext_t::CE_NA);
       return;
     }
-    builder_detail::copy_record(shard_, records_, static_cast<size_t>(i), ptr, len, enc);
+    builder_detail::copy_record(shard_, records, static_cast<size_t>(i), ptr, len, enc);
   }
 
   void set(R_xlen_t i, const StrView & value) {
@@ -173,63 +196,73 @@ public:
   CHARPORT_CHARVEC_NODISCARD
   char * reserve(R_xlen_t i, size_t len, cetype_ext_t enc) {
     return builder_detail::fill_record(
-      shard_, records_, static_cast<size_t>(i), len, enc);
+      shard_, store_.records, static_cast<size_t>(i), len, enc);
   }
 
-  Store release_store() {
-    Store out(0, 0);
-    out.records = std::move(records_);
-    out.slices.prepend(shard_.slices);
-    shard_ = builder_detail::Shard();
+  Store release_store() noexcept {
+    finish_store();
+    Store out(std::move(store_));
     return out;
   }
 
-  SEXP to_sexp() {
-    return builder_detail::wrap_store(release_store());
+  SEXP to_sexp() noexcept {
+    finish_store();
+    return wrap(std::move(store_));
   }
 
+#if defined(RCPP_VERSION)
+  SEXP to_sexp_with_rcpp();
+#endif
+#if defined(CHARPORT_CPP11_INCLUDED)
+  SEXP to_sexp_with_cpp11();
+#endif
+
 private:
-  components::RecordTable records_;
+  void finish_store() noexcept {
+    store_.slices.prepend(shard_.slices);
+    shard_ = builder_detail::Shard();
+  }
+
+  Store store_;
   builder_detail::Shard shard_;
 };
 
-template<typename Backend>
-class BasicParallelBuilder {
+class ParallelBuilder {
 public:
-  BasicParallelBuilder(R_xlen_t n, size_t n_shards) {
+  ParallelBuilder(R_xlen_t n, size_t n_shards) : store_(), shards_() {
     reset(n, n_shards);
   }
 
-  BasicParallelBuilder(const BasicParallelBuilder &) = delete;
-  BasicParallelBuilder & operator=(const BasicParallelBuilder &) = delete;
-  BasicParallelBuilder(BasicParallelBuilder &&) noexcept = default;
-  BasicParallelBuilder & operator=(BasicParallelBuilder &&) noexcept = default;
+  ParallelBuilder(const ParallelBuilder &) = delete;
+  ParallelBuilder & operator=(const ParallelBuilder &) = delete;
+  ParallelBuilder(ParallelBuilder &&) noexcept = default;
+  ParallelBuilder & operator=(ParallelBuilder &&) noexcept = default;
 
   void reset(R_xlen_t n, size_t n_shards) {
-    if(n < 0) {
-      throw std::runtime_error("charvec builder: negative length");
-    }
     if(n_shards == 0) {
       throw std::runtime_error("charvec builder: n_shards must be >= 1");
     }
-    records_ = components::RecordTable(static_cast<size_t>(n));
-    shards_.clear();
-    shards_.reserve(n_shards);
+    Store next_store(builder_detail::checked_vector_size(n), 0);
+    std::vector<builder_detail::Shard> next_shards;
+    next_shards.reserve(n_shards);
     for(size_t i = 0; i < n_shards; ++i) {
-      shards_.emplace_back();
+      next_shards.emplace_back();
     }
+    store_ = std::move(next_store);
+    shards_ = std::move(next_shards);
   }
 
   size_t n_shards() const noexcept { return shards_.size(); }
 
   void set(size_t shard, R_xlen_t i, const char * ptr, size_t len, cetype_ext_t enc) {
+    components::RecordTable & records = store_.records;
     builder_detail::Shard & s = shard_at(shard);
     if(ptr == nullptr || enc == cetype_ext_t::CE_NA) {
       builder_detail::copy_record(
-        s, records_, static_cast<size_t>(i), nullptr, 0, cetype_ext_t::CE_NA);
+        s, records, static_cast<size_t>(i), nullptr, 0, cetype_ext_t::CE_NA);
       return;
     }
-    builder_detail::copy_record(s, records_, static_cast<size_t>(i), ptr, len, enc);
+    builder_detail::copy_record(s, records, static_cast<size_t>(i), ptr, len, enc);
   }
 
   void set(size_t shard, R_xlen_t i, const StrView & value) {
@@ -246,23 +279,28 @@ public:
 
   CHARPORT_CHARVEC_NODISCARD
   char * reserve(size_t shard, R_xlen_t i, size_t len, cetype_ext_t enc) {
+    components::RecordTable & records = store_.records;
     return builder_detail::fill_record(
-      shard_at(shard), records_, static_cast<size_t>(i), len, enc);
+      shard_at(shard), records, static_cast<size_t>(i), len, enc);
   }
 
-  Store release_store() {
-    Store out(0, 0);
-    out.records = std::move(records_);
-    for(builder_detail::Shard & shard : shards_) {
-      out.slices.prepend(shard.slices);
-    }
-    shards_.clear();
+  Store release_store() noexcept {
+    finish_store();
+    Store out(std::move(store_));
     return out;
   }
 
-  SEXP to_sexp() {
-    return builder_detail::wrap_store(release_store());
+  SEXP to_sexp() noexcept {
+    finish_store();
+    return wrap(std::move(store_));
   }
+
+#if defined(RCPP_VERSION)
+  SEXP to_sexp_with_rcpp();
+#endif
+#if defined(CHARPORT_CPP11_INCLUDED)
+  SEXP to_sexp_with_cpp11();
+#endif
 
 private:
   builder_detail::Shard & shard_at(size_t shard) {
@@ -272,19 +310,25 @@ private:
     return shards_[shard];
   }
 
-  components::RecordTable records_;
+  void finish_store() noexcept {
+    for(builder_detail::Shard & shard : shards_) {
+      store_.slices.prepend(shard.slices);
+      shard = builder_detail::Shard();
+    }
+  }
+
+  Store store_;
   std::vector<builder_detail::Shard> shards_;
 };
 
-template<typename Backend>
-class BasicGrowableBuilder {
+class GrowableBuilder {
 public:
-  BasicGrowableBuilder() = default;
+  GrowableBuilder() = default;
 
-  BasicGrowableBuilder(const BasicGrowableBuilder &) = delete;
-  BasicGrowableBuilder & operator=(const BasicGrowableBuilder &) = delete;
-  BasicGrowableBuilder(BasicGrowableBuilder &&) noexcept = default;
-  BasicGrowableBuilder & operator=(BasicGrowableBuilder &&) noexcept = default;
+  GrowableBuilder(const GrowableBuilder &) = delete;
+  GrowableBuilder & operator=(const GrowableBuilder &) = delete;
+  GrowableBuilder(GrowableBuilder &&) noexcept = default;
+  GrowableBuilder & operator=(GrowableBuilder &&) noexcept = default;
 
   void append(const StrView & value) {
     if(value.is_na()) {
@@ -308,44 +352,82 @@ public:
   CHARPORT_CHARVEC_NODISCARD
   char * append_reserve(size_t len, cetype_ext_t enc) {
     const int stored_len = components::checked_string_size(len, "stored string length");
-    records_.reserve_for_append();
+    components::RecordTable & records = store_.records;
+    records.reserve_for_append();
     if(enc == cetype_ext_t::CE_NA) {
-      records_.push_back_reserved(components::na_record());
+      records.push_back_reserved(components::na_record());
       return nullptr;
     }
     if(stored_len == 0) {
-      records_.push_back_reserved(components::empty_record(enc));
+      records.push_back_reserved(components::empty_record(enc));
       return const_cast<char*>(components::empty_data());
     }
 
     char * dest = builder_detail::allocate_bytes(
       shard_, static_cast<uint32_t>(stored_len), 0);
-    records_.push_back_reserved(make_strview(dest, stored_len, enc));
+    records.push_back_reserved(make_strview(dest, stored_len, enc));
     return dest;
   }
 
   size_t size() const noexcept {
-    return records_.size();
+    return store_.records.size();
   }
 
-  Store release_store() {
-    Store out(0, 0);
-    out.records = std::move(records_);
-    out.slices.prepend(shard_.slices);
-    shard_ = builder_detail::Shard();
+  Store release_store() noexcept {
+    finish_store();
+    Store out(std::move(store_));
     return out;
   }
 
-  SEXP to_sexp() {
-    return builder_detail::wrap_store(release_store());
+  SEXP to_sexp() noexcept {
+    finish_store();
+    return wrap(std::move(store_));
   }
 
+#if defined(RCPP_VERSION)
+  SEXP to_sexp_with_rcpp();
+#endif
+#if defined(CHARPORT_CPP11_INCLUDED)
+  SEXP to_sexp_with_cpp11();
+#endif
+
 private:
-  // Growing RecordTable directly lets release_store() move the three metadata
-  // arrays into Store without a final allocation and repack.
-  components::RecordTable records_;
+  void finish_store() noexcept {
+    store_.slices.prepend(shard_.slices);
+    shard_ = builder_detail::Shard();
+  }
+
+  Store store_;
   builder_detail::Shard shard_;
 };
+
+#if defined(RCPP_VERSION)
+inline SEXP Builder::to_sexp_with_rcpp() {
+  return charport::detail::call_with_rcpp([&]() -> SEXP { return to_sexp(); });
+}
+
+inline SEXP ParallelBuilder::to_sexp_with_rcpp() {
+  return charport::detail::call_with_rcpp([&]() -> SEXP { return to_sexp(); });
+}
+
+inline SEXP GrowableBuilder::to_sexp_with_rcpp() {
+  return charport::detail::call_with_rcpp([&]() -> SEXP { return to_sexp(); });
+}
+#endif
+
+#if defined(CHARPORT_CPP11_INCLUDED)
+inline SEXP Builder::to_sexp_with_cpp11() {
+  return charport::detail::call_with_cpp11([&]() -> SEXP { return to_sexp(); });
+}
+
+inline SEXP ParallelBuilder::to_sexp_with_cpp11() {
+  return charport::detail::call_with_cpp11([&]() -> SEXP { return to_sexp(); });
+}
+
+inline SEXP GrowableBuilder::to_sexp_with_cpp11() {
+  return charport::detail::call_with_cpp11([&]() -> SEXP { return to_sexp(); });
+}
+#endif
 
 } // namespace charvec
 } // namespace charport

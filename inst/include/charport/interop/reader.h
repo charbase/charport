@@ -16,10 +16,6 @@
 
 #include "types.h"
 
-#ifdef __cplusplus
-#include "unwind.h"
-#endif
-
 #define CHARPORT_ABI_VERSION 1
 
 #ifdef __cplusplus
@@ -28,44 +24,43 @@ extern "C" {
 
 typedef void * (*charport_reader_init_fn)(SEXP x);
 typedef void (*charport_reader_release_fn)(void * state);
-typedef void (*charport_reader_strviews_range_fn)(void * state,
-                                                  R_xlen_t start,
-                                                  R_xlen_t size,
-                                                  const char ** out_ptrs,
-                                                  int * out_lens,
-                                                  cetype_ext_t * out_encs);
-typedef void (*charport_reader_strviews_index_fn)(void * state,
-                                                  const R_xlen_t * indices,
-                                                  R_xlen_t size,
-                                                  const char ** out_ptrs,
-                                                  int * out_lens,
-                                                  cetype_ext_t * out_encs);
-typedef void (*charport_reader_byteviews_range_fn)(void * state,
-                                                   R_xlen_t start,
-                                                   R_xlen_t size,
-                                                   const char ** out_ptrs,
-                                                   int * out_lens);
-typedef void (*charport_reader_byteviews_index_fn)(void * state,
-                                                   const R_xlen_t * indices,
-                                                   R_xlen_t size,
-                                                   const char ** out_ptrs,
-                                                   int * out_lens);
-typedef void (*charport_reader_lengths_range_fn)(void * state,
-                                                 R_xlen_t start,
-                                                 R_xlen_t size,
-                                                 int * out_lens);
-typedef void (*charport_reader_lengths_index_fn)(void * state,
-                                                 const R_xlen_t * indices,
-                                                 R_xlen_t size,
-                                                 int * out_lens);
-typedef void (*charport_reader_encodings_range_fn)(void * state,
-                                                   R_xlen_t start,
-                                                   R_xlen_t size,
-                                                   cetype_ext_t * out_encs);
-typedef void (*charport_reader_encodings_index_fn)(void * state,
-                                                   const R_xlen_t * indices,
-                                                   R_xlen_t size,
-                                                   cetype_ext_t * out_encs);
+/*
+ * Access callbacks must not call R or let a C++ exception cross this ABI.
+ *
+ * Bounds are a caller precondition. Let n be charport_reader.n. Range calls
+ * require 0 <= start <= n and 0 <= size <= n - start. Indexed calls require
+ * size >= 0 and 0 <= indices[j] < n for every j. An empty range may start at
+ * n. These conditions avoid evaluating start + size, which could overflow.
+ *
+ * Providers may validate these bounds and return
+ * CHARPORT_STATUS_OUT_OF_RANGE. The providers shipped with charport do not
+ * validate them, so an invalid request to those providers has undefined
+ * behavior.
+ *
+ * Return zero on success. Output arrays are unspecified after a nonzero
+ * return.
+ */
+typedef int (*charport_reader_strviews_range_fn)(
+    void * state, R_xlen_t start, R_xlen_t size, const char ** out_ptrs,
+    int * out_lens, cetype_ext_t * out_encs);
+typedef int (*charport_reader_strviews_index_fn)(
+    void * state, const R_xlen_t * indices, R_xlen_t size,
+    const char ** out_ptrs, int * out_lens, cetype_ext_t * out_encs);
+typedef int (*charport_reader_byteviews_range_fn)(
+    void * state, R_xlen_t start, R_xlen_t size, const char ** out_ptrs,
+    int * out_lens);
+typedef int (*charport_reader_byteviews_index_fn)(
+    void * state, const R_xlen_t * indices, R_xlen_t size,
+    const char ** out_ptrs, int * out_lens);
+typedef int (*charport_reader_lengths_range_fn)(
+    void * state, R_xlen_t start, R_xlen_t size, int * out_lens);
+typedef int (*charport_reader_lengths_index_fn)(
+    void * state, const R_xlen_t * indices, R_xlen_t size, int * out_lens);
+typedef int (*charport_reader_encodings_range_fn)(
+    void * state, R_xlen_t start, R_xlen_t size, cetype_ext_t * out_encs);
+typedef int (*charport_reader_encodings_index_fn)(
+    void * state, const R_xlen_t * indices, R_xlen_t size,
+    cetype_ext_t * out_encs);
 
 typedef struct charport_reader_state_fns {
     charport_reader_init_fn init;
@@ -139,7 +134,61 @@ typedef void (*charport_unregister_altrep_t)(R_altrep_class_t cls);
 typedef charport_reader (*charport_resolve_t)(SEXP x);
 typedef charport_sexp_info (*charport_sexp_info_t)(SEXP x);
 typedef int (*charport_abi_version_t)(void);
+
+/*
+ * Store conversion hook used by the C++ charvec API. It moves from a
+ * caller-owned Store into a new Store owned by charport. It may raise an R
+ * error and does not throw a C++ exception.
+ */
 typedef SEXP (*charport_charvec_wrap_t)(void * store);
+typedef SEXP (*charport_charvec_from_views_t)(
+    R_xlen_t n, const char * const * ptrs, const int * lengths,
+    const cetype_ext_t * encodings);
+
+#ifndef __cplusplus
+static inline charport_reader charport_resolve(SEXP x) {
+  static charport_resolve_t fn = NULL;
+  if(fn == NULL) {
+    fn = (charport_resolve_t) R_GetCCallable("charport", "charport_resolve");
+  }
+  return fn(x);
+}
+
+static inline charport_sexp_info charport_get_sexp_info(SEXP x) {
+  static charport_sexp_info_t fn = NULL;
+  if(fn == NULL) {
+    fn = (charport_sexp_info_t)
+      R_GetCCallable("charport", "charport_sexp_info");
+  }
+  return fn(x);
+}
+
+static inline int charport_abi_version(void) {
+  static charport_abi_version_t fn = NULL;
+  if(fn == NULL) {
+    fn = (charport_abi_version_t)
+      R_GetCCallable("charport", "charport_abi_version");
+  }
+  return fn();
+}
+#endif
+
+static inline SEXP charport_charvec_from_views(
+    R_xlen_t n, const char * const * ptrs, const int * lengths,
+    const cetype_ext_t * encodings) {
+  static charport_charvec_from_views_t fn = NULL;
+  if(fn == NULL) {
+#ifdef __cplusplus
+    fn = reinterpret_cast<charport_charvec_from_views_t>(
+      R_GetCCallable("charport", "charport_charvec_from_views")
+    );
+#else
+    fn = (charport_charvec_from_views_t)
+      R_GetCCallable("charport", "charport_charvec_from_views");
+#endif
+  }
+  return fn(n, ptrs, lengths, encodings);
+}
 
 #ifdef __cplusplus
 } // extern "C"
@@ -147,8 +196,12 @@ typedef SEXP (*charport_charvec_wrap_t)(void * store);
 
 #ifdef __cplusplus
 
+#include <exception>
 #include <iterator>
+#include <new>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #if defined(_MSVC_LANG)
@@ -183,7 +236,37 @@ inline int loaded_abi_version() {
   return fn();
 }
 
+[[noreturn]] inline void throw_access_error(int status) {
+  if(status == CHARPORT_STATUS_NO_MEMORY) {
+    throw std::bad_alloc();
+  }
+  if(status == CHARPORT_STATUS_OUT_OF_RANGE) {
+    throw std::out_of_range("charport Reader access is out of range");
+  }
+  throw std::runtime_error("charport Reader access failed");
+}
+
+inline void check_access(int status) {
+  if(status != CHARPORT_STATUS_OK) {
+    throw_access_error(status);
+  }
+}
+
 } // namespace detail
+
+// Translate the active exception from inside a catch handler. A call with no
+// active exception terminates the process.
+inline int convert_current_exception_to_status() noexcept {
+  try {
+    throw;
+  } catch(const std::bad_alloc &) {
+    return CHARPORT_STATUS_NO_MEMORY;
+  } catch(const std::out_of_range &) {
+    return CHARPORT_STATUS_OUT_OF_RANGE;
+  } catch(...) {
+    return CHARPORT_STATUS_ERROR;
+  }
+}
 
 CHARPORT_READER_NODISCARD
 inline charport_reader resolve(SEXP x) {
@@ -196,15 +279,75 @@ inline charport_reader resolve(SEXP x) {
 
 namespace detail {
 
-template<typename Backend>
-inline charport_reader resolve_with(SEXP x) {
+#if defined(RCPP_VERSION) || defined(CHARPORT_CPP11_INCLUDED)
+template<typename Fn>
+struct framework_call_state {
+  Fn * fn;
+  std::exception_ptr error;
+};
+
+template<typename Fn>
+inline SEXP framework_call_body(void * data) noexcept {
+  framework_call_state<Fn> * state =
+    static_cast<framework_call_state<Fn> *>(data);
+  try {
+    return (*state->fn)();
+  } catch(...) {
+    // Framework unwind callbacks cross R's C frames before returning to C++.
+    state->error = std::current_exception();
+    return R_NilValue;
+  }
+}
+
+template<typename Fn>
+inline void finish_framework_call(framework_call_state<Fn> & state) {
+  if(state.error) {
+    std::rethrow_exception(state.error);
+  }
+}
+#endif
+
+#if defined(RCPP_VERSION)
+template<typename Fn>
+inline SEXP call_with_rcpp(Fn && fn) {
+  typedef typename std::remove_reference<Fn>::type fun_type;
+  framework_call_state<fun_type> state{&fn, std::exception_ptr()};
+  SEXP out = Rcpp::unwindProtect(&framework_call_body<fun_type>, &state);
+  finish_framework_call(state);
+  return out;
+}
+
+inline charport_reader resolve_with_rcpp(SEXP x) {
   charport_reader out{};
-  Backend::call([&]() -> SEXP {
+  call_with_rcpp([&]() -> SEXP {
     out = resolve(x);
     return R_NilValue;
   });
   return out;
 }
+#endif
+
+#if defined(CHARPORT_CPP11_INCLUDED)
+template<typename Fn>
+inline SEXP call_with_cpp11(Fn && fn) {
+  typedef typename std::remove_reference<Fn>::type fun_type;
+  framework_call_state<fun_type> state{&fn, std::exception_ptr()};
+  SEXP out = cpp11::unwind_protect([&]() -> SEXP {
+    return framework_call_body<fun_type>(&state);
+  });
+  finish_framework_call(state);
+  return out;
+}
+
+inline charport_reader resolve_with_cpp11(SEXP x) {
+  charport_reader out{};
+  call_with_cpp11([&]() -> SEXP {
+    out = resolve(x);
+    return R_NilValue;
+  });
+  return out;
+}
+#endif
 
 } // namespace detail
 
@@ -306,18 +449,25 @@ private:
   std::vector<cetype_ext_t> encs_;
 };
 
-template<typename Backend>
-class BasicReader {
+/*
+ * Accessors have the same bounds preconditions as the C callbacks above.
+ * Reader forwards requests without checking them, then translates any
+ * nonzero status reported by the provider to a C++ exception.
+ */
+class Reader {
 public:
-  explicit BasicReader(SEXP x) : r_(detail::resolve_with<Backend>(x)) {}
-  explicit BasicReader(charport_reader r) noexcept : r_(r) {}
-  ~BasicReader() noexcept { release_owned(); }
+  Reader() noexcept : r_{} {}
 
-  BasicReader(const BasicReader &) = delete;
-  BasicReader & operator=(const BasicReader &) = delete;
+  // Ordinary construction follows R error semantics during resolution.
+  explicit Reader(SEXP x) : r_(resolve(x)) {}
+  explicit Reader(charport_reader r) noexcept : r_(r) {}
+  ~Reader() noexcept { release_owned(); }
 
-  BasicReader(BasicReader && other) noexcept : r_(other.r_) { other.disown(); }
-  BasicReader & operator=(BasicReader && other) noexcept {
+  Reader(const Reader &) = delete;
+  Reader & operator=(const Reader &) = delete;
+
+  Reader(Reader && other) noexcept : r_(other.r_) { other.disown(); }
+  Reader & operator=(Reader && other) noexcept {
     if(this != &other) {
       release_owned();
       r_ = other.r_;
@@ -325,6 +475,20 @@ public:
     }
     return *this;
   }
+
+  // Resolve before replacing the current borrow. An R error leaves the
+  // current borrow unchanged.
+  void reset(SEXP x) {
+    Reader next(x);
+    *this = std::move(next);
+  }
+
+#if defined(RCPP_VERSION)
+  static Reader with_rcpp(SEXP x);
+#endif
+#if defined(CHARPORT_CPP11_INCLUDED)
+  static Reader with_cpp11(SEXP x);
+#endif
 
   R_xlen_t size() const noexcept { return r_.n; }
   bool persistent_views() const noexcept { return r_.capabilities.persistent_views; }
@@ -334,31 +498,39 @@ public:
   ByteView byteview(R_xlen_t i) const {
     const char * ptr = nullptr;
     int len = NA_INTEGER;
-    r_.range.byteviews(r_.state, i, 1, &ptr, &len);
+    const int status = r_.range.byteviews(r_.state, i, 1, &ptr, &len);
+    detail::check_access(status);
     return make_byteview(ptr, len);
   }
   int length(R_xlen_t i) const {
     int len = NA_INTEGER;
-    r_.range.lengths(r_.state, i, 1, &len);
+    const int status = r_.range.lengths(r_.state, i, 1, &len);
+    detail::check_access(status);
     return len;
   }
   cetype_ext_t encoding(R_xlen_t i) const {
     cetype_ext_t enc = cetype_ext_t::CE_NA;
-    r_.range.encodings(r_.state, i, 1, &enc);
+    const int status = r_.range.encodings(r_.state, i, 1, &enc);
+    detail::check_access(status);
     return enc;
   }
   StrView view(R_xlen_t i) const {
     const char * ptr = nullptr;
     int len = NA_INTEGER;
     cetype_ext_t enc = cetype_ext_t::CE_NA;
-    r_.range.strviews(r_.state, i, 1, &ptr, &len, &enc);
+    const int status =
+      r_.range.strviews(r_.state, i, 1, &ptr, &len, &enc);
+    detail::check_access(status);
     return make_strview(ptr, len, enc);
   }
   StrView operator[](R_xlen_t i) const { return view(i); }
 
   void views(R_xlen_t start, R_xlen_t size, const char ** out_ptrs,
              int * out_lens, cetype_ext_t * out_encs) const {
-    r_.range.strviews(r_.state, start, size, out_ptrs, out_lens, out_encs);
+    const int status = r_.range.strviews(
+      r_.state, start, size, out_ptrs, out_lens, out_encs
+    );
+    detail::check_access(status);
   }
   // The int-start overloads exist because a literal 0 start would otherwise
   // be ambiguous between R_xlen_t and the indexed const R_xlen_t * overloads.
@@ -376,7 +548,9 @@ public:
 
   void byteviews(R_xlen_t start, R_xlen_t size, const char ** out_ptrs,
                  int * out_lens) const {
-    r_.range.byteviews(r_.state, start, size, out_ptrs, out_lens);
+    const int status =
+      r_.range.byteviews(r_.state, start, size, out_ptrs, out_lens);
+    detail::check_access(status);
   }
   void byteviews(int start, R_xlen_t size, const char ** out_ptrs,
                  int * out_lens) const {
@@ -391,13 +565,15 @@ public:
   }
 
   void lengths(R_xlen_t start, R_xlen_t size, int * out) const {
-    r_.range.lengths(r_.state, start, size, out);
+    const int status = r_.range.lengths(r_.state, start, size, out);
+    detail::check_access(status);
   }
   void lengths(int start, R_xlen_t size, int * out) const {
     lengths(static_cast<R_xlen_t>(start), size, out);
   }
   void encodings(R_xlen_t start, R_xlen_t size, cetype_ext_t * out) const {
-    r_.range.encodings(r_.state, start, size, out);
+    const int status = r_.range.encodings(r_.state, start, size, out);
+    detail::check_access(status);
   }
   void encodings(int start, R_xlen_t size, cetype_ext_t * out) const {
     encodings(static_cast<R_xlen_t>(start), size, out);
@@ -405,7 +581,10 @@ public:
 
   void views(const R_xlen_t * indices, R_xlen_t size, const char ** out_ptrs,
              int * out_lens, cetype_ext_t * out_encs) const {
-    r_.index.strviews(r_.state, indices, size, out_ptrs, out_lens, out_encs);
+    const int status = r_.index.strviews(
+      r_.state, indices, size, out_ptrs, out_lens, out_encs
+    );
+    detail::check_access(status);
   }
   void views(const R_xlen_t * indices, R_xlen_t size, StrViews & out) const {
     out.resize(size);
@@ -414,17 +593,21 @@ public:
 
   void byteviews(const R_xlen_t * indices, R_xlen_t size, const char ** out_ptrs,
                  int * out_lens) const {
-    r_.index.byteviews(r_.state, indices, size, out_ptrs, out_lens);
+    const int status =
+      r_.index.byteviews(r_.state, indices, size, out_ptrs, out_lens);
+    detail::check_access(status);
   }
   void byteviews(const R_xlen_t * indices, R_xlen_t size, ByteViews & out) const {
     out.resize(size);
     byteviews(indices, size, out.ptrs(), out.lengths());
   }
   void lengths(const R_xlen_t * indices, R_xlen_t size, int * out) const {
-    r_.index.lengths(r_.state, indices, size, out);
+    const int status = r_.index.lengths(r_.state, indices, size, out);
+    detail::check_access(status);
   }
   void encodings(const R_xlen_t * indices, R_xlen_t size, cetype_ext_t * out) const {
-    r_.index.encodings(r_.state, indices, size, out);
+    const int status = r_.index.encodings(r_.state, indices, size, out);
+    detail::check_access(status);
   }
 
   class const_iterator {
@@ -440,7 +623,9 @@ public:
       const char * ptr = nullptr;
       int len = NA_INTEGER;
       cetype_ext_t enc = cetype_ext_t::CE_NA;
-      r_->range.strviews(r_->state, i_, 1, &ptr, &len, &enc);
+      const int status =
+        r_->range.strviews(r_->state, i_, 1, &ptr, &len, &enc);
+      detail::check_access(status);
       return make_strview(ptr, len, enc);
     }
     const_iterator & operator++() noexcept { ++i_; return *this; }
@@ -470,6 +655,18 @@ private:
 
   charport_reader r_;
 };
+
+#if defined(RCPP_VERSION)
+inline Reader Reader::with_rcpp(SEXP x) {
+  return Reader(detail::resolve_with_rcpp(x));
+}
+#endif
+
+#if defined(CHARPORT_CPP11_INCLUDED)
+inline Reader Reader::with_cpp11(SEXP x) {
+  return Reader(detail::resolve_with_cpp11(x));
+}
+#endif
 
 } // namespace charport
 

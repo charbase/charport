@@ -83,6 +83,11 @@ catn("worker errors are caught, joined, and re-raised")
 worker_throws <- function() .Call(consumer_symbol("C_consumer_worker_throws"))
 expect_error_matching(worker_throws(), "injected worker failure")
 
+catn("concurrent access failures map independently")
+stopifnot(isTRUE(.Call(
+  consumer_symbol("C_consumer_threaded_access_errors")
+)))
+
 catn("repeated threaded builds agree (merge determinism)")
 ref <- as.character(x)
 for (i in 1:20) stopifnot(identical(as.character(rebuild2(x)), ref))
