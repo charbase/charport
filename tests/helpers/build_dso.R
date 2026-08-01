@@ -29,21 +29,38 @@ compile_test_dso <- function(src, extra_makevars = character(), label = src) {
   # can resolve; otherwise use a known empty file for the nested R process.
   empty_startup <- file.path(build_dir, "empty-startup")
   file.create(empty_startup)
-  child_env <- character()
-  for (name in c("R_ENVIRON_USER", "R_PROFILE_USER", "R_TESTS")) {
+  startup_vars <- c("R_ENVIRON_USER", "R_PROFILE_USER", "R_TESTS")
+  child_env <- list()
+  for (name in startup_vars) {
     path <- Sys.getenv(name, unset = NA_character_)
     if (!is.na(path) && nzchar(path) && file.exists(path)) {
       path <- normalizePath(path, winslash = "/", mustWork = TRUE)
     } else {
-      path <- empty_startup
+      path <- normalizePath(empty_startup, winslash = "/", mustWork = TRUE)
     }
-    child_env <- c(child_env, paste0(name, "=", shQuote(path)))
+    child_env[[name]] <- path
   }
+
+  # Set them on this process rather than passing system2(env=). The two
+  # platforms assemble that argument differently: the Unix method prepends
+  # name=value to the command, where the shell reads it as an environment
+  # assignment, but the Windows method appends it after the command, where
+  # cmd.exe has no such syntax and R receives the strings as arguments. On
+  # Windows the child therefore kept R CMD check's own relative R_TESTS and
+  # failed to open 'startup.Rs' from build_dir.
+  saved <- Sys.getenv(startup_vars, unset = NA_character_, names = TRUE)
+  do.call(Sys.setenv, child_env)
+  on.exit({
+    restore <- saved[!is.na(saved)]
+    if (length(restore)) do.call(Sys.setenv, as.list(restore))
+    drop <- names(saved)[is.na(saved)]
+    if (length(drop)) Sys.unsetenv(drop)
+  }, add = TRUE)
 
   old_wd <- setwd(build_dir)
   status <- tryCatch(
     system2(file.path(R.home("bin"), "R"), c("CMD", "SHLIB", basename(src)),
-            stdout = "shlib_out.txt", stderr = "shlib_out.txt", env = child_env),
+            stdout = "shlib_out.txt", stderr = "shlib_out.txt"),
     finally = setwd(old_wd)
   )
 
