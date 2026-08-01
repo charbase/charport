@@ -136,10 +136,10 @@ void * release_test_init(SEXP) {
 charport_strview release_test_view(void * state, R_xlen_t i) {
   release_test_state * p = static_cast<release_test_state *>(state);
   if(p->marker != 42) {
-    return make_strview(nullptr, NA_INTEGER, cetype_ext_t::CE_NA);
+    return make_strview(nullptr, NA_INTEGER, CETYPE_EXT_NA);
   }
-  return i == 0 ? make_strview("alpha", 5, cetype_ext_t::CE_ASCII)
-                : make_strview("beta", 4, cetype_ext_t::CE_ASCII);
+  return i == 0 ? make_strview("alpha", 5, CETYPE_EXT_ASCII)
+                : make_strview("beta", 4, CETYPE_EXT_ASCII);
 }
 
 void release_test_fill_strview(void * state, R_xlen_t i, const char ** out_ptrs,
@@ -277,11 +277,11 @@ bool throws_exception(Fn fn) {
 }
 
 cetype_t to_base_encoding(cetype_ext_t enc) noexcept {
-  switch(enc) {
-  case cetype_ext_t::CE_LATIN1: return CE_LATIN1;
-  case cetype_ext_t::CE_BYTES:  return CE_BYTES;
-  case cetype_ext_t::CE_UTF8:
-  case cetype_ext_t::CE_ASCII_OR_UTF8:
+  switch(enc.value) {
+  case CETYPE_EXT_LATIN1.value: return CE_LATIN1;
+  case CETYPE_EXT_BYTES.value:  return CE_BYTES;
+  case CETYPE_EXT_UTF8.value:
+  case CETYPE_EXT_ASCII_OR_UTF8.value:
     return CE_UTF8;
   default:
     return CE_NATIVE;
@@ -565,7 +565,7 @@ SEXP C_consumer_reader_encodings(SEXP x) {
     return charport_consumer::unwind_protect([&]() -> SEXP {
       SEXP out = PROTECT(Rf_allocVector(INTSXP, r.size()));
       for(R_xlen_t i = 0; i < r.size(); ++i) {
-        INTEGER(out)[i] = static_cast<int>(r.encoding(i));
+        INTEGER(out)[i] = static_cast<int>(r.encoding(i).value);
       }
       UNPROTECT(1);
       return out;
@@ -607,7 +607,7 @@ SEXP C_consumer_reader_access_kind(SEXP x, SEXP which_) {
       const R_xlen_t index = 0;
       const char * ptr = nullptr;
       int len = NA_INTEGER;
-      cetype_ext_t encoding = cetype_ext_t::CE_NA;
+      cetype_ext_t encoding = CETYPE_EXT_NA;
       switch(which) {
       case 0:
         reader.views(static_cast<R_xlen_t>(0), 1, &ptr, &len, &encoding);
@@ -837,12 +837,12 @@ SEXP C_consumer_builder_direct(void) {
       throw std::runtime_error("out-of-range direct slice was not null");
     }
 
-    store.records.set(0, first, 5, cetype_ext_t::CE_ASCII);
-    store.records.set(1, first + 5, 4, cetype_ext_t::CE_ASCII);
+    store.records.set(0, first, 5, CETYPE_EXT_ASCII);
+    store.records.set(1, first + 5, 4, CETYPE_EXT_ASCII);
     store.records.set_na(2);
-    store.records.set(3, first, 0, cetype_ext_t::CE_ASCII);
-    store.records.set(4, second, 5, cetype_ext_t::CE_ASCII);
-    store.records.set(5, second, 5, cetype_ext_t::CE_ASCII);
+    store.records.set(3, first, 0, CETYPE_EXT_ASCII);
+    store.records.set(4, second, 5, CETYPE_EXT_ASCII);
+    store.records.set(5, second, 5, CETYPE_EXT_ASCII);
 
     return charport::charvec::wrap(std::move(store));
   });
@@ -904,9 +904,9 @@ SEXP C_consumer_growable_state(void) {
         records.push_back(charport::charvec::components::na_record());
       } else if(i % 3 == 1) {
         records.push_back(
-          charport::charvec::components::empty_record(cetype_ext_t::CE_ASCII));
+          charport::charvec::components::empty_record(CETYPE_EXT_ASCII));
       } else {
-        records.push_back(make_strview("x", 1, cetype_ext_t::CE_ASCII));
+        records.push_back(make_strview("x", 1, CETYPE_EXT_ASCII));
       }
     }
     ok = ok && records.size() == 257 && records.capacity() > records.size();
@@ -933,12 +933,12 @@ SEXP C_consumer_growable_state(void) {
         ok = ok && value.len == 1 && value.ptr[0] == 'x';
       }
     }
-    records.push_back(make_strview("r", 1, cetype_ext_t::CE_ASCII));
+    records.push_back(make_strview("r", 1, CETYPE_EXT_ASCII));
     ok = ok && records.size() == 1 && records.view(0).ptr[0] == 'r';
 
     charport::charvec::GrowableBuilder source;
     for(size_t i = 0; i < 257; ++i) {
-      source.append("x", 1, cetype_ext_t::CE_ASCII);
+      source.append("x", 1, CETYPE_EXT_ASCII);
     }
     charport::charvec::GrowableBuilder builder(std::move(source));
     ok = ok && source.size() == 0 && builder.size() == 257;
@@ -952,15 +952,15 @@ SEXP C_consumer_growable_state(void) {
       ok = ok && value.len == 1 && value.ptr[0] == 'x';
     }
 
-    builder.append("z", 1, cetype_ext_t::CE_ASCII);
+    builder.append("z", 1, CETYPE_EXT_ASCII);
     charport::charvec::Store second = builder.release_store();
     ok = ok && builder.size() == 0 && second.size() == 1;
     ok = ok && second.view(0).len == 1 && second.view(0).ptr[0] == 'z';
     ok = ok && first.size() == 257 && first.view(0).ptr[0] == 'x';
 
     charport::charvec::GrowableBuilder no_payload;
-    no_payload.append(nullptr, 0, cetype_ext_t::CE_NA);
-    no_payload.append("", 0, cetype_ext_t::CE_ASCII);
+    no_payload.append(nullptr, 0, CETYPE_EXT_NA);
+    no_payload.append("", 0, CETYPE_EXT_ASCII);
     charport::charvec::Store no_payload_store = no_payload.release_store();
     ok = ok && no_payload_store.size() == 2;
     ok = ok && no_payload_store.slices.empty();
@@ -979,23 +979,23 @@ SEXP C_consumer_builder_errors(void) {
   return test_entrypoint_boundary("builder_errors", [&]() -> SEXP {
     charport::charvec::Builder b(3);
 
-    bool ok = !throws_exception([&]() { b.set(0, "x", 1, cetype_ext_t::CE_LATIN1); });
-    ok = ok && !throws_exception([&]() { b.set(0, "x", 1, cetype_ext_t::CE_NATIVE); });
-    ok = ok && !throws_exception([&]() { b.set(0, nullptr, 2, cetype_ext_t::CE_UTF8); });
-    ok = ok && !throws_exception([&]() { b.set(0, "x", 1, cetype_ext_t::CE_NA); });
-    ok = ok && !throws_exception([&]() { b.set(1, nullptr, 0, cetype_ext_t::CE_UTF8); });
+    bool ok = !throws_exception([&]() { b.set(0, "x", 1, CETYPE_EXT_LATIN1); });
+    ok = ok && !throws_exception([&]() { b.set(0, "x", 1, CETYPE_EXT_NATIVE); });
+    ok = ok && !throws_exception([&]() { b.set(0, nullptr, 2, CETYPE_EXT_UTF8); });
+    ok = ok && !throws_exception([&]() { b.set(0, "x", 1, CETYPE_EXT_NA); });
+    ok = ok && !throws_exception([&]() { b.set(1, nullptr, 0, CETYPE_EXT_UTF8); });
     ok = ok && !throws_exception([&]() { b.set_na(2); });
-    ok = ok && !throws_exception([&]() { b.set(0, "ok", 2, cetype_ext_t::CE_ASCII); });
+    ok = ok && !throws_exception([&]() { b.set(0, "ok", 2, CETYPE_EXT_ASCII); });
 
-    ok = ok && throws_exception([&]() { b.set(3, "x", 1, cetype_ext_t::CE_UTF8); });
-    ok = ok && throws_exception([&]() { b.set(-1, "x", 1, cetype_ext_t::CE_UTF8); });
+    ok = ok && throws_exception([&]() { b.set(3, "x", 1, CETYPE_EXT_UTF8); });
+    ok = ok && throws_exception([&]() { b.set(-1, "x", 1, CETYPE_EXT_UTF8); });
 
-    ok = ok && throws_exception([&]() { (void)b.reserve(3, 1, cetype_ext_t::CE_UTF8); });
-    ok = ok && throws_exception([&]() { (void)b.reserve(-1, 1, cetype_ext_t::CE_UTF8); });
+    ok = ok && throws_exception([&]() { (void)b.reserve(3, 1, CETYPE_EXT_UTF8); });
+    ok = ok && throws_exception([&]() { (void)b.reserve(-1, 1, CETYPE_EXT_UTF8); });
     if(ok) {
-      char * dst = b.reserve(1, 3, cetype_ext_t::CE_UTF8);
+      char * dst = b.reserve(1, 3, CETYPE_EXT_UTF8);
       std::memcpy(dst, "abc", 3);
-      char * empty = b.reserve(2, 0, cetype_ext_t::CE_ASCII);  // len 0: valid pointer, no write
+      char * empty = b.reserve(2, 0, CETYPE_EXT_ASCII);  // len 0: valid pointer, no write
       ok = empty != nullptr;
     }
 
@@ -1005,19 +1005,19 @@ SEXP C_consumer_builder_errors(void) {
     ok = ok && throws_exception([&]() { charport::charvec::ParallelBuilder bad(4, 0); });
     {
       charport::charvec::ParallelBuilder mt(4, 2);
-      ok = ok && throws_exception([&]() { mt.set(2, 0, "x", 1, cetype_ext_t::CE_UTF8); });
-      ok = ok && throws_exception([&]() { mt.set(0, 4, "x", 1, cetype_ext_t::CE_UTF8); });
-      ok = ok && !throws_exception([&]() { mt.set(0, 0, "x", 1, cetype_ext_t::CE_LATIN1); });
-      ok = ok && !throws_exception([&]() { mt.set(0, 0, "a", 1, cetype_ext_t::CE_ASCII); });
+      ok = ok && throws_exception([&]() { mt.set(2, 0, "x", 1, CETYPE_EXT_UTF8); });
+      ok = ok && throws_exception([&]() { mt.set(0, 4, "x", 1, CETYPE_EXT_UTF8); });
+      ok = ok && !throws_exception([&]() { mt.set(0, 0, "x", 1, CETYPE_EXT_LATIN1); });
+      ok = ok && !throws_exception([&]() { mt.set(0, 0, "a", 1, CETYPE_EXT_ASCII); });
     }
 
     {
       charport::charvec::Builder abandoned(2);
-      abandoned.set(0, "z", 1, cetype_ext_t::CE_ASCII);
+      abandoned.set(0, "z", 1, CETYPE_EXT_ASCII);
     }
     {
       charport::charvec::ParallelBuilder abandoned(2, 2);
-      abandoned.set(0, 0, "z", 1, cetype_ext_t::CE_ASCII);
+      abandoned.set(0, 0, "z", 1, CETYPE_EXT_ASCII);
     }
 
     return charport_consumer::unwind_protect([&]() -> SEXP {

@@ -4,6 +4,8 @@
 #include <csetjmp>
 #include <cstdio>
 #include <exception>
+#include <new>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 
@@ -14,6 +16,25 @@ struct RUnwind {
   SEXP token;
 };
 
+// Flatten the active exception into a fixed buffer, naming its type.
+inline void describe_current_exception(char * out, size_t size) noexcept {
+  try {
+    throw;
+  } catch(const std::bad_alloc & error) {
+    std::snprintf(out, size, "std::bad_alloc: %s", error.what());
+  } catch(const std::out_of_range & error) {
+    std::snprintf(out, size, "std::out_of_range: %s", error.what());
+  } catch(const std::logic_error & error) {
+    std::snprintf(out, size, "std::logic_error: %s", error.what());
+  } catch(const std::runtime_error & error) {
+    std::snprintf(out, size, "std::runtime_error: %s", error.what());
+  } catch(const std::exception & error) {
+    std::snprintf(out, size, "std::exception: %s", error.what());
+  } catch(...) {
+    std::snprintf(out, size, "unknown C++ exception");
+  }
+}
+
 struct JumpBuffer {
   std::jmp_buf value;
 };
@@ -21,7 +42,10 @@ struct JumpBuffer {
 template<typename Fn>
 struct CallState {
   Fn * fn;
-  std::exception_ptr error;
+  bool r_unwind;
+  SEXP token;
+  bool failed;
+  char message[512];
 };
 
 template<typename Fn>
@@ -29,8 +53,18 @@ SEXP call_body(void * data) noexcept {
   CallState<Fn> * state = static_cast<CallState<Fn> *>(data);
   try {
     return (*state->fn)();
+  } catch(const RUnwind & error) {
+    // An R error from a nested unwind_protect. This one keeps its type: the
+    // token is what lets the original R error continue.
+    state->r_unwind = true;
+    state->token = error.token;
+    return R_NilValue;
   } catch(...) {
-    state->error = std::current_exception();
+    // Everything else is flattened to text. std::exception_ptr would corrupt
+    // the heap where a libc++ package is loaded into a libstdc++ R, and the
+    // C++ type is not observable once this becomes an R condition.
+    state->failed = true;
+    describe_current_exception(state->message, sizeof(state->message));
     return R_NilValue;
   }
 }
@@ -47,7 +81,7 @@ inline void call_cleanup(void * data, Rboolean jump) noexcept {
 template<typename Fn>
 SEXP unwind_protect(Fn && fn) {
   typedef typename std::remove_reference<Fn>::type fun_type;
-  unwind_detail::CallState<fun_type> state{&fn, std::exception_ptr()};
+  unwind_detail::CallState<fun_type> state{&fn, false, R_NilValue, false, {}};
   unwind_detail::JumpBuffer jump;
   SEXP token = PROTECT(R_MakeUnwindCont());
 
@@ -64,8 +98,11 @@ SEXP unwind_protect(Fn && fn) {
 
   SETCAR(token, R_NilValue);
   UNPROTECT(1);
-  if(state.error) {
-    std::rethrow_exception(state.error);
+  if(state.r_unwind) {
+    throw unwind_detail::RUnwind{state.token};
+  }
+  if(state.failed) {
+    throw std::runtime_error(state.message);
   }
   return out;
 }

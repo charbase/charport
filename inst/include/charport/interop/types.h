@@ -23,18 +23,50 @@
 #define CHARPORT_STATUS_NO_MEMORY 2
 #define CHARPORT_STATUS_OUT_OF_RANGE 3
 
+/*
+ * Encoding tag, on the wire as one byte.
+ *
+ * This is a one-byte struct rather than an enum because the type has to be
+ * spelled identically in C and C++. An `enum class` is a distinct type from
+ * the `uint8_t` a C consumer sees, so calling a C++-defined ABI function
+ * through a C function pointer is undefined and clang's -fsanitize=function
+ * rejects it. A plain C enum is not an option either: its underlying type is
+ * implementation-defined and would not stay one byte.
+ */
+typedef struct cetype_ext_t {
+    uint8_t value;
+
 #ifdef __cplusplus
-enum class cetype_ext_t : uint8_t {
-    CE_NATIVE        = 0,
-    CE_UTF8          = 1,
-    CE_LATIN1        = 2,
-    CE_BYTES         = 3,
-    CE_ASCII_OR_UTF8 = 100,
-    CE_ASCII         = 254,
-    CE_NA            = 255
-};
+    constexpr bool operator==(cetype_ext_t other) const noexcept {
+        return value == other.value;
+    }
+    constexpr bool operator!=(cetype_ext_t other) const noexcept {
+        return value != other.value;
+    }
+#endif
+} cetype_ext_t;
+
+/*
+ * Named values, spelled the same in both languages.
+ *
+ * In C++ they are typed constants. A constexpr object at namespace scope is
+ * const, and a const object at namespace scope has internal linkage, so each
+ * translation unit gets its own copy and there is no ODR clash; C++17 inline
+ * variables are not needed. Compare with `==`, and use `.value` where an
+ * integral constant expression is required, such as a switch label.
+ *
+ * In C they are plain integers: compare against `.value`, and build a tag with
+ * charport_cetype_ext().
+ */
+#ifdef __cplusplus
+constexpr cetype_ext_t CETYPE_EXT_NATIVE        = {0};
+constexpr cetype_ext_t CETYPE_EXT_UTF8          = {1};
+constexpr cetype_ext_t CETYPE_EXT_LATIN1        = {2};
+constexpr cetype_ext_t CETYPE_EXT_BYTES         = {3};
+constexpr cetype_ext_t CETYPE_EXT_ASCII_OR_UTF8 = {100};
+constexpr cetype_ext_t CETYPE_EXT_ASCII         = {254};
+constexpr cetype_ext_t CETYPE_EXT_NA            = {255};
 #else
-typedef uint8_t cetype_ext_t;
 enum {
     CETYPE_EXT_NATIVE        = 0,
     CETYPE_EXT_UTF8          = 1,
@@ -44,6 +76,18 @@ enum {
     CETYPE_EXT_ASCII         = 254,
     CETYPE_EXT_NA            = 255
 };
+#endif
+
+#ifdef __cplusplus
+inline constexpr cetype_ext_t charport_cetype_ext(uint8_t value) noexcept {
+    return cetype_ext_t{value};
+}
+#else
+static inline cetype_ext_t charport_cetype_ext(uint8_t value) {
+    cetype_ext_t out;
+    out.value = value;
+    return out;
+}
 #endif
 
 typedef struct charport_byteview {
@@ -76,7 +120,7 @@ typedef struct charport_strview {
 
 #ifdef __cplusplus
     inline bool is_na() const noexcept {
-        return ptr == nullptr || len == NA_INTEGER || enc == cetype_ext_t::CE_NA;
+        return ptr == nullptr || len == NA_INTEGER || enc == CETYPE_EXT_NA;
     }
 
     inline bool operator==(const charport_strview & other) const noexcept {

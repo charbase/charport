@@ -33,15 +33,15 @@ inline bool charsxp_is_ascii(SEXP x) {
 }
 
 inline cetype_t to_base_encoding(cetype_ext_t enc) noexcept {
-  switch(enc) {
-  case cetype_ext_t::CE_ASCII:
+  switch(enc.value) {
+  case CETYPE_EXT_ASCII.value:
     return CE_NATIVE;
-  case cetype_ext_t::CE_UTF8:
-  case cetype_ext_t::CE_ASCII_OR_UTF8:
+  case CETYPE_EXT_UTF8.value:
+  case CETYPE_EXT_ASCII_OR_UTF8.value:
     return CE_UTF8;
-  case cetype_ext_t::CE_LATIN1:
+  case CETYPE_EXT_LATIN1.value:
     return CE_LATIN1;
-  case cetype_ext_t::CE_BYTES:
+  case CETYPE_EXT_BYTES.value:
     return CE_BYTES;
   default:
     return CE_NATIVE;
@@ -61,20 +61,20 @@ inline SEXP make_charsxp(const charport_strview & view) {
 inline cetype_ext_t classify_charsxp(SEXP x) {
   switch(Rf_getCharCE(x)) {
   case CE_UTF8:
-    return cetype_ext_t::CE_UTF8;
+    return CETYPE_EXT_UTF8;
   case CE_LATIN1:
-    return cetype_ext_t::CE_LATIN1;
+    return CETYPE_EXT_LATIN1;
   case CE_BYTES:
-    return cetype_ext_t::CE_BYTES;
+    return CETYPE_EXT_BYTES;
   default:
-    return charsxp_is_ascii(x) ? cetype_ext_t::CE_ASCII
-                               : cetype_ext_t::CE_NATIVE;
+    return charsxp_is_ascii(x) ? CETYPE_EXT_ASCII
+                               : CETYPE_EXT_NATIVE;
   }
 }
 
 inline charport_strview charsxp_to_view(SEXP x) {
   if(x == NA_STRING) {
-    return make_strview(nullptr, NA_INTEGER, cetype_ext_t::CE_NA);
+    return make_strview(nullptr, NA_INTEGER, CETYPE_EXT_NA);
   }
   return make_strview(CHAR(x), LENGTH(x), classify_charsxp(x));
 }
@@ -297,7 +297,7 @@ inline char * store_reserve(cpv::Store & store, size_t idx, size_t len,
   }
 
   const charport_strview current = store.records.view(idx);
-  if(enc == cetype_ext_t::CE_NA) {
+  if(enc == CETYPE_EXT_NA) {
     store.records.set_na(idx);
     return nullptr;
   }
@@ -487,10 +487,18 @@ struct charvec_altrep {
       SEXP cache = EltCache(vec);
       SEXP elt = STRING_ELT(cache, i);
       if(elt == R_BlankString) {
+        // The cache is already rooted: it lives in the protected slot of the
+        // data1 external pointer, which the GC traces from vec. rchk cannot
+        // follow that indirection and reports cache as unprotected across the
+        // allocation below, so protect it here to keep rchk clean. This is on
+        // the miss branch only, which allocates anyway; a cache hit returns
+        // above without touching the protection stack.
+        PROTECT(cache);
         elt = cpi::make_charsxp(Get(vec).view(static_cast<size_t>(i)));
         if(elt != R_BlankString) {
           SET_STRING_ELT(cache, i, elt);
         }
+        UNPROTECT(1);
       }
       return elt;
     });
@@ -621,7 +629,7 @@ struct charvec_altrep {
       }
 
       for(size_t i = 0; i < n; ++i) {
-        const uint8_t encoding = static_cast<uint8_t>(data1.encoding(i));
+        const uint8_t encoding = data1.encoding(i).value;
         std::memcpy(current_offset, &encoding, sizeof(uint8_t));
         current_offset += sizeof(uint8_t);
       }
@@ -655,22 +663,22 @@ struct charvec_altrep {
         if(!cpi::check_r_string_len(size)) {
           throw std::runtime_error("serialized string size exceeds R string size");
         }
-        const cetype_ext_t encoding = static_cast<cetype_ext_t>(*enc_offset++);
+        const cetype_ext_t encoding = charport_cetype_ext(*enc_offset++);
         const size_t stored_len = static_cast<size_t>(size);
         const char * payload = charvec_serialized_payload(data_offset, layout.data_end, stored_len);
         // Untrusted input: accept every encoding a record can legitimately
         // hold (the store keeps encodings verbatim, so any of these can have
         // been serialized) and reject only an out-of-range encoding byte.
-        switch(encoding) {
-        case cetype_ext_t::CE_ASCII:
-        case cetype_ext_t::CE_UTF8:
-        case cetype_ext_t::CE_ASCII_OR_UTF8:
-        case cetype_ext_t::CE_LATIN1:
-        case cetype_ext_t::CE_NATIVE:
-        case cetype_ext_t::CE_BYTES:
+        switch(encoding.value) {
+        case CETYPE_EXT_ASCII.value:
+        case CETYPE_EXT_UTF8.value:
+        case CETYPE_EXT_ASCII_OR_UTF8.value:
+        case CETYPE_EXT_LATIN1.value:
+        case CETYPE_EXT_NATIVE.value:
+        case CETYPE_EXT_BYTES.value:
           out.set(static_cast<R_xlen_t>(i), payload, stored_len, encoding);
           break;
-        case cetype_ext_t::CE_NA:
+        case CETYPE_EXT_NA.value:
           if(stored_len != 0) {
             throw std::runtime_error("serialized NA string must have zero length");
           }

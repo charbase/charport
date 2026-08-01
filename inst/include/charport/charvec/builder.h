@@ -90,7 +90,7 @@ inline char * fill_record(Shard & shard, components::RecordTable & records,
     throw std::runtime_error("charvec builder: assignment out of bounds");
   }
   const int stored_len = components::checked_string_size(len, "stored string length");
-  if(enc == cetype_ext_t::CE_NA) {
+  if(enc == CETYPE_EXT_NA) {
     records.set_na(idx);
     return nullptr;
   }
@@ -173,9 +173,9 @@ public:
 
   void set(R_xlen_t i, const char * ptr, size_t len, cetype_ext_t enc) {
     components::RecordTable & records = store_.records;
-    if(ptr == nullptr || enc == cetype_ext_t::CE_NA) {
+    if(ptr == nullptr || enc == CETYPE_EXT_NA) {
       builder_detail::copy_record(
-        shard_, records, static_cast<size_t>(i), nullptr, 0, cetype_ext_t::CE_NA);
+        shard_, records, static_cast<size_t>(i), nullptr, 0, CETYPE_EXT_NA);
       return;
     }
     builder_detail::copy_record(shard_, records, static_cast<size_t>(i), ptr, len, enc);
@@ -190,7 +190,7 @@ public:
   }
 
   void set_na(R_xlen_t i) {
-    set(i, nullptr, 0, cetype_ext_t::CE_NA);
+    set(i, nullptr, 0, CETYPE_EXT_NA);
   }
 
   CHARPORT_CHARVEC_NODISCARD
@@ -257,9 +257,9 @@ public:
   void set(size_t shard, R_xlen_t i, const char * ptr, size_t len, cetype_ext_t enc) {
     components::RecordTable & records = store_.records;
     builder_detail::Shard & s = shard_at(shard);
-    if(ptr == nullptr || enc == cetype_ext_t::CE_NA) {
+    if(ptr == nullptr || enc == CETYPE_EXT_NA) {
       builder_detail::copy_record(
-        s, records, static_cast<size_t>(i), nullptr, 0, cetype_ext_t::CE_NA);
+        s, records, static_cast<size_t>(i), nullptr, 0, CETYPE_EXT_NA);
       return;
     }
     builder_detail::copy_record(s, records, static_cast<size_t>(i), ptr, len, enc);
@@ -274,7 +274,7 @@ public:
   }
 
   void set_na(size_t shard, R_xlen_t i) {
-    set(shard, i, nullptr, 0, cetype_ext_t::CE_NA);
+    set(shard, i, nullptr, 0, CETYPE_EXT_NA);
   }
 
   CHARPORT_CHARVEC_NODISCARD
@@ -332,15 +332,15 @@ public:
 
   void append(const StrView & value) {
     if(value.is_na()) {
-      append(nullptr, 0, cetype_ext_t::CE_NA);
+      append(nullptr, 0, CETYPE_EXT_NA);
       return;
     }
     append(value.ptr, static_cast<size_t>(value.len), value.enc);
   }
 
   void append(const char * ptr, size_t len, cetype_ext_t enc) {
-    if(ptr == nullptr || enc == cetype_ext_t::CE_NA) {
-      (void)append_reserve(0, cetype_ext_t::CE_NA);
+    if(ptr == nullptr || enc == CETYPE_EXT_NA) {
+      (void)append_reserve(0, CETYPE_EXT_NA);
       return;
     }
     char * dest = append_reserve(len, enc);
@@ -354,7 +354,7 @@ public:
     const int stored_len = components::checked_string_size(len, "stored string length");
     components::RecordTable & records = store_.records;
     records.reserve_for_append();
-    if(enc == cetype_ext_t::CE_NA) {
+    if(enc == CETYPE_EXT_NA) {
       records.push_back_reserved(components::na_record());
       return nullptr;
     }

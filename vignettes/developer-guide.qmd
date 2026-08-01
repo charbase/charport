@@ -216,26 +216,28 @@ r.byteviews(idx.data(), idx.size(), byteviews); // outputs elements 0, 10 and 20
 
 `charport` passes through the same string encoding information available from base R strings. It doesn't do any string normalization or reinterpretation; it only makes the encoding marks available as defined by the producer.
 
-| C++ value | C value | Meaning |
-|-------------------------|---------------------|--------------------------|
-| `cetype_ext_t::CE_NATIVE` | `CETYPE_EXT_NATIVE` | Native encoding based on machine locale. |
-| `cetype_ext_t::CE_UTF8` | `CETYPE_EXT_UTF8` | UTF-8. |
-| `cetype_ext_t::CE_LATIN1` | `CETYPE_EXT_LATIN1` | Latin-1. |
-| `cetype_ext_t::CE_BYTES` | `CETYPE_EXT_BYTES` | Bytes encoding. |
-| `cetype_ext_t::CE_ASCII_OR_UTF8` | `CETYPE_EXT_ASCII_OR_UTF8` | ASCII/UTF-8-compatible bytes. |
-| `cetype_ext_t::CE_ASCII` | `CETYPE_EXT_ASCII` | ASCII bytes, equivalent to `Rf_charIsASCII(x)`. |
-| `cetype_ext_t::CE_NA` | `CETYPE_EXT_NA` | Missing string. `ptr` is `NULL` and `len` is `NA_INTEGER`. |
+| Value | Meaning |
+|----------------------------|--------------------------------------------|
+| `CETYPE_EXT_NATIVE` | Native encoding based on machine locale. |
+| `CETYPE_EXT_UTF8` | UTF-8. |
+| `CETYPE_EXT_LATIN1` | Latin-1. |
+| `CETYPE_EXT_BYTES` | Bytes encoding. |
+| `CETYPE_EXT_ASCII_OR_UTF8` | ASCII/UTF-8-compatible bytes. |
+| `CETYPE_EXT_ASCII` | ASCII bytes, equivalent to `Rf_charIsASCII(x)`. |
+| `CETYPE_EXT_NA` | Missing string. `ptr` is `NULL` and `len` is `NA_INTEGER`. |
 
-R's encoding scheme is aggregated into this single enum. `CE_ASCII`, `CE_ASCII_OR_UTF8`, and `CE_NA` are simplifications: `CE_ASCII` corresponds to the ASCII mark available from `Rf_charIsASCII()`. In R, the ASCII mark **always** occurs with `CE_NATIVE`, so it represents a mutually exclusive state.
+The names are the same in both languages. In C++ they are typed `cetype_ext_t` constants comparable with `==`; in C they are plain integers comparable  with `.value`.
 
-`CE_ASCII_OR_UTF8` exists because base R materialization always checks whether a string is ASCII, so differentiating ASCII and UTF-8 early is often redundant work.
+R's encoding scheme is aggregated into this single type. `CETYPE_EXT_ASCII`, `CETYPE_EXT_ASCII_OR_UTF8`, and `CETYPE_EXT_NA` are simplifications: `CETYPE_EXT_ASCII` corresponds to the ASCII mark available from `Rf_charIsASCII()`. In R, the ASCII mark **always** occurs with `CETYPE_EXT_NATIVE`, so it represents a mutually exclusive state.
 
-`CE_NA` carries the missing-string case alongside the pointer and length.
+`CETYPE_EXT_ASCII_OR_UTF8` exists because base R materialization always checks whether a string is ASCII, so differentiating ASCII and UTF-8 early is often redundant work.
 
-Ordinary `cetype_t` values correspond to `cetype_ext_t` values, so you can `static_cast` R's encoding mark when you already have a `cetype_t`:
+`CETYPE_EXT_NA` carries the missing-string case alongside the pointer and length.
+
+Ordinary `cetype_t` values correspond to `cetype_ext_t` values, so you can wrap R's encoding mark when you already have a `cetype_t`:
 
 ``` cpp
-cetype_ext_t enc = static_cast<cetype_ext_t>(Rf_getCharCE(x));
+cetype_ext_t enc = charport_cetype_ext(static_cast<uint8_t>(Rf_getCharCE(x)));
 ```
 
 That cast preserves the encoding marks for native, UTF-8, Latin-1 and byte strings.
@@ -328,7 +330,7 @@ Bounds are a caller precondition. For a reader of length `n`, a range request mu
 
 `Reader` forwards requests without checking these bounds. The providers shipped with `charport` do not check them either, so an invalid request to a built-in provider has undefined behavior. A provider may validate requests and return `CHARPORT_STATUS_OUT_OF_RANGE`, but callers cannot rely on that validation.
 
-Missing strings should be reported as `ptr = nullptr`, `len = NA_INTEGER`, and `enc = cetype_ext_t::CE_NA`.
+Missing strings should be reported as `ptr = nullptr`, `len = NA_INTEGER`, and `enc = CETYPE_EXT_NA`.
 
 Access callbacks cross a C ABI, so they report errors through the return value. Return `CHARPORT_STATUS_OK` after filling the outputs. On failure, return a nonzero status. The output arrays are unspecified after failure.
 
@@ -474,7 +476,7 @@ class RecordTable {
 };
 ```
 
-For non-empty strings, `ptrs[i]` points into one of the byte slices. Empty strings point at shared empty storage. Missing strings are stored as `ptrs[i] = nullptr`, `lens[i] = NA_INTEGER`, and `encs[i] = cetype_ext_t::CE_NA`.
+For non-empty strings, `ptrs[i]` points into one of the byte slices. Empty strings point at shared empty storage. Missing strings are stored as `ptrs[i] = nullptr`, `lens[i] = NA_INTEGER`, and `encs[i] = CETYPE_EXT_NA`.
 
 ### `Builder`: basic fixed-length construction
 
@@ -486,13 +488,13 @@ Use `set()` when you have a buffer that only needs to be copied over.
 
 ``` cpp
 charvec::Builder b(n);
-b.set(i, ptr, len, cetype_ext_t::CE_UTF8);
+b.set(i, ptr, len, CETYPE_EXT_UTF8);
 ```
 
 Use `reserve()` when the output bytes can be written directly into the store:
 
 ``` cpp
-char * dst = b.reserve(i, len, cetype_ext_t::CE_UTF8);
+char * dst = b.reserve(i, len, CETYPE_EXT_UTF8);
 // write to dst directly
 ```
 
@@ -525,7 +527,7 @@ parallel_for_each_worker(worker_id, n_workers) {
   R_xlen_t end = n * (worker_id + 1) / n_workers;
 
   for(R_xlen_t i = begin; i < end; ++i) {
-    char * dst = b.reserve(worker_id, i, len[i], cetype_ext_t::CE_UTF8);
+    char * dst = b.reserve(worker_id, i, len[i], CETYPE_EXT_UTF8);
     // write this worker's bytes into dst
   }
 }
@@ -542,9 +544,9 @@ Use `charvec::GrowableBuilder` when the output length is not known ahead of time
 charvec::GrowableBuilder b;
 
 b.append(view);
-b.append(ptr, len, cetype_ext_t::CE_UTF8);
+b.append(ptr, len, CETYPE_EXT_UTF8);
 
-char * dst = b.append_reserve(len, cetype_ext_t::CE_UTF8);
+char * dst = b.append_reserve(len, CETYPE_EXT_UTF8);
 // write to dst directly
 
 size_t n = b.size();
@@ -565,8 +567,8 @@ charvec::Store store(3, total_bytes);
 char * data = store.slices.front_data();
 std::memcpy(data, src, total_bytes);
 
-store.records.set(0, data + offset0, len0, cetype_ext_t::CE_UTF8);
-store.records.set(1, data + offset1, len1, cetype_ext_t::CE_LATIN1);
+store.records.set(0, data + offset0, len0, CETYPE_EXT_UTF8);
+store.records.set(1, data + offset1, len1, CETYPE_EXT_LATIN1);
 store.records.set_na(2);
 
 SEXP out = charvec::wrap(std::move(store));
@@ -577,7 +579,7 @@ Allocate another slice with `store.slices.push_front(bytes)`. It returns the new
 For a one-element result, `Store::scalar()` copies the bytes and fills record zero:
 
 ``` cpp
-charvec::Store store = charvec::Store::scalar(ptr, len, cetype_ext_t::CE_UTF8);
+charvec::Store store = charvec::Store::scalar(ptr, len, CETYPE_EXT_UTF8);
 SEXP out = charvec::wrap(std::move(store));
 ```
 

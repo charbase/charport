@@ -33,7 +33,7 @@ extern "C" SEXP C_rcpp_charport_test(SEXP x) {
 extern "C" SEXP C_rcpp_charport_wrap_test(void) {
   BEGIN_RCPP
   charport::charvec::Store store = charport::charvec::Store::scalar(
-    "wrapped", 7, cetype_ext_t::CE_ASCII);
+    "wrapped", 7, CETYPE_EXT_ASCII);
   return charport::charvec::wrap_with_rcpp(std::move(store));
   END_RCPP
 }

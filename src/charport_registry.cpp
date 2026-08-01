@@ -28,7 +28,7 @@ void direct_fill_strview(SEXP cs, R_xlen_t out_i, const char ** out_ptrs,
   if(cs == NA_STRING) {
     out_ptrs[out_i] = nullptr;
     out_lens[out_i] = NA_INTEGER;
-    out_encs[out_i] = cetype_ext_t::CE_NA;
+    out_encs[out_i] = CETYPE_EXT_NA;
     return;
   }
   out_ptrs[out_i] = CHAR(cs);
@@ -112,7 +112,7 @@ int direct_encodings_range(
   const SEXP * ptr = static_cast<const SEXP *>(state);
   for(R_xlen_t j = 0; j < size; ++j) {
     const SEXP cs = ptr[start + j];
-    out_encs[j] = cs == NA_STRING ? cetype_ext_t::CE_NA : cpi::classify_charsxp(cs);
+    out_encs[j] = cs == NA_STRING ? CETYPE_EXT_NA : cpi::classify_charsxp(cs);
   }
   return CHARPORT_STATUS_OK;
 }
@@ -123,7 +123,7 @@ int direct_encodings_index(
   const SEXP * ptr = static_cast<const SEXP *>(state);
   for(R_xlen_t j = 0; j < size; ++j) {
     const SEXP cs = ptr[indices[j]];
-    out_encs[j] = cs == NA_STRING ? cetype_ext_t::CE_NA : cpi::classify_charsxp(cs);
+    out_encs[j] = cs == NA_STRING ? CETYPE_EXT_NA : cpi::classify_charsxp(cs);
   }
   return CHARPORT_STATUS_OK;
 }

@@ -19,13 +19,13 @@ static charport_charvec_from_views_t c_from_views_type =
 
 static cetype_ext_t c_charsxp_encoding(SEXP x) {
   if(x == NA_STRING) {
-    return CETYPE_EXT_NA;
+    return charport_cetype_ext(CETYPE_EXT_NA);
   }
   switch(Rf_getCharCE(x)) {
-  case CE_UTF8: return CETYPE_EXT_UTF8;
-  case CE_LATIN1: return CETYPE_EXT_LATIN1;
-  case CE_BYTES: return CETYPE_EXT_BYTES;
-  default: return CETYPE_EXT_NATIVE;
+  case CE_UTF8: return charport_cetype_ext(CETYPE_EXT_UTF8);
+  case CE_LATIN1: return charport_cetype_ext(CETYPE_EXT_LATIN1);
+  case CE_BYTES: return charport_cetype_ext(CETYPE_EXT_BYTES);
+  default: return charport_cetype_ext(CETYPE_EXT_NATIVE);
   }
 }
 
@@ -87,7 +87,7 @@ SEXP C_charport_c_reader_roundtrip(SEXP x) {
   }
 
   for(i = 0; i < n; ++i) {
-    if(encodings[i] == CETYPE_EXT_NA) {
+    if(encodings[i].value == CETYPE_EXT_NA) {
       if(ptrs[i] != NULL || lengths[i] != NA_INTEGER) {
         charport_reader_release(&reader);
         Rf_error("invalid missing charport view");
@@ -132,7 +132,7 @@ SEXP C_charport_c_from_views(SEXP x) {
     if(value == NA_STRING) {
       ptrs[i] = NULL;
       lengths[i] = NA_INTEGER;
-      encodings[i] = CETYPE_EXT_NA;
+      encodings[i] = charport_cetype_ext(CETYPE_EXT_NA);
     } else {
       ptrs[i] = CHAR(value);
       lengths[i] = LENGTH(value);
@@ -152,7 +152,7 @@ SEXP C_charport_c_from_views_bad_length(void) {
 SEXP C_charport_c_from_views_bad_encoding(void) {
   const char * ptrs[] = {"x"};
   const int lengths[] = {1};
-  const cetype_ext_t encodings[] = {(cetype_ext_t)42};
+  const cetype_ext_t encodings[] = {{42}};
   return charport_charvec_from_views(1, ptrs, lengths, encodings);
 }
 

@@ -22,7 +22,7 @@ inline const char * empty_data() noexcept {
 }
 
 inline charport_strview na_record() noexcept {
-  return make_strview(nullptr, NA_INTEGER, cetype_ext_t::CE_NA);
+  return make_strview(nullptr, NA_INTEGER, CETYPE_EXT_NA);
 }
 
 inline charport_strview empty_record(cetype_ext_t enc) noexcept {
@@ -218,7 +218,7 @@ struct RecordTable {
   }
 
   void set_na(size_t i) noexcept {
-    set(i, nullptr, NA_INTEGER, cetype_ext_t::CE_NA);
+    set(i, nullptr, NA_INTEGER, CETYPE_EXT_NA);
   }
 
   void reserve(size_t new_capacity) {
@@ -302,7 +302,7 @@ public:
   Store & operator=(Store &&) noexcept = default;
 
   static Store scalar(const char * src, size_t nbytes, cetype_ext_t enc) {
-    if(src == nullptr || enc == cetype_ext_t::CE_NA) {
+    if(src == nullptr || enc == CETYPE_EXT_NA) {
       Store out(1, 0);
       out.records.set_na(0);
       return out;

@@ -58,15 +58,15 @@ The two capabilities record the promises a consumer actually needs after a bulk 
 
 ## Why `cetype_ext_t`
 
-`charport` carries encoding marks because bytes alone are not enough to reconstruct R strings correctly. Rather than use R's `cetype_t` directly, it uses an equivalent and efficient enum for string data.
+`charport` carries encoding marks because bytes alone are not enough to reconstruct R strings correctly. Rather than use R's `cetype_t` directly, it uses an equivalent and efficient one-byte type for string data. It is a one-byte struct rather than an enum so that both C and C++ can use the same type.
 
-`cetype_ext_t` provides a small, fixed representation. It takes up less space using one byte (instead of R's plain `int` enum), carries comprehensive encoding information, and includes `CE_NA` so an encoding view can carry missingness without consulting separate parts.
+`cetype_ext_t` provides a small, fixed representation. It takes up less space using one byte (instead of R's plain `int` enum), carries comprehensive encoding information, and includes `CETYPE_EXT_NA` so an encoding view can carry missingness without consulting separate parts.
 
-It also distinguishes ASCII with `CE_ASCII`. R stores an ASCII bit for every string. When it is set, it always co-occurs with `CE_NATIVE`, so `CE_ASCII` represents a mutually exclusive state.
+It also distinguishes ASCII with `CETYPE_EXT_ASCII`. R stores an ASCII bit for every string. When it is set, it always co-occurs with `CETYPE_EXT_NATIVE`, so `CETYPE_EXT_ASCII` represents a mutually exclusive state.
 
-`CE_ASCII_OR_UTF8` lets a producer report if a string is UTF-8-compatible without scanning bytes to decide whether the string is also ASCII. R makes that check when it creates a `CHARSXP`, so doing it in the producer can duplicate work. Base R always checks if a string is ASCII during materialization or `CHARSXP` creation. So forcing ASCII vs. UTF-8 resolution would frequently become a redundant calculation if the string data source doesn't distinguish between ASCII and UTF-8. Data sources outside of R usually don't, and R will determine the resolution later anyway.
+`CETYPE_EXT_ASCII_OR_UTF8` lets a producer report if a string is UTF-8-compatible without scanning bytes to decide whether the string is also ASCII. R makes that check when it creates a `CHARSXP`, so doing it in the producer can duplicate work. Base R always checks if a string is ASCII during materialization or `CHARSXP` creation. So forcing ASCII vs. UTF-8 resolution would frequently become a redundant calculation if the string data source doesn't distinguish between ASCII and UTF-8. Data sources outside of R usually don't, and R will determine the resolution later anyway.
 
-`cetype_ext_t` is complete for string data: it represents every encoding state R uses for `CHARSXP`s, along with `CE_ASCII`, `CE_ASCII_OR_UTF8`, and `CE_NA`. The two omitted `cetype_t` values, `CE_SYMBOL` and `CE_ANY`, are unused as encoding states for `CHARSXP`s.
+`cetype_ext_t` is complete for string data: it represents every encoding state R uses for `CHARSXP`s, along with `CETYPE_EXT_ASCII`, `CETYPE_EXT_ASCII_OR_UTF8`, and `CETYPE_EXT_NA`. The two omitted `cetype_t` values, `CE_SYMBOL` and `CE_ANY`, are unused as encoding states for `CHARSXP`s.
 
 ## `charvec`: efficient and flexible ALTREP storage
 

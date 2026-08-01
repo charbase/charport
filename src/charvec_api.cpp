@@ -37,21 +37,21 @@ size_t checked_len_arg(SEXP n_) {
 }
 
 bool valid_bulk_encoding(cetype_ext_t enc) noexcept {
-  switch(enc) {
-  case cetype_ext_t::CE_NATIVE:
-  case cetype_ext_t::CE_UTF8:
-  case cetype_ext_t::CE_LATIN1:
-  case cetype_ext_t::CE_BYTES:
-  case cetype_ext_t::CE_ASCII_OR_UTF8:
-  case cetype_ext_t::CE_ASCII:
-  case cetype_ext_t::CE_NA:
+  switch(enc.value) {
+  case CETYPE_EXT_NATIVE.value:
+  case CETYPE_EXT_UTF8.value:
+  case CETYPE_EXT_LATIN1.value:
+  case CETYPE_EXT_BYTES.value:
+  case CETYPE_EXT_ASCII_OR_UTF8.value:
+  case CETYPE_EXT_ASCII.value:
+  case CETYPE_EXT_NA.value:
     return true;
   }
   return false;
 }
 
 bool bulk_view_is_na(const char * ptr, int len, cetype_ext_t enc) noexcept {
-  return ptr == nullptr || len == NA_INTEGER || enc == cetype_ext_t::CE_NA;
+  return ptr == nullptr || len == NA_INTEGER || enc == CETYPE_EXT_NA;
 }
 
 struct bulk_builder_state {

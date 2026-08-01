@@ -14,6 +14,7 @@
 #include <cstring>
 #include <exception>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -22,6 +23,15 @@ namespace {
 template <typename Fun>
 SEXP guarded(const char * op, Fun fun) {
   return charport_consumer::boundary(op, fun);
+}
+
+// Workers report failures as text. std::exception_ptr would corrupt the heap
+// where a libc++ package is loaded into a libstdc++ R, and these errors only
+// ever become R conditions.
+std::string current_exception_text() {
+  char buffer[512];
+  charport_consumer::unwind_detail::describe_current_exception(buffer, sizeof(buffer));
+  return std::string(buffer);
 }
 
 void join_all(std::vector<std::thread> & threads) {
@@ -38,7 +48,7 @@ int thread_error_strviews(
   for(R_xlen_t i = 0; i < size; ++i) {
     out_ptrs[i] = nullptr;
     out_lens[i] = NA_INTEGER;
-    out_encodings[i] = cetype_ext_t::CE_NA;
+    out_encodings[i] = CETYPE_EXT_NA;
   }
   return CHARPORT_STATUS_ERROR;
 }
@@ -66,7 +76,7 @@ SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
 
     charport::charvec::ParallelBuilder b(n, static_cast<size_t>(k));
 
-    std::vector<std::exception_ptr> worker_errors(static_cast<size_t>(k));
+    std::vector<std::string> worker_errors(static_cast<size_t>(k));
     std::vector<std::thread> threads;
     threads.reserve(static_cast<size_t>(k));
     try {
@@ -74,7 +84,7 @@ SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
         const R_xlen_t lo = n * j / k;
         const R_xlen_t hi = n * (j + 1) / k;
         const size_t shard = static_cast<size_t>(j);
-        std::exception_ptr * error = &worker_errors[static_cast<size_t>(j)];
+        std::string * error = &worker_errors[static_cast<size_t>(j)];
         threads.emplace_back([&b, &r, shard, lo, hi, error]() {
           try {
             const R_xlen_t m = hi - lo;
@@ -87,7 +97,7 @@ SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
               b.set(shard, i, views[static_cast<R_xlen_t>(j)]);
             }
           } catch(...) {
-            *error = std::current_exception();
+            *error = current_exception_text();
           }
         });
       }
@@ -96,9 +106,9 @@ SEXP C_consumer_threaded_rebuild(SEXP x, SEXP n_threads_) {
       throw;
     }
     join_all(threads);
-    for(const std::exception_ptr & error : worker_errors) {
-      if(error) {
-        std::rethrow_exception(error);
+    for(const std::string & error : worker_errors) {
+      if(!error.empty()) {
+        throw std::runtime_error(error);
       }
     }
     return b.to_sexp();
@@ -124,14 +134,14 @@ SEXP C_consumer_threaded_split(SEXP x, SEXP n_threads_) {
       stores.emplace_back(0, 0);
     }
 
-    std::vector<std::exception_ptr> worker_errors(static_cast<size_t>(k));
+    std::vector<std::string> worker_errors(static_cast<size_t>(k));
     std::vector<std::thread> threads;
     threads.reserve(static_cast<size_t>(k));
     try {
       for(int j = 0; j < k; ++j) {
         const R_xlen_t lo = n * j / k;
         const R_xlen_t hi = n * (j + 1) / k;
-        std::exception_ptr * error = &worker_errors[static_cast<size_t>(j)];
+        std::string * error = &worker_errors[static_cast<size_t>(j)];
         threads.emplace_back([&reader, &stores, j, lo, hi, error]() {
           try {
             const R_xlen_t count = hi - lo;
@@ -146,7 +156,7 @@ SEXP C_consumer_threaded_split(SEXP x, SEXP n_threads_) {
             }
             stores[static_cast<size_t>(j)] = builder.release_store();
           } catch(...) {
-            *error = std::current_exception();
+            *error = current_exception_text();
           }
         });
       }
@@ -155,9 +165,9 @@ SEXP C_consumer_threaded_split(SEXP x, SEXP n_threads_) {
       throw;
     }
     join_all(threads);
-    for(const std::exception_ptr & error : worker_errors) {
-      if(error) {
-        std::rethrow_exception(error);
+    for(const std::string & error : worker_errors) {
+      if(!error.empty()) {
+        throw std::runtime_error(error);
       }
     }
 
@@ -181,19 +191,19 @@ SEXP C_consumer_threaded_split(SEXP x, SEXP n_threads_) {
 SEXP C_consumer_worker_throws(void) {
   return guarded("worker_throws", [&]() -> SEXP {
     charport::charvec::ParallelBuilder b(2, 2);
-    std::vector<std::exception_ptr> worker_errors(2);
+    std::vector<std::string> worker_errors(2);
     std::vector<std::thread> threads;
     try {
       for(int j = 0; j < 2; ++j) {
-        std::exception_ptr * error = &worker_errors[static_cast<size_t>(j)];
+        std::string * error = &worker_errors[static_cast<size_t>(j)];
         threads.emplace_back([&b, j, error]() {
           try {
             if(j == 1) {
               throw std::runtime_error("injected worker failure");
             }
-            b.set(static_cast<size_t>(j), j, "ok", 2, cetype_ext_t::CE_ASCII);
+            b.set(static_cast<size_t>(j), j, "ok", 2, CETYPE_EXT_ASCII);
           } catch(...) {
-            *error = std::current_exception();
+            *error = current_exception_text();
           }
         });
       }
@@ -202,9 +212,9 @@ SEXP C_consumer_worker_throws(void) {
       throw;
     }
     join_all(threads);
-    for(const std::exception_ptr & error : worker_errors) {
-      if(error) {
-        std::rethrow_exception(error);
+    for(const std::string & error : worker_errors) {
+      if(!error.empty()) {
+        throw std::runtime_error(error);
       }
     }
     return b.to_sexp();
@@ -219,7 +229,7 @@ SEXP C_consumer_threaded_access_errors(void) {
     raw.capabilities = charport_reader_capabilities{false, true};
     charport::Reader reader(raw);
 
-    std::vector<std::exception_ptr> errors(2);
+    std::vector<std::string> errors(2);
     std::vector<std::thread> threads;
     threads.reserve(2);
     try {
@@ -228,7 +238,7 @@ SEXP C_consumer_threaded_access_errors(void) {
           try {
             (void)reader.view(i);
           } catch(...) {
-            errors[static_cast<size_t>(i)] = std::current_exception();
+            errors[static_cast<size_t>(i)] = current_exception_text();
           }
         });
       }
@@ -240,15 +250,16 @@ SEXP C_consumer_threaded_access_errors(void) {
 
     bool ok = true;
     for(size_t i = 0; i < errors.size(); ++i) {
-      if(!errors[i]) {
+      if(errors[i].empty()) {
         ok = false;
         continue;
       }
       try {
-        std::rethrow_exception(errors[i]);
+        throw std::runtime_error(errors[i]);
       } catch(const std::runtime_error & error) {
-        ok = ok &&
-          std::strcmp(error.what(), "charport Reader access failed") == 0;
+        ok = ok && std::strcmp(
+          error.what(),
+          "std::runtime_error: charport Reader access failed") == 0;
       } catch(...) {
         ok = false;
       }

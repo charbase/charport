@@ -196,6 +196,7 @@ static inline SEXP charport_charvec_from_views(
 
 #ifdef __cplusplus
 
+#include <cstdio>
 #include <exception>
 #include <iterator>
 #include <new>
@@ -280,10 +281,39 @@ inline charport_reader resolve(SEXP x) {
 namespace detail {
 
 #if defined(RCPP_VERSION) || defined(CHARPORT_CPP11_INCLUDED)
+// Flatten the active exception into a fixed buffer, naming its type.
+//
+// The obvious carrier here is std::exception_ptr, but it cannot be used. Its
+// refcount helpers are exported only by libc++abi, while
+// __cxa_allocate_exception is exported by libstdc++ too. When a package built
+// against libc++ is loaded into an R built against libstdc++ -- the
+// configuration of r-hub's clang containers -- the two disagree about the
+// __cxa_exception header and freeing the exception corrupts the heap. Copying
+// the text out holds no exception object across R's C frames. Nothing is lost:
+// the failure only ever becomes an R condition, which carries no C++ type.
+inline void describe_current_exception(char * out, size_t size) noexcept {
+  try {
+    throw;
+  } catch(const std::bad_alloc & error) {
+    std::snprintf(out, size, "std::bad_alloc: %s", error.what());
+  } catch(const std::out_of_range & error) {
+    std::snprintf(out, size, "std::out_of_range: %s", error.what());
+  } catch(const std::logic_error & error) {
+    std::snprintf(out, size, "std::logic_error: %s", error.what());
+  } catch(const std::runtime_error & error) {
+    std::snprintf(out, size, "std::runtime_error: %s", error.what());
+  } catch(const std::exception & error) {
+    std::snprintf(out, size, "std::exception: %s", error.what());
+  } catch(...) {
+    std::snprintf(out, size, "unknown C++ exception");
+  }
+}
+
 template<typename Fn>
 struct framework_call_state {
   Fn * fn;
-  std::exception_ptr error;
+  bool failed;
+  char message[512];
 };
 
 template<typename Fn>
@@ -293,16 +323,18 @@ inline SEXP framework_call_body(void * data) noexcept {
   try {
     return (*state->fn)();
   } catch(...) {
-    // Framework unwind callbacks cross R's C frames before returning to C++.
-    state->error = std::current_exception();
+    // Framework unwind callbacks cross R's C frames before returning to C++,
+    // so describe the failure here and raise it again once we are back.
+    state->failed = true;
+    describe_current_exception(state->message, sizeof(state->message));
     return R_NilValue;
   }
 }
 
 template<typename Fn>
 inline void finish_framework_call(framework_call_state<Fn> & state) {
-  if(state.error) {
-    std::rethrow_exception(state.error);
+  if(state.failed) {
+    throw std::runtime_error(state.message);
   }
 }
 #endif
@@ -311,7 +343,7 @@ inline void finish_framework_call(framework_call_state<Fn> & state) {
 template<typename Fn>
 inline SEXP call_with_rcpp(Fn && fn) {
   typedef typename std::remove_reference<Fn>::type fun_type;
-  framework_call_state<fun_type> state{&fn, std::exception_ptr()};
+  framework_call_state<fun_type> state{&fn, false, {}};
   SEXP out = Rcpp::unwindProtect(&framework_call_body<fun_type>, &state);
   finish_framework_call(state);
   return out;
@@ -331,7 +363,7 @@ inline charport_reader resolve_with_rcpp(SEXP x) {
 template<typename Fn>
 inline SEXP call_with_cpp11(Fn && fn) {
   typedef typename std::remove_reference<Fn>::type fun_type;
-  framework_call_state<fun_type> state{&fn, std::exception_ptr()};
+  framework_call_state<fun_type> state{&fn, false, {}};
   SEXP out = cpp11::unwind_protect([&]() -> SEXP {
     return framework_call_body<fun_type>(&state);
   });
@@ -509,7 +541,7 @@ public:
     return len;
   }
   cetype_ext_t encoding(R_xlen_t i) const {
-    cetype_ext_t enc = cetype_ext_t::CE_NA;
+    cetype_ext_t enc = CETYPE_EXT_NA;
     const int status = r_.range.encodings(r_.state, i, 1, &enc);
     detail::check_access(status);
     return enc;
@@ -517,7 +549,7 @@ public:
   StrView view(R_xlen_t i) const {
     const char * ptr = nullptr;
     int len = NA_INTEGER;
-    cetype_ext_t enc = cetype_ext_t::CE_NA;
+    cetype_ext_t enc = CETYPE_EXT_NA;
     const int status =
       r_.range.strviews(r_.state, i, 1, &ptr, &len, &enc);
     detail::check_access(status);
@@ -622,7 +654,7 @@ public:
     StrView operator*() const {
       const char * ptr = nullptr;
       int len = NA_INTEGER;
-      cetype_ext_t enc = cetype_ext_t::CE_NA;
+      cetype_ext_t enc = CETYPE_EXT_NA;
       const int status =
         r_->range.strviews(r_->state, i_, 1, &ptr, &len, &enc);
       detail::check_access(status);
