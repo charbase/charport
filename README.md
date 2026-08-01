@@ -3,7 +3,7 @@
 
 <img src="man/figures/logo.svg" alt="charport logo" align="right" width="160"/>
 
-<a href="https://github.com/traversc/charport/actions"><img src="https://github.com/traversc/charport/actions/workflows/R-CMD-check.yaml/badge.svg" alt="R-CMD-check status"/></a>
+<a href="https://github.com/charbase/charport/actions"><img src="https://github.com/charbase/charport/actions/workflows/R-CMD-check.yaml/badge.svg" alt="R-CMD-check status"/></a>
 
 ## ALTREP string interoperability
 
@@ -78,11 +78,11 @@ The developer guide covers registration, reading, fallback behavior,
 pointer lifetime, thread safety, and the `charvec` builder.
 
 - [Package developer
-  guide](https://charport.github.io/charport/articles/developer-guide.html),
+  guide](https://charbase.github.io/charport/articles/developer-guide.html),
   also listed by `utils::vignette(package = "charport")`.
 - [Error
-  handling](https://charport.github.io/charport/articles/error-handling.html),
+  handling](https://charbase.github.io/charport/articles/error-handling.html),
   for a deeper dive into error handling.
 - [Design
-  rationale](https://charport.github.io/charport/articles/design-rationale.html),
+  rationale](https://charbase.github.io/charport/articles/design-rationale.html),
   for an explanation of design choices in this package.

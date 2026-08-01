@@ -19,7 +19,7 @@ vignette: >
 ::: {.content-visible when-format="gfm"}
 <img src="man/figures/logo.svg" alt="charport logo" align="right" width="160"/>
 
-<a href="https://github.com/traversc/charport/actions"><img src="https://github.com/traversc/charport/actions/workflows/R-CMD-check.yaml/badge.svg" alt="R-CMD-check status"/></a>
+<a href="https://github.com/charbase/charport/actions"><img src="https://github.com/charbase/charport/actions/workflows/R-CMD-check.yaml/badge.svg" alt="R-CMD-check status"/></a>
 :::
 
 ## ALTREP string interoperability
@@ -81,9 +81,9 @@ Package authors can use `charport` from either side of the interface.
 The developer guide covers registration, reading, fallback behavior, pointer lifetime, thread safety, and the `charvec` builder.
 
 ::: {.content-visible when-format="gfm"}
-- [Package developer guide](https://charport.github.io/charport/articles/developer-guide.html), also listed by `utils::vignette(package = "charport")`.
-- [Error handling](https://charport.github.io/charport/articles/error-handling.html), for a deeper dive into error handling.
-- [Design rationale](https://charport.github.io/charport/articles/design-rationale.html), for an explanation of design choices in this package.
+- [Package developer guide](https://charbase.github.io/charport/articles/developer-guide.html), also listed by `utils::vignette(package = "charport")`.
+- [Error handling](https://charbase.github.io/charport/articles/error-handling.html), for a deeper dive into error handling.
+- [Design rationale](https://charbase.github.io/charport/articles/design-rationale.html), for an explanation of design choices in this package.
 :::
 
 ::: {.content-visible when-format="html"}

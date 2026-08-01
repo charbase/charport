@@ -13,9 +13,9 @@ Infrastructure for ALTREP character vectors: a reference ALTREP string class ('c
 \seealso{
 Useful links:
 \itemize{
-  \item \url{https://charport.github.io/charport/}
-  \item \url{https://github.com/traversc/charport}
-  \item Report bugs at \url{https://github.com/traversc/charport/issues}
+  \item \url{https://github.com/charbase/charport}
+  \item \url{https://charbase.github.io/charport/}
+  \item Report bugs at \url{https://github.com/charbase/charport/issues}
 }
 
 }

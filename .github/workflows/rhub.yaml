@@ -1,13 +1,23 @@
 # R-hub's generic GitHub Actions workflow file. Its canonical location is at
 # https://github.com/r-hub/actions/blob/v1/workflows/rhub.yaml
-# You can update this file to a newer version using the rhub2 package:
 #
-# rhub::rhub_setup()
+# This copy is modified and `rhub::rhub_setup()` must not overwrite it:
 #
-# It is unlikely that you need to modify this file manually.
+#   * the r-hub actions are pinned by commit SHA rather than the mutable v1 tag;
+#   * `config` defaults to every platform r-hub offers, not the three-platform
+#     upstream default.
+#
+# The pinned SHA resolves the platform names, so the pin and the list below are
+# two halves of one fact and are updated together by `make rhub-platforms`.
+#
+# Trigger this from the Actions tab with the "Run workflow" button. It is
+# deliberately not run on push: a full sweep is tens of jobs, several of them
+# instrumented builds that take hours.
 
 name: R-hub
-run-name: "${{ github.event.inputs.id }}: ${{ github.event.inputs.name || format('Manually run by {0}', github.triggering_actor) }}"
+run-name: >-
+  ${{ github.event.inputs.id || format('Manual run by @{0}', github.triggering_actor) }}:
+  ${{ github.event.inputs.name || github.event.inputs.config }}
 
 permissions:
   contents: read
@@ -16,14 +26,16 @@ on:
   workflow_dispatch:
     inputs:
       config:
-        description: 'A comma separated list of R-hub platforms to use.'
+        description: >-
+          Comma-separated list of R-hub platforms to use.
+          Full list: https://r-hub.github.io/containers/
         type: string
-        default: 'linux,windows,macos'
+        default: 'ubuntu-clang,ubuntu-gcc12,ubuntu-next,ubuntu-release,atlas,c23,clang-asan,clang-ubsan,clang16,clang17,clang18,clang19,clang20,clang21,clang22,gcc13,gcc14,gcc15,gcc16,gcc-asan,lto,nold,noremap,valgrind,mkl,intel,donttest,nosuggests,rchk,vnu,windows,macos,macos-arm64,linux,m1-san' # rhub-platforms
       name:
-        description: 'Run name. You can leave this empty now.'
+        description: 'Run name. You can leave this empty.'
         type: string
       id:
-        description: 'Unique ID. You can leave this empty now.'
+        description: 'Unique ID. You can leave this empty.'
         type: string
 
 jobs:
@@ -36,7 +48,7 @@ jobs:
 
     steps:
     # NO NEED TO CHECKOUT HERE
-    - uses: r-hub/actions/setup@4b161272a59fcd8192e5bd5e6ce183c025cb80fa # v1
+    - uses: r-hub/actions/setup@cf6c8eff3145ef225104294e6b0c023de4bba9c6 # v1.7.7
       with:
         config: ${{ github.event.inputs.config }}
       id: rhub-setup
@@ -54,16 +66,16 @@ jobs:
       image: ${{ matrix.config.container }}
 
     steps:
-      - uses: r-hub/actions/checkout@4b161272a59fcd8192e5bd5e6ce183c025cb80fa # v1
-      - uses: r-hub/actions/platform-info@4b161272a59fcd8192e5bd5e6ce183c025cb80fa # v1
+      - uses: r-hub/actions/checkout@cf6c8eff3145ef225104294e6b0c023de4bba9c6 # v1.7.7
+      - uses: r-hub/actions/platform-info@cf6c8eff3145ef225104294e6b0c023de4bba9c6 # v1.7.7
         with:
           token: ${{ secrets.RHUB_TOKEN }}
           job-config: ${{ matrix.config.job-config }}
-      - uses: r-hub/actions/setup-deps@4b161272a59fcd8192e5bd5e6ce183c025cb80fa # v1
+      - uses: r-hub/actions/setup-deps@cf6c8eff3145ef225104294e6b0c023de4bba9c6 # v1.7.7
         with:
           token: ${{ secrets.RHUB_TOKEN }}
           job-config: ${{ matrix.config.job-config }}
-      - uses: r-hub/actions/run-check@4b161272a59fcd8192e5bd5e6ce183c025cb80fa # v1
+      - uses: r-hub/actions/run-check@cf6c8eff3145ef225104294e6b0c023de4bba9c6 # v1.7.7
         with:
           token: ${{ secrets.RHUB_TOKEN }}
           job-config: ${{ matrix.config.job-config }}
@@ -79,20 +91,20 @@ jobs:
         config: ${{ fromJson(needs.setup.outputs.platforms) }}
 
     steps:
-      - uses: r-hub/actions/checkout@4b161272a59fcd8192e5bd5e6ce183c025cb80fa # v1
-      - uses: r-hub/actions/setup-r@4b161272a59fcd8192e5bd5e6ce183c025cb80fa # v1
+      - uses: r-hub/actions/checkout@cf6c8eff3145ef225104294e6b0c023de4bba9c6 # v1.7.7
+      - uses: r-hub/actions/setup-r@cf6c8eff3145ef225104294e6b0c023de4bba9c6 # v1.7.7
         with:
           job-config: ${{ matrix.config.job-config }}
           token: ${{ secrets.RHUB_TOKEN }}
-      - uses: r-hub/actions/platform-info@4b161272a59fcd8192e5bd5e6ce183c025cb80fa # v1
+      - uses: r-hub/actions/platform-info@cf6c8eff3145ef225104294e6b0c023de4bba9c6 # v1.7.7
         with:
           token: ${{ secrets.RHUB_TOKEN }}
           job-config: ${{ matrix.config.job-config }}
-      - uses: r-hub/actions/setup-deps@4b161272a59fcd8192e5bd5e6ce183c025cb80fa # v1
+      - uses: r-hub/actions/setup-deps@cf6c8eff3145ef225104294e6b0c023de4bba9c6 # v1.7.7
         with:
           job-config: ${{ matrix.config.job-config }}
           token: ${{ secrets.RHUB_TOKEN }}
-      - uses: r-hub/actions/run-check@4b161272a59fcd8192e5bd5e6ce183c025cb80fa # v1
+      - uses: r-hub/actions/run-check@cf6c8eff3145ef225104294e6b0c023de4bba9c6 # v1.7.7
         with:
           job-config: ${{ matrix.config.job-config }}
           token: ${{ secrets.RHUB_TOKEN }}
