@@ -38,6 +38,11 @@ on:
         description: 'Unique ID. You can leave this empty.'
         type: string
 
+# The vignettes require Quarto, which R-hub does not install. Skip them.
+env:
+  BUILD_ARGS: --no-build-vignettes
+  CHECK_ARGS: --ignore-vignettes
+
 jobs:
 
   setup:
