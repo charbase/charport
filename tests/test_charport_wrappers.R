@@ -221,8 +221,12 @@ stopifnot(identical(release_test_count(), before + 1L), identical(unwind_probe_c
 
 catn("Rcpp and cpp11 adapt Reader construction and charvec conversion errors")
 framework_dlls <- list()
-for (framework in c("Rcpp", "cpp11")) {
-  if (!requireNamespace(framework, quietly = TRUE)) {
+framework_available <- c(
+  Rcpp = requireNamespace("Rcpp", quietly = TRUE),
+  cpp11 = requireNamespace("cpp11", quietly = TRUE)
+)
+for (framework in names(framework_available)) {
+  if (!framework_available[[framework]]) {
     catn(sprintf("framework factory test skipped: %s is unavailable", framework))
     next
   }

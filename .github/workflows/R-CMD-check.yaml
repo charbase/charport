@@ -25,14 +25,25 @@ jobs:
           # may change on short notice", so CI against R-devel is mandatory.
           - {os: macOS-latest,   r: 'devel',   http-user-agent: 'release'}
           - {os: macOS-latest,   r: 'release'}
+          - {os: macOS-latest,   r: 'oldrel-1'}
+          - {os: macOS-latest,   r: 'oldrel-2'}
+          - {os: macOS-latest,   r: 'oldrel-3'}
+          - {os: macOS-latest,   r: 'oldrel-4'}
+          - {os: macOS-latest,   r: '4.1'}
           - {os: windows-latest, r: 'devel',   http-user-agent: 'release'}
           - {os: windows-latest, r: 'release'}
-          - {os: ubuntu-latest,  r: 'devel', http-user-agent: 'release'}
+          - {os: windows-latest, r: 'oldrel-1'}
+          - {os: windows-latest, r: 'oldrel-2'}
+          - {os: windows-latest, r: 'oldrel-3'}
+          - {os: windows-latest, r: 'oldrel-4'}
+          - {os: windows-latest, r: '4.1'}
+          - {os: ubuntu-latest,  r: 'devel',   http-user-agent: 'release'}
           - {os: ubuntu-latest,  r: 'release'}
           - {os: ubuntu-latest,  r: 'oldrel-1'}
           - {os: ubuntu-latest,  r: 'oldrel-2'}
           - {os: ubuntu-latest,  r: 'oldrel-3'}
           - {os: ubuntu-latest,  r: 'oldrel-4'}
+          - {os: ubuntu-latest,  r: '4.1'}
 
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
@@ -54,8 +65,15 @@ jobs:
 
       - uses: r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
         with:
-          extra-packages: any::rcmdcheck
+          extra-packages: any::rcmdcheck, cpp11@>=0.5.2
           needs: check
+
+      - name: Verify cpp11 version
+        shell: Rscript {0}
+        run: |
+          stopifnot(
+            packageVersion("cpp11") >= package_version("0.5.2")
+          )
 
       - uses: r-lib/actions/check-r-package@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
         with:

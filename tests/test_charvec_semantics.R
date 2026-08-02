@@ -93,7 +93,17 @@ stopifnot(marks_identical(x[c(TRUE, FALSE, NA)], ref[c(TRUE, FALSE, NA)]))
 stopifnot(marks_identical(x[0L], ref[0L]), length(x[0L]) == 0L)
 stopifnot(marks_identical(x[c(2.0, 4.0)], ref[c(2.0, 4.0)]))
 real_edge_idx <- c(Inf, -Inf, NaN, 2147483648, 2.9)
-stopifnot(marks_identical(x[real_edge_idx], ref[real_edge_idx]))
+edge_subset <- function(value) {
+  tryCatch(value[real_edge_idx], error = identity)
+}
+actual <- edge_subset(x)
+expected <- edge_subset(ref)
+if (inherits(expected, "error")) {
+  stopifnot(inherits(actual, "error"))
+  stopifnot(identical(conditionMessage(actual), conditionMessage(expected)))
+} else {
+  stopifnot(marks_identical(actual, expected))
+}
 stopifnot(identical(names(x[c(2L, 5L)]), names(ref[c(2L, 5L)])))
 for (i in 1:25) {
   idx <- sample(c(seq_along(ref), NA, 50L), size = sample(0:12, 1), replace = TRUE)

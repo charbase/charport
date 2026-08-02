@@ -1,11 +1,9 @@
-# charport
+# charport <img src="man/figures/logo.svg" alt="charport logo" align="right" width="160" />
 
-
-<img src="man/figures/logo.svg" alt="charport logo" align="right" width="160"/>
 
 <a href="https://github.com/charbase/charport/actions"><img src="https://github.com/charbase/charport/actions/workflows/R-CMD-check.yaml/badge.svg" alt="R-CMD-check status"/></a>
 
-## ALTREP string interoperability
+**ALTREP string interoperability**
 
 R’s ALTREP system lets packages represent string data more efficiently.
 But acrosses packages, ALTREP vectors usually *materialize* back into

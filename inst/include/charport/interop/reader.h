@@ -564,19 +564,21 @@ public:
     );
     detail::check_access(status);
   }
-  // The int-start overloads exist because a literal 0 start would otherwise
-  // be ambiguous between R_xlen_t and the indexed const R_xlen_t * overloads.
-  void views(int start, R_xlen_t size, const char ** out_ptrs,
-             int * out_lens, cetype_ext_t * out_encs) const {
-    views(static_cast<R_xlen_t>(start), size, out_ptrs, out_lens, out_encs);
-  }
   void views(R_xlen_t start, R_xlen_t size, StrViews & out) const {
     out.resize(size);
     views(start, size, out.ptrs(), out.lengths(), out.encodings());
   }
+#ifdef LONG_VECTOR_SUPPORT
+  // These overloads disambiguate a literal 0 from the indexed pointer forms.
+  // Without long-vector support, R_xlen_t is int and they would be duplicates.
+  void views(int start, R_xlen_t size, const char ** out_ptrs,
+             int * out_lens, cetype_ext_t * out_encs) const {
+    views(static_cast<R_xlen_t>(start), size, out_ptrs, out_lens, out_encs);
+  }
   void views(int start, R_xlen_t size, StrViews & out) const {
     views(static_cast<R_xlen_t>(start), size, out);
   }
+#endif
 
   void byteviews(R_xlen_t start, R_xlen_t size, const char ** out_ptrs,
                  int * out_lens) const {
@@ -584,32 +586,36 @@ public:
       r_.range.byteviews(r_.state, start, size, out_ptrs, out_lens);
     detail::check_access(status);
   }
-  void byteviews(int start, R_xlen_t size, const char ** out_ptrs,
-                 int * out_lens) const {
-    byteviews(static_cast<R_xlen_t>(start), size, out_ptrs, out_lens);
-  }
   void byteviews(R_xlen_t start, R_xlen_t size, ByteViews & out) const {
     out.resize(size);
     byteviews(start, size, out.ptrs(), out.lengths());
   }
+#ifdef LONG_VECTOR_SUPPORT
+  void byteviews(int start, R_xlen_t size, const char ** out_ptrs,
+                 int * out_lens) const {
+    byteviews(static_cast<R_xlen_t>(start), size, out_ptrs, out_lens);
+  }
   void byteviews(int start, R_xlen_t size, ByteViews & out) const {
     byteviews(static_cast<R_xlen_t>(start), size, out);
   }
+#endif
 
   void lengths(R_xlen_t start, R_xlen_t size, int * out) const {
     const int status = r_.range.lengths(r_.state, start, size, out);
     detail::check_access(status);
   }
-  void lengths(int start, R_xlen_t size, int * out) const {
-    lengths(static_cast<R_xlen_t>(start), size, out);
-  }
   void encodings(R_xlen_t start, R_xlen_t size, cetype_ext_t * out) const {
     const int status = r_.range.encodings(r_.state, start, size, out);
     detail::check_access(status);
   }
+#ifdef LONG_VECTOR_SUPPORT
+  void lengths(int start, R_xlen_t size, int * out) const {
+    lengths(static_cast<R_xlen_t>(start), size, out);
+  }
   void encodings(int start, R_xlen_t size, cetype_ext_t * out) const {
     encodings(static_cast<R_xlen_t>(start), size, out);
   }
+#endif
 
   void views(const R_xlen_t * indices, R_xlen_t size, const char ** out_ptrs,
              int * out_lens, cetype_ext_t * out_encs) const {
