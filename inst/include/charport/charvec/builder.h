@@ -60,6 +60,15 @@ struct Shard {
   Shard & operator=(Shard &&) noexcept = default;
 };
 
+// Shards use 128 byte alignment to optimize cache locality on both x86 and mac-arm
+// This shows up significantly on benchmarks. Changing alignment should measure impact on performance.
+// Only ParallelBuilder holds shards this way: the padding earns its keep because
+// they sit next to each other and each worker writes its own once per record. A
+// serial Builder has one shard and no neighbour, so it holds a bare Shard.
+struct alignas(128) ShardCell {
+  Shard shard;
+};
+
 inline char * allocate_bytes(Shard & shard, uint32_t len, size_t vector_length_hint) {
   if(len == 0) {
     return const_cast<char*>(components::empty_data());
@@ -243,7 +252,7 @@ public:
       throw std::runtime_error("charvec builder: n_shards must be >= 1");
     }
     Store next_store(builder_detail::checked_vector_size(n), 0);
-    std::vector<builder_detail::Shard> next_shards;
+    std::vector<builder_detail::ShardCell> next_shards;
     next_shards.reserve(n_shards);
     for(size_t i = 0; i < n_shards; ++i) {
       next_shards.emplace_back();
@@ -307,18 +316,18 @@ private:
     if(shard >= shards_.size()) {
       throw std::runtime_error("charvec builder: shard index out of range");
     }
-    return shards_[shard];
+    return shards_[shard].shard;
   }
 
   void finish_store() noexcept {
-    for(builder_detail::Shard & shard : shards_) {
-      store_.slices.prepend(shard.slices);
-      shard = builder_detail::Shard();
+    for(builder_detail::ShardCell & cell : shards_) {
+      store_.slices.prepend(cell.shard.slices);
+      cell.shard = builder_detail::Shard();
     }
   }
 
   Store store_;
-  std::vector<builder_detail::Shard> shards_;
+  std::vector<builder_detail::ShardCell> shards_;
 };
 
 class GrowableBuilder {

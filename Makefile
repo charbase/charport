@@ -96,10 +96,10 @@ test-cxx:
 	bash tools/check-cxx-standards.sh
 
 bench:
-	Rscript inst/extra/benchmark.R 5
+	Rscript tools/benchmark/benchmark.R 5
 
 bench-list:
-	Rscript inst/extra/benchmark_list.R 5 1 100000
+	Rscript tools/benchmark/benchmark_list.R 5 1 100000
 
 # ASan + UBSan over the full test suite. Only the package (and the
 # test-compiled consumer library, via R_MAKEVARS_USER) is instrumented -- R
