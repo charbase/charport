@@ -18,6 +18,10 @@ namespace cpi = charport::internal;
 namespace cpv = charport::charvec;
 namespace cpc = charport::charvec::components;
 
+namespace charvec_detail {
+inline SEXP wrap_store_with_cleanup(cpv::Store * source) noexcept;
+}
+
 namespace charport {
 namespace internal {
 
@@ -289,6 +293,107 @@ inline cpv::Store deep_copy_store(const cpv::Store & source) {
   return rebuild_store(source.records);
 }
 
+// The private ALTREP wrapper consumes a heap Store.  Returning the pointer
+// from these native-only helpers lets every Builder/temporary Store finish
+// before R_ExecWithCleanup starts.
+inline cpv::Store * heap_store(cpv::Store && source) {
+  return new cpv::Store(std::move(source));
+}
+
+inline cpv::Store * store_from_chars(R_xlen_t n, const SEXP * ptr) {
+  cpv::Builder builder(n);
+  for(R_xlen_t i = 0; i < n; ++i) {
+    builder.set(i, cpi::charsxp_to_view(ptr[i]));
+  }
+  cpv::Store store = builder.release_store();
+  return heap_store(std::move(store));
+}
+
+inline cpv::Store * duplicate_store(const cpv::Store & source) {
+  cpv::Store store = deep_copy_store(source);
+  return heap_store(std::move(store));
+}
+
+inline cpv::Store * subset_store(
+    const cpv::Store & source, R_xlen_t source_length, R_xlen_t output_length,
+    const int * integer_indices, const double * real_indices) {
+  cpv::Builder out(output_length);
+  auto copy_element = [&](size_t out_i, R_xlen_t zero_based) {
+    if(zero_based < 0 || zero_based >= source_length) {
+      return;
+    }
+    const charport_strview record = source.view(static_cast<size_t>(zero_based));
+    if(!record.is_na()) {
+      out.set(static_cast<R_xlen_t>(out_i), record);
+    }
+  };
+
+  if(integer_indices != nullptr) {
+    for(R_xlen_t i = 0; i < output_length; ++i) {
+      if(integer_indices[i] != NA_INTEGER) {
+        copy_element(static_cast<size_t>(i),
+                     static_cast<R_xlen_t>(integer_indices[i]) - 1);
+      }
+    }
+  } else {
+    for(R_xlen_t i = 0; i < output_length; ++i) {
+      const double one_based = real_indices[i];
+      if(R_FINITE(one_based) && one_based >= 1.0 &&
+         one_based <= static_cast<double>(source_length)) {
+        copy_element(static_cast<size_t>(i),
+                     static_cast<R_xlen_t>(one_based) - 1);
+      }
+    }
+  }
+
+  cpv::Store store = out.release_store();
+  return heap_store(std::move(store));
+}
+
+inline cpv::Store * unserialize_store(const charvec_serialized_layout & layout) {
+  const unsigned char * size_offset = layout.size_offset;
+  const unsigned char * enc_offset = layout.enc_offset;
+  const unsigned char * data_offset = layout.data_offset;
+
+  cpv::Builder out(static_cast<R_xlen_t>(layout.n));
+  for(size_t i = 0; i < layout.n; ++i) {
+    const uint32_t size = charvec_read_u32_advance(size_offset, layout.swap);
+    if(!cpi::check_r_string_len(size)) {
+      throw std::runtime_error("serialized string size exceeds R string size");
+    }
+    const cetype_ext_t encoding = charport_cetype_ext(*enc_offset++);
+    const size_t stored_len = static_cast<size_t>(size);
+    const char * payload = charvec_serialized_payload(
+      data_offset, layout.data_end, stored_len);
+    // Untrusted input: accept every encoding a record can legitimately hold
+    // and reject only an out-of-range encoding byte.
+    switch(encoding.value) {
+    case CETYPE_EXT_ASCII.value:
+    case CETYPE_EXT_UTF8.value:
+    case CETYPE_EXT_ASCII_OR_UTF8.value:
+    case CETYPE_EXT_LATIN1.value:
+    case CETYPE_EXT_NATIVE.value:
+    case CETYPE_EXT_BYTES.value:
+      out.set(static_cast<R_xlen_t>(i), payload, stored_len, encoding);
+      break;
+    case CETYPE_EXT_NA.value:
+      if(stored_len != 0) {
+        throw std::runtime_error("serialized NA string must have zero length");
+      }
+      out.set_na(static_cast<R_xlen_t>(i));
+      break;
+    default:
+      throw std::runtime_error("invalid string encoding in serialized_state");
+    }
+  }
+
+  if(data_offset != layout.data_end) {
+    throw std::runtime_error("serialized_state has trailing bytes");
+  }
+  cpv::Store store = out.release_store();
+  return heap_store(std::move(store));
+}
+
 inline char * store_reserve(cpv::Store & store, size_t idx, size_t len,
                             cetype_ext_t enc) {
   const int stored_len = cpc::checked_string_size(len, "stored string length");
@@ -315,11 +420,9 @@ inline char * store_reserve(cpv::Store & store, size_t idx, size_t len,
   return dest;
 }
 
-// INVARIANT: mutating a record of a wrapped charvec must keep the Elt cache
-// (the STRSXP in the data1 external pointer's protected slot) coherent —
-// write the new value through, or re-punch the hole with R_BlankString.
-// Every mutation currently funnels through charvec_altrep::string_Set_elt,
-// which writes through; a new caller of store_assign must do the same.
+// Keep the Elt cache in sync with the Store. Write through an allocated
+// chunk, or leave an untouched chunk as R_NilValue. Mutations go through
+// string_Set_elt.
 inline void store_assign(cpv::Store & store, size_t idx,
                          const charport_strview & value) {
   const size_t len = value.is_na() ? 0 : static_cast<size_t>(value.len);
@@ -337,6 +440,25 @@ inline void compact_store(cpv::Store & store) {
 
 struct charvec_altrep {
   static R_altrep_class_t class_t;
+
+  // The Store is the source of truth. The Elt cache only roots CHARSXPs so
+  // STRING_ELT results stay alive across later allocations; it must stay in
+  // sync with the Store. It is a VECSXP of 1024-element STRSXP chunks in
+  // R_ExternalPtrProtected(data1). R_BlankString is a miss (empty strings
+  // are reminted). Chunks are allocated on first touch. data2 stays
+  // R_NilValue until full materialization.
+  static constexpr R_xlen_t chunk_shift = 10;
+  static constexpr R_xlen_t chunk_size = R_xlen_t(1) << chunk_shift;
+  static constexpr R_xlen_t chunk_mask = chunk_size - 1;
+
+  static R_xlen_t chunk_count(R_xlen_t n) noexcept {
+    return (n >> chunk_shift) + ((n & chunk_mask) != 0);
+  }
+
+  static R_xlen_t chunk_len(R_xlen_t n, R_xlen_t c) noexcept {
+    const R_xlen_t remaining = n - (c << chunk_shift);
+    return remaining > chunk_size ? chunk_size : remaining;
+  }
 
   static SEXP MoveStore(cpv::Store * source) noexcept {
     if(source == nullptr) {
@@ -392,31 +514,67 @@ struct charvec_altrep {
     return TRUE;
   }
 
-  // Full materialization, cached in data2. The store is freed afterwards
-  // because records would duplicate the cached R strings.
+  static void install_materialized(SEXP vec, SEXP xp, SEXP data2) {
+    R_set_altrep_data2(vec, data2);
+    Finalize(xp);
+    R_SetExternalPtrProtected(xp, R_NilValue);
+  }
+
+  // Materialize into data2, reusing cached CHARSXPs, then free the Store.
   static SEXP Materialize(SEXP vec) {
     SEXP data2 = R_altrep_data2(vec);
     if(data2 != R_NilValue) {
       return data2;
     }
-    auto & data1 = Get(vec);
-    const R_xlen_t n = static_cast<R_xlen_t>(data1.size());
-    // Promote the Elt cache instead of converting from scratch: fill the
-    // remaining holes from the store and move the vector to data2, so
-    // elements string_Elt already minted are not converted twice. Filling a
-    // hole and re-filling a genuinely empty element are the same write, so
-    // the R_BlankString marker stays unambiguous.
-    data2 = PROTECT(EltCache(vec));
-    for(R_xlen_t i = 0; i < n; ++i) {
-      if(STRING_ELT(data2, i) == R_BlankString) {
-        SET_STRING_ELT(data2, i, cpi::make_charsxp(data1.view(static_cast<size_t>(i))));
+    auto & store = Get(vec);
+    const R_xlen_t n = static_cast<R_xlen_t>(store.size());
+    SEXP xp = R_altrep_data1(vec);
+    SEXP chunks = R_ExternalPtrProtected(xp);
+
+    // A single allocated chunk is already length n; promote it.
+    if(chunks != R_NilValue && Rf_xlength(chunks) == 1) {
+      SEXP chunk = VECTOR_ELT(chunks, 0);
+      if(chunk != R_NilValue) {
+        data2 = chunk;
+        const SEXP * p = STRING_PTR_RO(data2);
+        for(R_xlen_t i = 0; i < n; ++i) {
+          if(p[i] == R_BlankString) {
+            SET_STRING_ELT(data2, i, cpi::make_charsxp(store.view(static_cast<size_t>(i))));
+          }
+        }
+        install_materialized(vec, xp, data2);
+        return data2;
       }
     }
-    R_set_altrep_data2(vec, data2);
-    Finalize(R_altrep_data1(vec));
-    // data2 serves every later access; the external pointer's handle on the
-    // same vector would only pin a duplicate reference.
-    R_SetExternalPtrProtected(R_altrep_data1(vec), R_NilValue);
+
+    data2 = PROTECT(Rf_allocVector(STRSXP, n));
+    if(chunks == R_NilValue) {
+      for(R_xlen_t i = 0; i < n; ++i) {
+        SET_STRING_ELT(data2, i, cpi::make_charsxp(store.view(static_cast<size_t>(i))));
+      }
+    } else {
+      const R_xlen_t n_chunks = Rf_xlength(chunks);
+      for(R_xlen_t c = 0; c < n_chunks; ++c) {
+        SEXP chunk = VECTOR_ELT(chunks, c);
+        const R_xlen_t start = c << chunk_shift;
+        const R_xlen_t end = start + chunk_len(n, c);
+        if(chunk == R_NilValue) {
+          for(R_xlen_t i = start; i < end; ++i) {
+            SET_STRING_ELT(data2, i, cpi::make_charsxp(store.view(static_cast<size_t>(i))));
+          }
+          continue;
+        }
+        const SEXP * src = STRING_PTR_RO(chunk);
+        for(R_xlen_t i = start, j = 0; i < end; ++i, ++j) {
+          SEXP elt = src[j];
+          if(elt == R_BlankString) {
+            elt = cpi::make_charsxp(store.view(static_cast<size_t>(i)));
+          }
+          SET_STRING_ELT(data2, i, elt);
+        }
+      }
+    }
+    install_materialized(vec, xp, data2);
     UNPROTECT(1);
     return data2;
   }
@@ -429,8 +587,8 @@ struct charvec_altrep {
       return Rf_duplicate(data2);
     }
     return charport_sexp_guard("charvec Duplicate", [&]() -> SEXP {
-      cpv::Store store = charvec_detail::deep_copy_store(Get(vec));
-      return MoveStore(&store);
+      cpv::Store * store = charvec_detail::duplicate_store(Get(vec));
+      return charvec_detail::wrap_store_with_cleanup(store);
     });
   }
 
@@ -452,25 +610,29 @@ struct charvec_altrep {
     return const_cast<void*>(static_cast<const void*>(STRING_PTR_RO(MaterializeGuarded(vec))));
   }
 
-  // Lazy per-element CHARSXP cache backing string_Elt, kept in the protected
-  // slot of the data1 external pointer so the GC traces it. This is NOT
-  // materialization: data2 stays R_NilValue, so Dataptr_or_null, Duplicate,
-  // and Serialized_state still see an unmaterialized charvec. R initializes
-  // STRSXP elements to R_BlankString, which doubles as the hole marker:
-  // "" and NA_STRING are permanent singletons that never need rooting, so
-  // an empty-string element can safely be re-minted on every access.
-  // The cache length is fixed at creation, which is sound because a wrapped
-  // store's record count is immutable (store_assign is bounds-checked and no
-  // post-wrap API grows records; R cannot resize a vector in place). Record
-  // mutations must keep the cache coherent — see store_assign.
-  static SEXP EltCache(SEXP vec) {
+  static SEXP EltChunk(SEXP vec, R_xlen_t i) {
     SEXP xp = R_altrep_data1(vec);
-    SEXP cache = R_ExternalPtrProtected(xp);
-    if(cache == R_NilValue) {
-      cache = Rf_allocVector(STRSXP, static_cast<R_xlen_t>(Get(vec).size()));
-      R_SetExternalPtrProtected(xp, cache);
+    SEXP chunks = R_ExternalPtrProtected(xp);
+    const R_xlen_t c = i >> chunk_shift;
+    if(chunks != R_NilValue) {
+      SEXP chunk = VECTOR_ELT(chunks, c);
+      if(chunk != R_NilValue) {
+        return chunk;
+      }
+      const R_xlen_t n = static_cast<R_xlen_t>(Get(vec).size());
+      chunk = PROTECT(Rf_allocVector(STRSXP, chunk_len(n, c)));
+      SET_VECTOR_ELT(chunks, c, chunk);
+      UNPROTECT(1);
+      return chunk;
     }
-    return cache;
+
+    const R_xlen_t n = static_cast<R_xlen_t>(Get(vec).size());
+    chunks = PROTECT(Rf_allocVector(VECSXP, chunk_count(n)));
+    R_SetExternalPtrProtected(xp, chunks);
+    SEXP chunk = PROTECT(Rf_allocVector(STRSXP, chunk_len(n, c)));
+    SET_VECTOR_ELT(chunks, c, chunk);
+    UNPROTECT(2);
+    return chunk;
   }
 
   static SEXP string_Elt(SEXP vec, R_xlen_t i) {
@@ -478,30 +640,17 @@ struct charvec_altrep {
     if(data2 != R_NilValue) {
       return STRING_ELT(data2, i);
     }
-    // Callers may hold Elt results across allocations, relying on the source
-    // vector to keep them alive (true of any ordinary STRSXP), so a CHARSXP
-    // minted from the store must be rooted before it is handed out. Root it
-    // in the per-element cache rather than materializing: staying lazy under
-    // Elt is part of the charvec contract.
-    return charport_sexp_guard("charvec Elt", [&]() -> SEXP {
-      SEXP cache = EltCache(vec);
-      SEXP elt = STRING_ELT(cache, i);
-      if(elt == R_BlankString) {
-        // The cache is already rooted: it lives in the protected slot of the
-        // data1 external pointer, which the GC traces from vec. rchk cannot
-        // follow that indirection and reports cache as unprotected across the
-        // allocation below, so protect it here to keep rchk clean. This is on
-        // the miss branch only, which allocates anyway; a cache hit returns
-        // above without touching the protection stack.
-        PROTECT(cache);
-        elt = cpi::make_charsxp(Get(vec).view(static_cast<size_t>(i)));
-        if(elt != R_BlankString) {
-          SET_STRING_ELT(cache, i, elt);
-        }
-        UNPROTECT(1);
-      }
+    SEXP chunk = EltChunk(vec, i);
+    const R_xlen_t j = i & chunk_mask;
+    SEXP elt = STRING_ELT(chunk, j);
+    if(elt != R_BlankString) {
       return elt;
-    });
+    }
+    elt = cpi::make_charsxp(Get(vec).view(static_cast<size_t>(i)));
+    if(elt != R_BlankString) {
+      SET_STRING_ELT(chunk, j, elt);
+    }
+    return elt;
   }
 
   static void string_Set_elt(SEXP vec, R_xlen_t i, SEXP new_val) {
@@ -513,9 +662,12 @@ struct charvec_altrep {
     charport_sexp_guard("charvec Set_elt", [&]() -> SEXP {
       charvec_detail::store_assign(
         Get(vec), static_cast<size_t>(i), cpi::charsxp_to_view(new_val));
-      SEXP cache = R_ExternalPtrProtected(R_altrep_data1(vec));
-      if(cache != R_NilValue) {
-        SET_STRING_ELT(cache, i, new_val);  // keep the Elt cache coherent
+      SEXP chunks = R_ExternalPtrProtected(R_altrep_data1(vec));
+      if(chunks != R_NilValue) {
+        SEXP chunk = VECTOR_ELT(chunks, i >> chunk_shift);
+        if(chunk != R_NilValue) {
+          SET_STRING_ELT(chunk, i & chunk_mask, new_val);
+        }
       }
       return R_NilValue;
     });
@@ -525,8 +677,9 @@ struct charvec_altrep {
     SEXP data2 = R_altrep_data2(vec);
     if(data2 != R_NilValue) {
       const R_xlen_t len = Rf_xlength(data2);
+      const SEXP * p = STRING_PTR_RO(data2);
       for(R_xlen_t i = 0; i < len; ++i) {
-        if(STRING_ELT(data2, i) == NA_STRING) {
+        if(p[i] == NA_STRING) {
           return 0;
         }
       }
@@ -557,39 +710,18 @@ struct charvec_altrep {
     return charport_sexp_guard("charvec Extract_subset", [&]() -> SEXP {
       const R_xlen_t xlen = static_cast<R_xlen_t>(Get(x).size());
       const R_xlen_t len = Rf_xlength(indx);
-
-      charport::charvec::Builder out(len);
-      auto copy_element = [&](size_t out_i, R_xlen_t zero_based) {
-        if(zero_based < 0 || zero_based >= xlen) {
-          return;
-        }
-        const charport_strview rec = Get(x).view(static_cast<size_t>(zero_based));
-        if(!rec.is_na()) {
-          out.set(static_cast<R_xlen_t>(out_i), rec);
-        }
-      };
-
+      const int * integer_indices = nullptr;
+      const double * real_indices = nullptr;
       if(TYPEOF(indx) == INTSXP) {
-        const int * idx = INTEGER(indx);
-        for(R_xlen_t i = 0; i < len; ++i) {
-          if(idx[i] != NA_INTEGER) {
-            copy_element(static_cast<size_t>(i), static_cast<R_xlen_t>(idx[i]) - 1);
-          }
-        }
+        // Acquire the possibly materializing index before native output owns
+        // anything, so an R error cannot bypass a Store cleanup boundary.
+        integer_indices = INTEGER(indx);
       } else {
-        const double * idx = REAL(indx);
-        for(R_xlen_t i = 0; i < len; ++i) {
-          const double one_based = idx[i];
-          if(R_FINITE(one_based) && one_based >= 1.0 &&
-             one_based <= static_cast<double>(xlen)) {
-            copy_element(static_cast<size_t>(i),
-                         static_cast<R_xlen_t>(one_based) - 1);
-          }
-        }
+        real_indices = REAL(indx);
       }
-
-      cpv::Store store = out.release_store();
-      return MoveStore(&store);
+      cpv::Store * store = charvec_detail::subset_store(
+        Get(x), xlen, len, integer_indices, real_indices);
+      return charvec_detail::wrap_store_with_cleanup(store);
     });
   }
 
@@ -652,48 +784,8 @@ struct charvec_altrep {
         return serialized_state;
       }
       charvec_serialized_layout layout = charvec_parse_serialized(serialized_state);
-
-      const unsigned char * size_offset = layout.size_offset;
-      const unsigned char * enc_offset = layout.enc_offset;
-      const unsigned char * data_offset = layout.data_offset;
-
-      charport::charvec::Builder out(static_cast<R_xlen_t>(layout.n));
-      for(size_t i = 0; i < layout.n; ++i) {
-        const uint32_t size = charvec_read_u32_advance(size_offset, layout.swap);
-        if(!cpi::check_r_string_len(size)) {
-          throw std::runtime_error("serialized string size exceeds R string size");
-        }
-        const cetype_ext_t encoding = charport_cetype_ext(*enc_offset++);
-        const size_t stored_len = static_cast<size_t>(size);
-        const char * payload = charvec_serialized_payload(data_offset, layout.data_end, stored_len);
-        // Untrusted input: accept every encoding a record can legitimately
-        // hold (the store keeps encodings verbatim, so any of these can have
-        // been serialized) and reject only an out-of-range encoding byte.
-        switch(encoding.value) {
-        case CETYPE_EXT_ASCII.value:
-        case CETYPE_EXT_UTF8.value:
-        case CETYPE_EXT_ASCII_OR_UTF8.value:
-        case CETYPE_EXT_LATIN1.value:
-        case CETYPE_EXT_NATIVE.value:
-        case CETYPE_EXT_BYTES.value:
-          out.set(static_cast<R_xlen_t>(i), payload, stored_len, encoding);
-          break;
-        case CETYPE_EXT_NA.value:
-          if(stored_len != 0) {
-            throw std::runtime_error("serialized NA string must have zero length");
-          }
-          out.set_na(static_cast<R_xlen_t>(i));
-          break;
-        default:
-          throw std::runtime_error("invalid string encoding in serialized_state");
-        }
-      }
-
-      if(data_offset != layout.data_end) {
-        throw std::runtime_error("serialized_state has trailing bytes");
-      }
-      cpv::Store store = out.release_store();
-      return MoveStore(&store);
+      cpv::Store * store = charvec_detail::unserialize_store(layout);
+      return charvec_detail::wrap_store_with_cleanup(store);
     });
   }
 
@@ -836,5 +928,48 @@ struct charvec_altrep {
     R_set_altvec_Extract_subset_method(class_t, Extract_subset);
   }
 };
+
+namespace charvec_detail {
+
+// This context carries the consumed heap owner as a raw pointer; it is
+// trivially destructible because R_ExecWithCleanup may bypass ordinary C++
+// stack unwinding.
+struct store_wrap_state {
+  cpv::Store * pending;
+};
+
+// R APIs below either return normally or unwind through R's cleanup context;
+// none can propagate a C++ exception through that context.
+inline SEXP store_wrap_exec(void * data) noexcept {
+  store_wrap_state * state = static_cast<store_wrap_state *>(data);
+  SEXP xp = PROTECT(R_MakeExternalPtr(nullptr, R_NilValue, R_NilValue));
+  R_RegisterCFinalizerEx(xp, charvec_altrep::Finalize, TRUE);
+  SEXP out = PROTECT(R_new_altrep(charvec_altrep::class_t, xp, R_NilValue));
+
+  // Transfer ownership only after every allocation above has succeeded.
+  R_SetExternalPtrAddr(xp, state->pending);
+  state->pending = nullptr;
+  UNPROTECT(2);
+  return out;
+}
+
+inline void store_wrap_cleanup(void * data) noexcept {
+  store_wrap_state * state = static_cast<store_wrap_state *>(data);
+  // The finalizer owns the Store after a successful transfer; delete nullptr
+  // on that path and consume the pending heap owner on an R error.
+  delete state->pending;
+  state->pending = nullptr;
+}
+
+inline SEXP wrap_store_with_cleanup(cpv::Store * source) noexcept {
+  if(source == nullptr) {
+    Rf_error("charvec wrap: source is NULL");
+  }
+  store_wrap_state state{source};
+  return R_ExecWithCleanup(
+    &store_wrap_exec, &state, &store_wrap_cleanup, &state);
+}
+
+} // namespace charvec_detail
 
 #endif

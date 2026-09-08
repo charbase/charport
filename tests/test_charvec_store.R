@@ -117,9 +117,9 @@ cassign(x, 2, b)
 stopifnot(marks_identical(x, c(latin1_word, b)))
 
 catn("in-place mutation keeps the string_Elt cache coherent")
-# x[[i]] routes through string_Elt and populates the per-element CHARSXP
-# cache; a later record mutation must be visible through Elt, both before
-# and after full materialization (which promotes the cache to data2).
+# x[[i]] routes through string_Elt and populates the chunked CHARSXP cache;
+# a later record mutation must be visible through Elt, both before and after
+# full materialization (which reuses cached CHARSXPs in data2).
 x <- as_charvec(c("one", "two", "three", ""))
 stopifnot(identical(x[[2L]], "two"), identical(x[[4L]], ""))  # cache warm
 cassign(x, 2, "TWO")
@@ -131,12 +131,46 @@ stopifnot(identical(x[[2L]], NA_character_))
 charport_materialize(x)
 stopifnot(identical(as.character(x), c("one", NA, "three", "FOUR")))
 
-catn("materialization promotes the Elt cache")
+catn("materialization reuses cached CHARSXPs")
 x <- as_charvec(c("alpha", "", "gamma"))
 stopifnot(identical(x[[1L]], "alpha"))   # cached
 y <- charport_materialize(x)
 stopifnot(stats(x)$materialized,
           identical(as.character(x), c("alpha", "", "gamma")))
+
+catn("chunked Elt cache: sparse access and cross-chunk mutation")
+n <- 2500L
+words <- sample(c(w_utf8, w_latin1, NA, ""), n, replace = TRUE)
+x <- as_charvec(words)
+stopifnot(identical(x[[1L]], words[[1L]]))
+stopifnot(identical(x[[1024L]], words[[1024L]]))
+stopifnot(identical(x[[1025L]], words[[1025L]]))
+stopifnot(identical(x[[n]], words[[n]]))
+stopifnot(!stats(x)$materialized)
+cassign(x, 1024L, "boundary")
+cassign(x, 1025L, "next")
+cassign(x, 1L, "first")
+stopifnot(identical(x[[1024L]], "boundary"),
+          identical(x[[1025L]], "next"),
+          identical(x[[1L]], "first"))
+cassign(x, 2000L, "late")              # never Elt'd this slot
+stopifnot(identical(x[[2000L]], "late"))
+charport_materialize(x)
+stopifnot(stats(x)$materialized)
+expect <- words
+expect[[1L]] <- "first"
+expect[[1024L]] <- "boundary"
+expect[[1025L]] <- "next"
+expect[[2000L]] <- "late"
+stopifnot(marks_identical(x, expect))
+
+catn("empty string on a later chunk is not stuck as a miss")
+x <- as_charvec(c(rep("a", 1024L), "", "b"))
+stopifnot(identical(x[[1025L]], ""))
+cassign(x, 1025L, "now")
+stopifnot(identical(x[[1025L]], "now"), !stats(x)$materialized)
+charport_materialize(x)
+stopifnot(identical(as.character(x)[1024:1026], c("a", "now", "b")))
 
 catn("helper error paths")
 x <- alloc(3)

@@ -63,7 +63,7 @@ SEXP bulk_builder_to_sexp(void * data) noexcept {
   return state->builder->to_sexp();
 }
 
-void bulk_builder_cleanup(void * data, Rboolean) noexcept {
+void bulk_builder_cleanup(void * data) noexcept {
   bulk_builder_state * state = static_cast<bulk_builder_state *>(data);
   delete state->builder;
   state->builder = nullptr;
@@ -71,6 +71,8 @@ void bulk_builder_cleanup(void * data, Rboolean) noexcept {
 
 } // namespace
 
+// Public Builder objects retain ownership of their Store member; this ABI
+// wrapper only borrows that member while MoveStore performs the public move.
 extern "C" SEXP charport_charvec_wrap(void * store_) {
   return charvec_altrep::MoveStore(static_cast<cpv::Store *>(store_));
 }
@@ -95,7 +97,6 @@ extern "C" SEXP charport_charvec_from_views_impl(
     }
   }
 
-  SEXP token = PROTECT(R_MakeUnwindCont());
   charport::charvec::Builder * builder = nullptr;
   char message[512];
   bool cpp_error = false;
@@ -118,18 +119,12 @@ extern "C" SEXP charport_charvec_from_views_impl(
 
   if(cpp_error) {
     delete builder;
-    UNPROTECT(1);
     Rf_error("charport charvec from views: %s", message);
   }
 
   bulk_builder_state state{builder};
-  SEXP out = R_UnwindProtect(
-    &bulk_builder_to_sexp, &state,
-    &bulk_builder_cleanup, &state, token
-  );
-  SETCAR(token, R_NilValue);
-  UNPROTECT(1);
-  return out;
+  return R_ExecWithCleanup(
+    &bulk_builder_to_sexp, &state, &bulk_builder_cleanup, &state);
 }
 
 extern "C" SEXP C_as_charvec(SEXP x) {
@@ -139,19 +134,16 @@ extern "C" SEXP C_as_charvec(SEXP x) {
     }
     const R_xlen_t n = Rf_xlength(x);
     const SEXP * ptr = STRING_PTR_RO(x);
-    charport::charvec::Builder builder(n);
-    for(R_xlen_t i = 0; i < n; ++i) {
-      builder.set(i, cpi::charsxp_to_view(ptr[i]));
-    }
-    cpv::Store store = builder.release_store();
-    return charvec_altrep::MoveStore(&store);
+    cpv::Store * store = charvec_detail::store_from_chars(n, ptr);
+    return charvec_detail::wrap_store_with_cleanup(store);
   });
 }
 
 extern "C" SEXP C_charvec_alloc(SEXP n_) {
   return charport_sexp_guard("charvec_alloc", [&]() -> SEXP {
-    cpv::Store store(checked_len_arg(n_), 0);
-    return charvec_altrep::MoveStore(&store);
+    const size_t n = checked_len_arg(n_);
+    cpv::Store * store = new cpv::Store(n, 0);
+    return charvec_detail::wrap_store_with_cleanup(store);
   });
 }
 

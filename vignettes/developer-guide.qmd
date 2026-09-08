@@ -226,7 +226,7 @@ r.byteviews(idx.data(), idx.size(), byteviews); // outputs elements 0, 10 and 20
 | `CETYPE_EXT_ASCII` | ASCII bytes, equivalent to `Rf_charIsASCII(x)`. |
 | `CETYPE_EXT_NA` | Missing string. `ptr` is `NULL` and `len` is `NA_INTEGER`. |
 
-The names are the same in both languages. In C++ they are typed `cetype_ext_t` constants comparable with `==`; in C they are plain integers comparable  with `.value`.
+The names are the same in both languages. In C++ they are typed `cetype_ext_t` constants comparable with `==`; in C they are plain integers comparable with `.value`.
 
 R's encoding scheme is aggregated into this single type. `CETYPE_EXT_ASCII`, `CETYPE_EXT_ASCII_OR_UTF8`, and `CETYPE_EXT_NA` are simplifications: `CETYPE_EXT_ASCII` corresponds to the ASCII mark available from `Rf_charIsASCII()`. In R, the ASCII mark **always** occurs with `CETYPE_EXT_NATIVE`, so it represents a mutually exclusive state.
 

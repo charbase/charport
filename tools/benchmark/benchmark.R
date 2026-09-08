@@ -26,22 +26,32 @@ if (!file.exists(enwik8_txt)) {
 include_dir <- system.file("include", package = "charport")
 build_dir <- file.path(tempdir(), "charport-bench")
 dir.create(build_dir, showWarnings = FALSE)
-invisible(file.copy(file.path("inst", "extra", "benchmark.cpp"), build_dir, overwrite = TRUE))
-invisible(file.copy(
-  file.path("tests", "consumer-boundary.h"),
-  file.path(build_dir, "consumer-boundary.h"),
-  overwrite = TRUE
-))
+if (!file.copy(file.path("tools", "benchmark", "benchmark.cpp"),
+               build_dir, overwrite = TRUE) ||
+    !file.copy(file.path("tests", "consumer-boundary.h"),
+               file.path(build_dir, "consumer-boundary.h"), overwrite = TRUE)) {
+  stop("could not copy benchmark sources")
+}
 writeLines(c(
   sprintf("PKG_CPPFLAGS = -I\"%s\"", include_dir),
   "PKG_CXXFLAGS = -pthread",
   "PKG_LIBS = -pthread"
 ), file.path(build_dir, "Makevars"))
 
-owd <- setwd(build_dir)
-system2(file.path(R.home("bin"), "R"), c("CMD", "SHLIB", "benchmark.cpp"))
-setwd(owd)
+owd <- getwd()
+compile_log <- tryCatch({
+  setwd(build_dir)
+  system2(file.path(R.home("bin"), "R"), c("CMD", "SHLIB", "benchmark.cpp"),
+          stdout = TRUE, stderr = TRUE)
+}, finally = setwd(owd))
+compile_status <- attr(compile_log, "status", exact = TRUE)
+if (!is.null(compile_status) && compile_status != 0L) {
+  stop(paste(compile_log, collapse = "\n"))
+}
 so <- file.path(build_dir, paste0("benchmark", .Platform$dynlib.ext))
+if (!file.exists(so)) {
+  stop(paste(compile_log, collapse = "\n"))
+}
 dyn.load(so)
 
 # Load corpus ----------------------------------------------------------
@@ -132,11 +142,10 @@ build_rows <- list(
       label = "SET_STRING_ELT\n(baseline)"),
   row("charport::charvec::Builder, serial",
       ms(function() .Call("C_bench_charvec_Builder")),
-      label = "charvec::Builder\n(1 thread)"),
-  row(sprintf("charport::charvec::ParallelBuilder, %d threads", n_threads),
-      ms(function() .Call("C_bench_charvec_ParallelBuilder", n_threads)),
-      label = sprintf("charvec::Builder\n(%d threads)", n_threads))
+      label = "charvec::Builder")
 )
+build_mt <- row(sprintf("charport::charvec::ParallelBuilder, %d threads", n_threads),
+                ms(function() .Call("C_bench_charvec_ParallelBuilder", n_threads)))
 
 out <- .Call("C_bench_charvec_ParallelBuilder", n_threads)
 stopifnot(identical(.Call("C_bench_charport_Reader_hash", out), ref))
@@ -152,13 +161,12 @@ read_rows <- list(
   row("STRING_PTR_RO materialize, unmaterialized charvec (baseline)",
       ms_STRING_PTR_RO_materialize(), baseline = TRUE,
       label = "STRING_PTR_RO\nmaterialize\n(baseline)"),
-  row("charport::Reader range byteviews, charvec, 1 thread",
+  row("charport::Reader range byteviews, charvec",
       ms(function() .Call("C_bench_charport_Reader_hash", cvec)),
-      label = "charport::Reader\ncharvec, 1 thread"),
-  row(sprintf("charport::Reader range byteviews, charvec, %d threads", n_threads),
-      ms(function() .Call("C_bench_charport_Reader_hash_threads", cvec, n_threads)),
-      label = sprintf("charport::Reader\ncharvec, %d threads", n_threads))
+      label = "charport::Reader\ncharvec")
 )
+read_mt <- row(sprintf("charport::Reader range byteviews, charvec, %d threads", n_threads),
+               ms(function() .Call("C_bench_charport_Reader_hash_threads", cvec, n_threads)))
 stopifnot(identical(h1, ref),
           identical(.Call("C_bench_charport_Reader_hash_scalar", cvec), ref),
           identical(.Call("C_bench_charport_Reader_hash_block1", cvec), ref),
@@ -226,7 +234,9 @@ rows_to_df <- function(section, rows, plotted) {
 
 benchmark_table <- do.call(rbind, list(
   rows_to_df("write path", build_rows, TRUE),
+  rows_to_df("write path", list(build_mt), FALSE),
   rows_to_df("read path", read_rows, TRUE),
+  rows_to_df("read path", list(read_mt), FALSE),
   rows_to_df("read path", extra_rows, FALSE),
   rows_to_df("access path", access_rows, FALSE)
 ))
@@ -279,19 +289,19 @@ png_path <- if (dir.exists(file.path("man", "figures"))) {
 } else {
   file.path("local", "bench.png")
 }
-png(png_path, width = 1700, height = 1350, res = 180, bg = "transparent")
+png(png_path, width = 1700, height = 1100, res = 180, bg = "transparent")
 # two white cards on a transparent field, drawn in device coordinates first
 par(fig = c(0, 1, 0, 1), mar = c(0, 0, 0, 0))
 plot.new()
 plot.window(c(0, 1), c(0, 1), xaxs = "i", yaxs = "i")
-roundrect(0.015, 0.515, 0.985, 0.985, 0.011, 0.014,
+roundrect(0.015, 0.515, 0.985, 0.985, 0.011, 0.017,
           col = col_card, border = col_border, lwd = 2.4)
-roundrect(0.015, 0.015, 0.985, 0.485, 0.011, 0.014,
+roundrect(0.015, 0.015, 0.985, 0.485, 0.011, 0.017,
           col = col_card, border = col_border, lwd = 2.4)
 par(las = 1, mgp = c(2.4, 0.7, 0))
-par(fig = c(0.03, 0.99, 0.515, 0.985), mar = c(4.0, 11.2, 2.6, 1.6), new = TRUE)
+par(fig = c(0.03, 0.99, 0.515, 0.985), mar = c(5.0, 11.2, 3.6, 1.6), new = TRUE)
 plot_panel(read_rows, "read path (hash data)")
-par(fig = c(0.03, 0.99, 0.015, 0.485), mar = c(4.0, 11.2, 2.6, 1.6), new = TRUE)
+par(fig = c(0.03, 0.99, 0.015, 0.485), mar = c(5.0, 11.2, 3.6, 1.6), new = TRUE)
 plot_panel(build_rows, "write path")
 dev.off()
 cat(sprintf("plot written to %s\n", png_path))

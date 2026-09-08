@@ -85,6 +85,8 @@ static_assert(
 namespace {
 
 R_altrep_class_t release_test_class;
+R_altrep_class_t release_test_filler_class;
+bool release_test_filler_registered = false;
 int release_test_count = 0;
 int release_test_access_counts[8] = {};
 int unwind_probe_count = 0;
@@ -111,6 +113,12 @@ struct release_test_state {
   explicit release_test_state(int marker_) noexcept : marker(marker_) {}
 };
 
+void * release_test_filler_init(SEXP) {
+  return nullptr;
+}
+
+void register_release_test_filler();
+
 R_xlen_t release_test_length(SEXP) {
   return 2;
 }
@@ -120,6 +128,7 @@ SEXP release_test_elt(SEXP, R_xlen_t i) {
 }
 
 void * release_test_init(SEXP) {
+  register_release_test_filler();
   if(release_test_init_condition != R_NilValue) {
     SEXP call = PROTECT(Rf_lang2(Rf_install("stop"),
                                  release_test_init_condition));
@@ -244,6 +253,30 @@ void release_test_release(void * state) {
   delete static_cast<release_test_state *>(state);
 }
 
+void register_release_test_filler() {
+  if(release_test_filler_registered) {
+    return;
+  }
+  charport::register_altrep(
+    release_test_filler_class,
+    charport_reader_state_fns{release_test_filler_init, nullptr},
+    charport_reader_range_fns{
+      release_test_strviews_range,
+      release_test_byteviews_range,
+      release_test_lengths_range,
+      release_test_encodings_range
+    },
+    charport_reader_index_fns{
+      release_test_strviews_index,
+      release_test_byteviews_index,
+      release_test_lengths_index,
+      release_test_encodings_index
+    },
+    charport_reader_capabilities{false, false}
+  );
+  release_test_filler_registered = true;
+}
+
 } // namespace
 
 template<typename Fn>
@@ -302,6 +335,7 @@ extern "C" {
 
 void R_init_charport_consumer(DllInfo * dll) {
   release_test_class = R_make_altstring_class("release_test", "charport_consumer", dll);
+  release_test_filler_class = R_make_altstring_class("release_test_filler", "charport_consumer", dll);
   R_set_altrep_Length_method(release_test_class, release_test_length);
   R_set_altstring_Elt_method(release_test_class, release_test_elt);
 }
@@ -335,6 +369,10 @@ SEXP C_consumer_register_release_test(void) {
 
 SEXP C_consumer_unregister_release_test(void) {
   charport::unregister_altrep(release_test_class);
+  if(release_test_filler_registered) {
+    charport::unregister_altrep(release_test_filler_class);
+    release_test_filler_registered = false;
+  }
   return R_NilValue;
 }
 

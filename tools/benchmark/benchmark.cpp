@@ -101,7 +101,7 @@ static SEXP build_charvec_serial() {
   charport::charvec::Builder b(n);
   for(R_xlen_t i = 0; i < n; ++i) {
     const std::string & s = corpus_lines[static_cast<size_t>(i)];
-    b.set(i, s.data(), s.size(), cetype_ext_t::CE_UTF8);
+    b.set(i, s.data(), s.size(), CETYPE_EXT_UTF8);
   }
   return b.to_sexp();
 }
@@ -126,7 +126,7 @@ static SEXP build_charvec_parallel(int n_threads) {
           const size_t shard = static_cast<size_t>(t);
           for(R_xlen_t i = lo; i < hi; ++i) {
             const std::string & s = corpus_lines[static_cast<size_t>(i)];
-            b.set(shard, i, s.data(), s.size(), cetype_ext_t::CE_UTF8);
+            b.set(shard, i, s.data(), s.size(), CETYPE_EXT_UTF8);
           }
         } catch(...) {
           errors[static_cast<size_t>(t)] = std::current_exception();

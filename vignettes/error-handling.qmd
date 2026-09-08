@@ -18,7 +18,7 @@ vignette: >
 
 R packages with compiled code have several error mechanisms that do not always work well together: C++ exceptions, C-style errors, and R errors. No single mechanism is safe and idiomatic in every context. The design in `charport` does not try to put all of these error mechanisms into a single system, but instead tries to be parsimonious, only allowing errors to propagate based on the code and boundaries they interact with.
 
-The goal is to give each failure a leak-free recovery path while using only the error machinery required by that phase. Operations that call R or construct R objects use R errors, because those operations can already fail through R. Pure C++ operations use standard C++ exceptions, while C access callbacks return C-style integer error codes.
+Operations that call R or construct R objects use R errors, because those operations can already fail through R. Pure C++ operations use standard C++ exceptions, while C access callbacks return C-style integer error codes.
 
 ## Reader and Builder
 
@@ -81,7 +81,7 @@ Status conversion is not a bounds check. Callers must supply nonnegative, in-ran
 During access calls, e.g., `Reader::views()`, the Reader may be unable to provide those views. This is a return status code in C and an exception in C++.
 
 | C return status | Meaning | C++ exception |
-|-----------------------------|------------------|--------------------------|
+|----------------------------|------------------|--------------------------|
 | `CHARPORT_STATUS_OK` | The output arrays were filled successfully. | None |
 | `CHARPORT_STATUS_ERROR` or any other nonzero status | The access failed for another reason. | `std::runtime_error` |
 | `CHARPORT_STATUS_NO_MEMORY` | Native allocation failed. | `std::bad_alloc` |
@@ -93,7 +93,7 @@ An access failure does not invalidate the Reader or make the error sticky. The p
 
 `charvec::Builder` and its variants allocate and own their own `Store` during the C++ construction phase. Building the string data is standard C++ and may raise a C++ exception.
 
-`Builder::to_sexp()` cannot throw a C++ exception, but since it creates the ALTREP object that contains the `Store`, it may theoretically raise an R allocation error. However, the actual chance of an R allocation error is small as it's just creating a few bytes to create the ALTREP object. A caller that wants framework cleanup can use the named adapters:
+`Builder::to_sexp()` cannot throw a C++ exception, but since it creates the ALTREP object that contains the `Store`, it may theoretically raise an R allocation error. A caller that wants framework cleanup can use the named adapters:
 
 ``` cpp
 SEXP rcpp_out = builder.to_sexp_with_rcpp();

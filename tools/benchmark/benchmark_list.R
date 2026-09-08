@@ -2,7 +2,7 @@
 # produced by split-like operations. Run from the package root after
 # installing the current source:
 #
-#   Rscript inst/extra/benchmark_list.R [reps] [chunk] [max_lines]
+#   Rscript tools/benchmark/benchmark_list.R [reps] [chunk] [max_lines]
 #
 # `chunk = 1` isolates singleton vectors. `max_lines = 0` uses all of enwik8;
 # the Makefile target uses 100,000 lines so this remains a practical smoke
@@ -48,7 +48,7 @@ include_dir <- system.file("include", package = "charport")
 build_dir <- file.path(tempdir(), "charport-bench-list")
 dir.create(build_dir, showWarnings = FALSE)
 sources <- c(
-  file.path("inst", "extra", c("benchmark.cpp", "benchmark_list.cpp")),
+  file.path("tools", "benchmark", c("benchmark.cpp", "benchmark_list.cpp")),
   file.path("tests", "consumer-boundary.h")
 )
 if (!all(file.copy(sources, build_dir, overwrite = TRUE))) {
@@ -60,14 +60,20 @@ writeLines(c(
   "PKG_LIBS = -pthread"
 ), file.path(build_dir, "Makevars"))
 
-old_dir <- setwd(build_dir)
-compile_log <- system2(
-  file.path(R.home("bin"), "R"),
-  c("CMD", "SHLIB", "-o", paste0("benchmark_list", .Platform$dynlib.ext),
-    "benchmark.cpp", "benchmark_list.cpp"),
-  stdout = TRUE, stderr = TRUE
-)
-setwd(old_dir)
+old_dir <- getwd()
+compile_log <- tryCatch({
+  setwd(build_dir)
+  system2(
+    file.path(R.home("bin"), "R"),
+    c("CMD", "SHLIB", "-o", paste0("benchmark_list", .Platform$dynlib.ext),
+      "benchmark.cpp", "benchmark_list.cpp"),
+    stdout = TRUE, stderr = TRUE
+  )
+}, finally = setwd(old_dir))
+compile_status <- attr(compile_log, "status", exact = TRUE)
+if (!is.null(compile_status) && compile_status != 0L) {
+  stop(paste(compile_log, collapse = "\n"))
+}
 shared_object <- file.path(
   build_dir, paste0("benchmark_list", .Platform$dynlib.ext)
 )

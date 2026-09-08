@@ -20,7 +20,14 @@
 #' x[1]
 #' @export
 charvec <- function(...) {
-  as_charvec(c(character(0L), ...))
+  values <- lapply(list(...), function(x) {
+    if (is.character(x)) return(x)
+    nm <- names(x)
+    x <- as.character(x)
+    if (!is.null(nm) && length(nm) == length(x)) names(x) <- nm
+    x
+  })
+  as_charvec(do.call(c, c(list(character(0L)), values)))
 }
 
 #' Convert to a charvec
@@ -38,8 +45,12 @@ as_charvec <- function(x) {
   if (is_charvec(x)) {
     return(x)
   }
+  nm <- names(x)
   if (!is.character(x)) {
     x <- as.character(x)
+    if (!is.null(nm) && length(nm) == length(x)) {
+      names(x) <- nm
+    }
   }
   ret <- .Call(C_as_charvec, x)
   nm <- names(x)

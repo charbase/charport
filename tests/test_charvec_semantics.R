@@ -34,12 +34,27 @@ stopifnot(is_charvec(x), is.character(x), typeof(x) == "character", length(x) ==
 x <- charvec("a", c("b", "c"))
 stopifnot(is_charvec(x), identical(as.character(x), c("a", "b", "c")))
 stopifnot(identical(as.character(charvec(1:3)), c("1", "2", "3")))
+x <- charvec(factor(c("a", "b")), as.Date("2020-01-01"), NULL)
+stopifnot(identical(as.character(x), c("a", "b", "2020-01-01")))
+x <- charvec(setNames(1:2, c("one", "two")), unnamed = c("x", "y"), z = "q")
+stopifnot(identical(as.character(x), c("1", "2", "x", "y", "q")))
+stopifnot(identical(names(x), c("one", "two", "unnamed1", "unnamed2", "z")))
+x <- charvec(existing = as_charvec(setNames("value", "inner")), items = list("a", "b"))
+stopifnot(identical(as.character(x), c("value", "a", "b")))
+stopifnot(identical(names(x), c("existing.inner", "items1", "items2")))
 x <- as_charvec(letters)
 stopifnot(is_charvec(x), identical(as.character(x), letters))
 stopifnot(identical(as_charvec(x), x))  # already a charvec: returned unchanged
 stopifnot(!is_charvec(letters), !is_charvec(1:3), !is_charvec(NULL))
 x <- as_charvec(c(a = "x", b = "y"))
 stopifnot(identical(names(x), c("a", "b")), identical(x[["a"]], "x"))
+x <- as_charvec(setNames(c(10, 20), c("ten", "twenty")))
+stopifnot(identical(as.character(x), c("10", "20")),
+          identical(names(x), c("ten", "twenty")))
+x <- as_charvec(structure(factor(c("low", "high")),
+                          names = c("l", "h")))
+stopifnot(identical(as.character(x), c("low", "high")),
+          identical(names(x), c("l", "h")))
 
 catn("NA, empty strings, and encoding preserved verbatim")
 mixed_in <- c("plain", NA, "", w_utf8[[1L]], w_latin1[[2L]])

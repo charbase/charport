@@ -28,7 +28,7 @@ Both start from an ALTREP vector from a producer package. On the base R
 path, the consumer accesses strings through the R API; work is done to
 materialize ALTREP strings into ordinary R strings. On the `charport`
 path, the consumer opens a `charport::Reader` on the same vector, and
-the producer hands back a read only view of the string data. The extra
+the producer hands back a read-only view of the string data. The extra
 materialization work can be avoided.
 
 The benchmark below runs these paths on the `enwik8` dataset, the first
@@ -38,7 +38,9 @@ materialization worth?
 ![](man/figures/bench.png)
 
 These measurements show order-of-magnitude performance improvements are
-possible by working with ALTREP strings end-to-end.
+possible by working with ALTREP strings end-to-end. The figure shows the
+serial case. Because ALTREP classes do not rely on R memory, parallel
+construction and access can improve on these numbers.
 
 ## A broker for ALTREP strings
 

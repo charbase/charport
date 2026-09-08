@@ -3,7 +3,8 @@ PACKAGE := $(shell perl -aF: -ne 'print, exit if s/^Package:\s+//' DESCRIPTION)
 VERSION := $(shell perl -aF: -ne 'print, exit if s/^Version:\s+//' DESCRIPTION)
 BUILD   := $(PACKAGE)_$(VERSION).tar.gz
 
-.PHONY: doc build install check check-no-vignette rhub-platforms test test-cxx \
+.PHONY: doc build install check check-no-vignette rhub-platforms test \
+	test-native-cleanup test-cxx \
 	bench bench-list vignette \
 	reflow-docs pkgdown pkgdown-index clean-pkgdown clean clean-native \
 	clean-build-products
@@ -91,6 +92,12 @@ test: install
 	  echo "== $$f"; \
 	  Rscript $$f || exit 1; \
 	done
+
+# Developer-only GNU linker fault-injection probe.  It lives outside
+# tests/test_*.R because it compiles package source and wraps 64-bit Linux
+# C++ allocation symbols; standard R CMD check must not run it.
+test-native-cleanup: install
+	Rscript tools/test-native-cleanup.R
 
 test-cxx:
 	bash tools/check-cxx-standards.sh

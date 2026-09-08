@@ -23,3 +23,6 @@ local
 /src/.vscode
 scratch
 CLAUDE.md
+.codex/
+.claude/
+.agents/

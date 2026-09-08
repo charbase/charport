@@ -50,10 +50,10 @@ SEXP protected_hash_result(uint64_t hash, R_xlen_t n_na) {
 }
 
 cetype_t r_encoding(cetype_ext_t enc) {
-  if(enc == cetype_ext_t::CE_BYTES) {
+  if(enc == CETYPE_EXT_BYTES) {
     return CE_BYTES;
   }
-  if(enc == cetype_ext_t::CE_LATIN1) {
+  if(enc == CETYPE_EXT_LATIN1) {
     return CE_LATIN1;
   }
   return CE_UTF8;
@@ -105,7 +105,7 @@ extern "C" SEXP C_benchl_build_scalar_list(SEXP x) {
       const charport::StrView value = reader.view(i);
       charport::charvec::Store store = value.is_na()
         ? charport::charvec::Store::scalar(
-            nullptr, 0, cetype_ext_t::CE_NA)
+            nullptr, 0, CETYPE_EXT_NA)
         : charport::charvec::Store::scalar(
             value.ptr, static_cast<size_t>(value.len), value.enc);
       SET_VECTOR_ELT(out, i, charport::charvec::wrap(std::move(store)));

@@ -60,14 +60,20 @@ struct Shard {
   Shard & operator=(Shard &&) noexcept = default;
 };
 
-// Shards use 128 byte alignment to optimize cache locality on both x86 and mac-arm
-// This shows up significantly on benchmarks. Changing alignment should measure impact on performance.
+// Shards stay 128 bytes apart to avoid false sharing on both x86 and mac-arm.
+// This shows up significantly in benchmarks; measure before changing the spacing.
 // Only ParallelBuilder holds shards this way: the padding earns its keep because
 // they sit next to each other and each worker writes its own once per record. A
 // serial Builder has one shard and no neighbour, so it holds a bare Shard.
-struct alignas(128) ShardCell {
+constexpr size_t shard_spacing() noexcept { return 128; }
+static_assert(sizeof(Shard) < shard_spacing(),
+              "charvec shard exceeds its cache-line spacing");
+struct ShardCell {
   Shard shard;
+  unsigned char padding[shard_spacing() - sizeof(Shard)];
 };
+static_assert(sizeof(ShardCell) == shard_spacing(),
+              "charvec shards must keep their cache-line spacing");
 
 inline char * allocate_bytes(Shard & shard, uint32_t len, size_t vector_length_hint) {
   if(len == 0) {

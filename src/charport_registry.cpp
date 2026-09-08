@@ -256,13 +256,16 @@ extern "C" charport_reader charport_resolve(SEXP x) {
   charport_reader r;
   r.n = Rf_xlength(x);
   if(ALTREP(x) == TRUE) {
-    if(const altrep_entry * entry = find_registered_altrep(x)) {
-      if(void * state = entry->state.init(x)) {
+    if(const altrep_entry * registered = find_registered_altrep(x)) {
+      // init() may register another class, which can reallocate the registry.
+      // Keep the callbacks independent of the vector element's address.
+      const altrep_entry entry = *registered;
+      if(void * state = entry.state.init(x)) {
         r.state = state;
-        r.release = entry->state.release;
-        r.range = entry->range;
-        r.index = entry->index;
-        r.capabilities = entry->capabilities;
+        r.release = entry.state.release;
+        r.range = entry.range;
+        r.index = entry.index;
+        r.capabilities = entry.capabilities;
         return r;
       }
     }
