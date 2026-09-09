@@ -137,7 +137,7 @@ inline charport_charvec_wrap_t wrap_callable() noexcept {
   static charport_charvec_wrap_t fn = nullptr;
   if(fn == nullptr) {
     fn = reinterpret_cast<charport_charvec_wrap_t>(
-      charport::detail::fetch("charport_charvec_wrap")
+      charport::detail::fetch("charport_charvec_wrap_v1")
     );
   }
   return fn;

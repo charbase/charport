@@ -344,6 +344,36 @@ SEXP C_consumer_abi_ok(void) {
   return Rf_ScalarLogical(charport::check_abi() ? TRUE : FALSE);
 }
 
+SEXP C_consumer_callable_v1(void) {
+  const char * names[] = {
+    "charport_register_altrep_v1",
+    "charport_unregister_altrep_v1",
+    "charport_resolve_v1",
+    "charport_sexp_info_v1",
+    "charport_charvec_wrap_v1",
+    "charport_charvec_from_views_v1",
+    "charport_abi_version",
+    ""
+  };
+  SEXP out = PROTECT(Rf_mkNamed(LGLSXP, names));
+  for(int i = 0; i < 7; ++i) {
+    LOGICAL(out)[i] = R_GetCCallable("charport", names[i]) != NULL
+      ? TRUE : FALSE;
+  }
+  UNPROTECT(1);
+  return out;
+}
+
+SEXP C_consumer_lookup_callable(SEXP name_) {
+  if(TYPEOF(name_) != STRSXP || Rf_xlength(name_) != 1) {
+    Rf_error("charport consumer callable lookup: name must be a length-one character vector");
+  }
+  const char * name = CHAR(STRING_ELT(name_, 0));
+  return Rf_ScalarLogical(
+    R_GetCCallable("charport", name) != NULL ? TRUE : FALSE
+  );
+}
+
 SEXP C_consumer_register_release_test(void) {
   return test_sexp_guard("register_release_test", []() -> SEXP {
     charport::register_altrep(

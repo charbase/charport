@@ -646,10 +646,14 @@ struct charvec_altrep {
     if(elt != R_BlankString) {
       return elt;
     }
+    // EltChunk roots chunk through vec's external pointer; protect explicitly
+    // because rchk cannot see that relationship across the helper call.
+    PROTECT(chunk);
     elt = cpi::make_charsxp(Get(vec).view(static_cast<size_t>(i)));
     if(elt != R_BlankString) {
       SET_STRING_ELT(chunk, j, elt);
     }
+    UNPROTECT(1);
     return elt;
   }
 

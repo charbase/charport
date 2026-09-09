@@ -29,6 +29,10 @@ dll <- compile_test_dso("charport_consumer.cpp", label = "charport reader consum
 
 consumer_symbol <- function(name) getNativeSymbolInfo(name, PACKAGE = dll[["name"]])
 roundtrip <- function(x) .Call(consumer_symbol("C_consumer_reader_roundtrip"), x)
+callable_v1 <- function() .Call(consumer_symbol("C_consumer_callable_v1"))
+lookup_callable <- function(name) {
+  .Call(consumer_symbol("C_consumer_lookup_callable"), as.character(name))
+}
 range_roundtrip <- function(x) {
   .Call(consumer_symbol("C_consumer_reader_range_roundtrip"), x)
 }
@@ -85,8 +89,26 @@ b <- rawToChar(as.raw(0xE9)); Encoding(b) <- "bytes"
 
 set.seed(20260610)
 
-catn("C ABI symbols resolve from a downstream-style consumer")
+catn("versioned C ABI callables resolve from a downstream-style consumer")
 stopifnot(isTRUE(.Call(consumer_symbol("C_consumer_abi_ok"))))
+callable_names <- c(
+  "charport_register_altrep_v1",
+  "charport_unregister_altrep_v1",
+  "charport_resolve_v1",
+  "charport_sexp_info_v1",
+  "charport_charvec_wrap_v1",
+  "charport_charvec_from_views_v1",
+  "charport_abi_version"
+)
+available <- callable_v1()
+stopifnot(identical(names(available), callable_names))
+stopifnot(identical(unname(available), rep(TRUE, length(callable_names))))
+for (name in c(
+  sub("_v1$", "_v2", callable_names[seq_len(6)]),
+  sub("_v1$", "", callable_names[seq_len(6)])
+)) {
+  expect_error_matching(lookup_callable(name), "not provided|not available")
+}
 
 catn("registry state at load: charvec is registered by default")
 reg <- charport_classes()

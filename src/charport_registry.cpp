@@ -390,20 +390,20 @@ extern "C" SEXP C_register_charvec(void) {
 }
 
 extern "C" void charport_registry_init(DllInfo * dll) {
-  R_RegisterCCallable("charport", "charport_register_altrep",
+  R_RegisterCCallable("charport", "charport_register_altrep_v1",
                       reinterpret_cast<DL_FUNC>(&charport_register_altrep));
-  R_RegisterCCallable("charport", "charport_unregister_altrep",
+  R_RegisterCCallable("charport", "charport_unregister_altrep_v1",
                       reinterpret_cast<DL_FUNC>(&charport_unregister_altrep));
-  R_RegisterCCallable("charport", "charport_resolve",
+  R_RegisterCCallable("charport", "charport_resolve_v1",
                       reinterpret_cast<DL_FUNC>(&charport_resolve));
-  R_RegisterCCallable("charport", "charport_sexp_info",
+  R_RegisterCCallable("charport", "charport_sexp_info_v1",
                       reinterpret_cast<DL_FUNC>(&charport_get_sexp_info));
   R_RegisterCCallable("charport", "charport_abi_version",
                       reinterpret_cast<DL_FUNC>(&charport_abi_version));
-  R_RegisterCCallable("charport", "charport_charvec_wrap",
+  R_RegisterCCallable("charport", "charport_charvec_wrap_v1",
                       reinterpret_cast<DL_FUNC>(&charport_charvec_wrap));
   R_RegisterCCallable(
-    "charport", "charport_charvec_from_views",
+    "charport", "charport_charvec_from_views_v1",
     reinterpret_cast<DL_FUNC>(&charport_charvec_from_views_impl)
   );
   (void)dll;

@@ -24,7 +24,7 @@ vignette: >
 
 R's ALTREP system lets packages represent string data more efficiently. But acrosses packages, ALTREP vectors usually *materialize* back into ordinary R strings, and that step can be costly.
 
-The goal of `charport` is to remove that materialization cost by making ALTREP strings interoperable. The hope is that ALTREP strings become more than package-local optimization and become shared infrastructure.
+`charport` is an experimental package with the goal of removing that materialization cost by making ALTREP strings interoperable. The hope is that ALTREP strings become more than package-local optimization and become shared infrastructure.
 
 *This work is supported by the R Consortium Infrastructure Steering Committee, under the grant Universal ALTREP Interoperability for Strings.*
 

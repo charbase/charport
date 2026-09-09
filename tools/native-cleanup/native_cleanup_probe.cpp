@@ -148,7 +148,7 @@ extern "C" SEXP native_cleanup_new_altrep(
 extern "C" DL_FUNC native_cleanup_get_ccallable(
     const char * package, const char * name) {
   if(std::strcmp(package, "charport") == 0 &&
-     std::strcmp(name, "charport_charvec_wrap") == 0) {
+     std::strcmp(name, "charport_charvec_wrap_v1") == 0) {
     return reinterpret_cast<DL_FUNC>(&charport_charvec_wrap);
   }
   return R_GetCCallable(package, name);

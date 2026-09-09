@@ -149,7 +149,7 @@ typedef SEXP (*charport_charvec_from_views_t)(
 static inline charport_reader charport_resolve(SEXP x) {
   static charport_resolve_t fn = NULL;
   if(fn == NULL) {
-    fn = (charport_resolve_t) R_GetCCallable("charport", "charport_resolve");
+    fn = (charport_resolve_t) R_GetCCallable("charport", "charport_resolve_v1");
   }
   return fn(x);
 }
@@ -158,7 +158,7 @@ static inline charport_sexp_info charport_get_sexp_info(SEXP x) {
   static charport_sexp_info_t fn = NULL;
   if(fn == NULL) {
     fn = (charport_sexp_info_t)
-      R_GetCCallable("charport", "charport_sexp_info");
+      R_GetCCallable("charport", "charport_sexp_info_v1");
   }
   return fn(x);
 }
@@ -180,11 +180,11 @@ static inline SEXP charport_charvec_from_views(
   if(fn == NULL) {
 #ifdef __cplusplus
     fn = reinterpret_cast<charport_charvec_from_views_t>(
-      R_GetCCallable("charport", "charport_charvec_from_views")
+      R_GetCCallable("charport", "charport_charvec_from_views_v1")
     );
 #else
     fn = (charport_charvec_from_views_t)
-      R_GetCCallable("charport", "charport_charvec_from_views");
+      R_GetCCallable("charport", "charport_charvec_from_views_v1");
 #endif
   }
   return fn(n, ptrs, lengths, encodings);
@@ -273,7 +273,7 @@ CHARPORT_READER_NODISCARD
 inline charport_reader resolve(SEXP x) {
   static charport_resolve_t fn = nullptr;
   if(fn == nullptr) {
-    fn = reinterpret_cast<charport_resolve_t>(detail::fetch("charport_resolve"));
+    fn = reinterpret_cast<charport_resolve_t>(detail::fetch("charport_resolve_v1"));
   }
   return fn(x);
 }
@@ -390,7 +390,7 @@ inline void register_altrep(R_altrep_class_t cls,
                             charport_reader_capabilities capabilities) {
   static charport_register_altrep_t fn = nullptr;
   if(fn == nullptr) {
-    fn = reinterpret_cast<charport_register_altrep_t>(detail::fetch("charport_register_altrep"));
+    fn = reinterpret_cast<charport_register_altrep_t>(detail::fetch("charport_register_altrep_v1"));
   }
   fn(cls, state_fns, range_fns, index_fns, capabilities);
 }
@@ -398,7 +398,7 @@ inline void register_altrep(R_altrep_class_t cls,
 inline void unregister_altrep(R_altrep_class_t cls) {
   static charport_unregister_altrep_t fn = nullptr;
   if(fn == nullptr) {
-    fn = reinterpret_cast<charport_unregister_altrep_t>(detail::fetch("charport_unregister_altrep"));
+    fn = reinterpret_cast<charport_unregister_altrep_t>(detail::fetch("charport_unregister_altrep_v1"));
   }
   fn(cls);
 }
@@ -410,7 +410,7 @@ inline bool check_abi() {
 inline SexpInfo sexp_info(SEXP x) {
   static charport_sexp_info_t fn = nullptr;
   if(fn == nullptr) {
-    fn = reinterpret_cast<charport_sexp_info_t>(detail::fetch("charport_sexp_info"));
+    fn = reinterpret_cast<charport_sexp_info_t>(detail::fetch("charport_sexp_info_v1"));
   }
   return fn(x);
 }
