@@ -6,12 +6,13 @@ Authors@R: c(
     person("Travers", "Ching", email = "traversc@gmail.com", role = c("aut", "cre", "cph")),
     person("R Consortium", role = "fnd",
            comment = "Infrastructure Steering Committee grant: Universal ALTREP Interoperability for Strings"))
-Description: Infrastructure for ALTREP character vectors: a reference
-    ALTREP string class ('charvec') backed by stable memory slices with a
-    parallel-constructible builder, a runtime registration interface for
-    third-party ALTREP string classes, and a common zero-copy read path
-    so consumer packages can iterate over any character vector with a
-    single code path.
+Description: Provides infrastructure for interoperable ALTREP character vectors.
+    Producers of ALTREP string classes can register access methods,
+    allowing consumers to read supported character vectors through
+    a common interface without materializing them as ordinary R strings.
+    Also provides 'charvec', a reference ALTREP string implementation backed
+    by stable memory slices, with support for efficient and multithreaded
+    construction.
 License: MIT + file LICENSE
 Copyright: Benchmark measurements use the enwik8 corpus, the first 10^8 bytes
     of the English Wikipedia XML dump of 2006-03-03, whose text carries
@@ -24,7 +25,6 @@ Suggests:
     quarto,
     Rcpp
 VignetteBuilder: quarto
-Biarch: true
 Depends: R (>= 3.6.0)
 URL: https://github.com/charbase/charport, https://charbase.github.io/charport/
 BugReports: https://github.com/charbase/charport/issues

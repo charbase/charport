@@ -8,7 +8,7 @@
 \description{
 \if{html}{\figure{logo.svg}{options: style='float: right' alt='logo' width='120'}}
 
-Infrastructure for ALTREP character vectors: a reference ALTREP string class ('charvec') backed by stable memory slices with a parallel-constructible builder, a runtime registration interface for third-party ALTREP string classes, and a common zero-copy read path so consumer packages can iterate over any character vector with a single code path.
+Provides infrastructure for interoperable ALTREP character vectors. Producers of ALTREP string classes can register access methods, allowing consumers to read supported character vectors through a common interface without materializing them as ordinary R strings. Also provides 'charvec', a reference ALTREP string implementation backed by stable memory slices, with support for efficient and multithreaded construction.
 }
 \seealso{
 Useful links:
