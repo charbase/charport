@@ -9,6 +9,7 @@
 #include <Rinternals.h>
 #include <R_ext/Altrep.h>
 #include <R_ext/Rdynload.h>
+#include <R_ext/Visibility.h>
 
 #ifndef __cplusplus
 #include <stdbool.h>
@@ -229,7 +230,7 @@ inline DL_FUNC fetch(const char * name) {
   return R_GetCCallable("charport", name);
 }
 
-inline int loaded_abi_version() {
+inline attribute_hidden int loaded_abi_version() {
   static charport_abi_version_t fn = nullptr;
   if(fn == nullptr) {
     fn = reinterpret_cast<charport_abi_version_t>(fetch("charport_abi_version"));
@@ -270,7 +271,7 @@ inline int convert_current_exception_to_status() noexcept {
 }
 
 CHARPORT_READER_NODISCARD
-inline charport_reader resolve(SEXP x) {
+inline attribute_hidden charport_reader resolve(SEXP x) {
   static charport_resolve_t fn = nullptr;
   if(fn == nullptr) {
     fn = reinterpret_cast<charport_resolve_t>(detail::fetch("charport_resolve_v1"));
@@ -383,7 +384,7 @@ inline charport_reader resolve_with_cpp11(SEXP x) {
 
 } // namespace detail
 
-inline void register_altrep(R_altrep_class_t cls,
+inline attribute_hidden void register_altrep(R_altrep_class_t cls,
                             charport_reader_state_fns state_fns,
                             charport_reader_range_fns range_fns,
                             charport_reader_index_fns index_fns,
@@ -395,7 +396,7 @@ inline void register_altrep(R_altrep_class_t cls,
   fn(cls, state_fns, range_fns, index_fns, capabilities);
 }
 
-inline void unregister_altrep(R_altrep_class_t cls) {
+inline attribute_hidden void unregister_altrep(R_altrep_class_t cls) {
   static charport_unregister_altrep_t fn = nullptr;
   if(fn == nullptr) {
     fn = reinterpret_cast<charport_unregister_altrep_t>(detail::fetch("charport_unregister_altrep_v1"));
@@ -407,7 +408,7 @@ inline bool check_abi() {
   return detail::loaded_abi_version() == CHARPORT_ABI_VERSION;
 }
 
-inline SexpInfo sexp_info(SEXP x) {
+inline attribute_hidden SexpInfo sexp_info(SEXP x) {
   static charport_sexp_info_t fn = nullptr;
   if(fn == nullptr) {
     fn = reinterpret_cast<charport_sexp_info_t>(detail::fetch("charport_sexp_info_v1"));

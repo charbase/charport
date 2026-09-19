@@ -4,6 +4,7 @@
 // Native charvec payload: contiguous record arrays plus owned payload slices.
 
 #include "detail.h"
+#include <R_ext/Visibility.h>
 
 #include <algorithm>
 #include <cstring>
@@ -16,7 +17,7 @@ namespace charport {
 namespace charvec {
 namespace components {
 
-inline const char * empty_data() noexcept {
+inline attribute_hidden const char * empty_data() noexcept {
   static const char empty = '\0';
   return &empty;
 }

@@ -4,6 +4,7 @@
 // Header-only charvec builders. Include charport.h from packages.
 
 #include "../interop/reader.h"
+#include <R_ext/Visibility.h>
 #include "store.h"
 
 #include <algorithm>
@@ -133,7 +134,7 @@ inline size_t checked_vector_size(R_xlen_t n) {
   return static_cast<size_t>(n);
 }
 
-inline charport_charvec_wrap_t wrap_callable() noexcept {
+inline attribute_hidden charport_charvec_wrap_t wrap_callable() noexcept {
   static charport_charvec_wrap_t fn = nullptr;
   if(fn == nullptr) {
     fn = reinterpret_cast<charport_charvec_wrap_t>(
