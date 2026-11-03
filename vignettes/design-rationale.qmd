@@ -32,11 +32,15 @@ For that reason, `byteviews()` returns pointers and lengths together. A length i
 
 ## `Reader` fallback
 
-`Reader` first uses ordinary R storage when it is already available: `DATAPTR_OR_NULL(x)` gives a direct pointer array without forcing. That path has persistent views, but it is still R-managed storage, so `charport` does not advertise concurrent access.
+If the vector is ALTREP and its class is registered, `Reader` can return a borrow. A registered class may decline a particular vector by returning `NULL` from its init callback. In that case, `Reader` falls back to `STRING_PTR_RO(x)`.
 
-If the vector is ALTREP and its class is registered, `Reader` asks the class to start a borrow. A registered class may still decline a particular vector by returning `NULL` from its init callback. In that case, or when the ALTREP class is not registered, `Reader` falls back to `STRING_PTR_RO(x)`.
+That fallback is intentionally plain R behavior. It may materialize the ALTREP, but it preserves correctness for every character vector.
 
-That fallback is intentionally plain R behavior. It may materialize the ALTREP, but it preserves correctness for every character vector. `charport` is an escape hatch from materialization when a producer allows it.
+### Base R wrappers
+
+When an attribute is set on a shared character vector of length 64 or more (`setNames()`, for example), base R avoids a copy by returning a `wrap_string`: an ALTREP object that holds the original vector and carries the new attributes. Ordinarily, taking its data pointer copies the original, which for an ALTREP class also means materializing it.
+
+On R ≥ 4.6, `charport` treats `wrap_string` like a registered class and reads the vector inside directly. If the vector inside is itself registered, `charport` handles it without materialization.
 
 ## Construction and access use different errors
 
@@ -87,3 +91,8 @@ The three different builder classes correspond to common vector building pattern
 Builder conversion creates an external pointer with a null address, registers its finalizer, and creates the ALTREP object. It moves the `Store` and installs the address only after those R allocations succeed. On failure, the caller's `Store` remains intact, so `to_sexp_with_rcpp()` and `to_sexp_with_cpp11()` can unwind without losing it.
 
 When a `charvec` is fully materialized, it caches an ordinary `STRSXP` in ALTREP `data2` and releases the `charvec::Store` held in `data1`. The reader then naturally uses the ordinary fallback path over the cached `STRSXP`.
+
+## `charpack`: compact representation of short vectors
+
+A `charvec` holds its `Store` through an external pointer with a finalizer. It makes sense for large vectors and is often more memory efficient than base R strings. However, using an external pointer costs extra R objects and churn from garbage collection. `charpack` stores `[n][u32 size x n][u8 encoding x n][bytes]` in an ordinary raw vector. It has smaller per-vector overhead compared to `charvec` and frequently base R strings as well. The tradeoff is it requires a copy of the full vector at construction, so is not suited for large vectors.
+

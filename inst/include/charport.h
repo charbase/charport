@@ -21,9 +21,11 @@
 #endif
 
 #include "charport/api.h"
+#include "charport/charpack.h"
 #undef CHARPORT_CPP11_INCLUDED
 #else
 #include "charport/interop/reader.h"
+#include "charport/charpack.h"
 #endif
 
 #endif

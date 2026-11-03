@@ -20,11 +20,12 @@ At its core, `charport` is a small contract between ALTREP producer and consumer
 
 ![](../man/figures/developer-flow.svg)
 
-The guide goes through three main use cases:
+The guide goes through four main use cases:
 
 - [Using the Universal Reader](#universal-reader): read ALTREP strings through one C++ interface.
 - [Registering an ALTREP Class](#altrep-registration): make an ALTREP string class readable by other packages through `charport`.
 - [Using `charvec` Directly](#charvec-direct): use the built-in `charvec` ALTREP class directly with serial or multithreaded builders.
+- [`charpack`: compact vectors](#charpack): use the built-in `charpack` class for many short vectors.
 
 `charport` can be used from C or from C++11 and later. Its error model was designed and tested with particular care so that R errors and C++ exceptions are propagated properly from both languages. This guide explains the relevant rules alongside the APIs they govern; the [Error handling](error-handling.html) vignette gives a more complete design and rationale.
 
@@ -302,7 +303,7 @@ struct charport_reader_capabilities {
 
 `init(SEXP x)` starts the reader and returns the state used by the access callbacks. `release` cleans up that state when the `Reader` is destroyed and may be `nullptr` when no cleanup is needed. `init` should not allow C++ exceptions to fall through, but instead convert them to R errors.
 
-Returning `NULL` from `init` means this particular vector cannot satisfy the reader contract, so `charport` falls back to default access.
+Returning `NULL` from `init` means this particular vector cannot satisfy the reader contract (for example, it is already materialized), so `charport` falls back to default access.
 
 While `charport` asks for many callback functions during registration, they are all pretty similar and can be built from the same boilerplate. Range callbacks (`charport_reader_range_fns`) fill output arrays for the 0-based interval `[start, start + size)`:
 
@@ -598,6 +599,53 @@ const cetype_ext_t encodings[] = {
 
 SEXP out = charport_charvec_from_views(3, ptrs, lengths, encodings);
 ```
+
+### Filling a `charvec` in place
+
+Sometimes it makes more sense to create the ALTREP object before filling data in. `charvec::alloc_na(n)` returns a `charvec` of `n` NA strings, and `charvec::get_store(x)` returns its underlying `Store` that can be filled.
+
+``` cpp
+SEXP x = PROTECT(charvec::alloc_na(n));
+// ... place x in its parent object ...
+charvec::Store * store = charvec::get_store(x);
+charvec::Writer w(*store);
+
+char * dst = w.reserve(len);
+// write len bytes to dst
+w.set(i, dst, len, CETYPE_EXT_UTF8);
+
+w.copy(j, ptr, len, CETYPE_EXT_UTF8);  // reserve, copy and set
+w.set_na(k);
+```
+
+## `charpack`: compact vectors {#charpack}
+
+While `charvec` works well for long vectors, `charpack` is optimized for short vectors. It does so by keeping all data in a raw vector, avoiding object storage and external pointer overhead. 
+
+Construction is always one-shot:
+
+``` cpp
+// strings from pointer, length and encoding arrays, same semantics as charvec
+SEXP x = charpack::from_views(n, ptrs, lengths, encodings);
+
+// strings from byte slices, split in order by the lengths
+// string data is copied from slices
+SEXP y = charpack::from_slices(n, lengths, encodings, n_slices, slices, slice_bytes);
+
+// create first, fill later from views
+SEXP p = PROTECT(charpack::placeholder());
+charpack::fill_views(p, n, ptrs, lengths, encodings);
+
+// create first, fill later from slices
+SEXP q = PROTECT(charpack::placeholder());
+charpack::fill_slices(q, n, lengths, encodings, n_slices, slices, slice_bytes);
+
+// materialize early, fill data2 slot and return it
+SEXP r = PROTECT(charpack::placeholder());
+SEXP rdata2 = charpack::fill_materialized_na(r, n);
+```
+
+A placeholder has length 0 until it is filled. Because `charpack` always one-shot copies the entire vector, large vectors or large strings temporarily need to be stored twice and might become memory inefficient. So `fill_materialized_na(x, n)` is a way out by materializing early. It materializes `x` as `n` NA strings and returns the materialized vector, so you can fill it with `SET_STRING_ELT`.
 
 ## ABI Compatibility {#abi-compatibility-guard}
 

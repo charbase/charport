@@ -110,12 +110,12 @@ for (name in c(
   expect_error_matching(lookup_callable(name), "not provided|not available")
 }
 
-catn("registry state at load: charvec is registered by default")
+catn("registry state at load: charvec and charpack are registered by default")
 reg <- charport_classes()
-stopifnot(reg$n == 1L)
-stopifnot(identical(reg$persistent_views, TRUE))
-stopifnot(identical(reg$concurrent_access, TRUE))
-stopifnot(identical(reg$reentrant, TRUE))
+stopifnot(reg$n == 2L)
+stopifnot(identical(reg$persistent_views, c(TRUE, TRUE)))
+stopifnot(identical(reg$concurrent_access, c(TRUE, TRUE)))
+stopifnot(identical(reg$reentrant, c(TRUE, TRUE)))
 x <- charvec("a", "b")
 expect_registered_class(x)
 stopifnot(!charvec_stats(x)$materialized)   # class_of didn't touch data
@@ -123,10 +123,10 @@ stopifnot(!charvec_stats(x)$materialized)   # class_of didn't touch data
 catn("duplicate register: charvec registration throws")
 expect_error_matching(register_charvec(), "already registered")
 reg <- charport_classes()
-stopifnot(reg$n == 1L)
-stopifnot(identical(reg$persistent_views, TRUE))
-stopifnot(identical(reg$concurrent_access, TRUE))
-stopifnot(identical(reg$reentrant, TRUE))
+stopifnot(reg$n == 2L)
+stopifnot(identical(reg$persistent_views, c(TRUE, TRUE)))
+stopifnot(identical(reg$concurrent_access, c(TRUE, TRUE)))
+stopifnot(identical(reg$reentrant, c(TRUE, TRUE)))
 
 catn("class_of: class membership, no materialization")
 x <- charvec("a", "b")

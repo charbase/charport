@@ -194,15 +194,6 @@ encode_uint <- function(x, size, endian = .Platform$endian) {
   }
   out
 }
-native_endian_flag <- function() {
-  as.raw(if (.Platform$endian == "little") 1L else 2L)
-}
-opposite_endian <- function() {
-  if (.Platform$endian == "little") "big" else "little"
-}
-opposite_endian_flag <- function() {
-  as.raw(if (.Platform$endian == "little") 2L else 1L)
-}
 find_raw_subsequence <- function(haystack, needle) {
   limit <- length(haystack) - length(needle) + 1L
   stopifnot(limit >= 1L)
@@ -227,26 +218,27 @@ expect_unserialize_error <- function(serialized) {
   stopifnot(inherits(err, "error"))
   stopifnot(grepl("charport", conditionMessage(err), fixed = TRUE))
 }
-# state layout for charvec("abc"):
-# "CPV1" | u8 endian flag | u64 n=1 | u32 len=3 | u8 enc=254 (ascii) | "abc"
+# state layout for charvec("abc"), written little-endian on every host:
+# "CPV1" | u8 endian flag 1 | u64 n=1 | u32 len=3 | u8 enc=254 (ascii) | "abc"
 state_abc <- c(
   charToRaw("CPV1"),
-  native_endian_flag(),
-  encode_uint(1L, 8L),
-  encode_uint(3L, 4L),
+  as.raw(1L),
+  encode_uint(1L, 8L, "little"),
+  encode_uint(3L, 4L, "little"),
   as.raw(254L),
   charToRaw("abc")
 )
-state_abc_opposite_endian <- c(
+# flag 2 marks a big-endian state, which is still read
+state_abc_big_endian <- c(
   charToRaw("CPV1"),
-  opposite_endian_flag(),
-  encode_uint(1L, 8L, opposite_endian()),
-  encode_uint(3L, 4L, opposite_endian()),
+  as.raw(2L),
+  encode_uint(1L, 8L, "big"),
+  encode_uint(3L, 4L, "big"),
   as.raw(254L),
   charToRaw("abc")
 )
 y <- unserialize(mutate_serialized_state(charvec("abc"), state_abc, function(state) {
-  state_abc_opposite_endian
+  state_abc_big_endian
 }))
 stopifnot(is_charvec(y), identical(as.character(y), "abc"))
 expect_unserialize_error(mutate_serialized_state(charvec("abc"), state_abc, function(state) {

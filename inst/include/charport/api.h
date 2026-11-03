@@ -5,5 +5,6 @@
 
 #include "interop/reader.h"
 #include "charvec/builder.h"
+#include "charvec/writer.h"
 
 #endif

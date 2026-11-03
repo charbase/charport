@@ -76,6 +76,25 @@ inline cetype_ext_t classify_charsxp(SEXP x) {
   }
 }
 
+// Bulk-input validation shared by the from_views/fill entry points.
+inline bool valid_view_encoding(cetype_ext_t enc) noexcept {
+  switch(enc.value) {
+  case CETYPE_EXT_NATIVE.value:
+  case CETYPE_EXT_UTF8.value:
+  case CETYPE_EXT_LATIN1.value:
+  case CETYPE_EXT_BYTES.value:
+  case CETYPE_EXT_ASCII_OR_UTF8.value:
+  case CETYPE_EXT_ASCII.value:
+  case CETYPE_EXT_NA.value:
+    return true;
+  }
+  return false;
+}
+
+inline bool view_is_na(const char * ptr, int len, cetype_ext_t enc) noexcept {
+  return ptr == nullptr || len == NA_INTEGER || enc == CETYPE_EXT_NA;
+}
+
 inline charport_strview charsxp_to_view(SEXP x) {
   if(x == NA_STRING) {
     return make_strview(nullptr, NA_INTEGER, CETYPE_EXT_NA);
@@ -101,7 +120,12 @@ inline SEXP charport_sexp_guard(const char * op, Fun fun) {
   return R_NilValue;
 }
 
-// Native-endian serialized_state with a magic/version prefix and endian flag.
+// serialized_state is "CPV1", an endian flag, then a packed body:
+//
+//   [u64 n][u32 size x n][u8 cetype_ext x n][bytes]
+//
+// It is written little-endian (flag 1) on every host. A body with flag 2 is
+// big-endian and is still read. charpack's data1 is the same packed body.
 struct charvec_serialized_layout {
   size_t n = 0;
   bool swap = false;
@@ -152,6 +176,35 @@ inline uint32_t charvec_read_u32_advance(const unsigned char *& ptr, bool swap) 
   return swap ? charvec_bswap32(out) : out;
 }
 
+inline void charvec_write_u64_le(unsigned char * ptr, uint64_t x) noexcept {
+  if(!charvec_host_is_little_endian()) {
+    x = charvec_bswap64(x);
+  }
+  std::memcpy(ptr, &x, sizeof(uint64_t));
+}
+
+inline void charvec_write_u32_le(unsigned char * ptr, uint32_t x) noexcept {
+  if(!charvec_host_is_little_endian()) {
+    x = charvec_bswap32(x);
+  }
+  std::memcpy(ptr, &x, sizeof(uint32_t));
+}
+
+// Swaps n and the sizes of a packed body of n records in place.
+inline void charvec_bswap_packed(unsigned char * body, size_t n) noexcept {
+  uint64_t n64;
+  std::memcpy(&n64, body, sizeof(uint64_t));
+  n64 = charvec_bswap64(n64);
+  std::memcpy(body, &n64, sizeof(uint64_t));
+  unsigned char * sizes = body + sizeof(uint64_t);
+  for(size_t i = 0; i < n; ++i) {
+    uint32_t size;
+    std::memcpy(&size, sizes + sizeof(uint32_t) * i, sizeof(uint32_t));
+    size = charvec_bswap32(size);
+    std::memcpy(sizes + sizeof(uint32_t) * i, &size, sizeof(uint32_t));
+  }
+}
+
 inline size_t charvec_serialized_prefix_bytes() noexcept {
   return 5;  // "CPV1" + endian flag
 }
@@ -172,6 +225,42 @@ inline size_t charvec_serialized_length(size_t n, size_t payload_bytes) {
     throw std::runtime_error("serialized_state length exceeds R_xlen_t");
   }
   return total_bytes;
+}
+
+// Checks that a packed body's header fits in len bytes. Records are checked by
+// charvec_check_records.
+inline charvec_serialized_layout charvec_parse_packed(const unsigned char * body, size_t len,
+                                                      bool swap) {
+  if(len < sizeof(uint64_t)) {
+    throw std::runtime_error("serialized_state is truncated");
+  }
+  const uint64_t n64 = charvec_read_u64(body, swap);
+  if(n64 > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+     n64 > static_cast<uint64_t>(std::numeric_limits<R_xlen_t>::max())) {
+    throw std::runtime_error("serialized_state length exceeds R_xlen_t");
+  }
+
+  const size_t n = static_cast<size_t>(n64);
+  const size_t sizes_bytes = cpi::checked_mul_size(n, sizeof(uint32_t), "serialized_state header");
+  const size_t enc_bytes = cpi::checked_mul_size(n, sizeof(uint8_t), "serialized_state header");
+  const size_t header_bytes = cpi::checked_add_size(
+    cpi::checked_add_size(sizeof(uint64_t), sizes_bytes, "serialized_state header"),
+    enc_bytes,
+    "serialized_state header"
+  );
+
+  if(len < header_bytes) {
+    throw std::runtime_error("serialized_state header is truncated");
+  }
+
+  charvec_serialized_layout layout;
+  layout.n = n;
+  layout.swap = swap;
+  layout.size_offset = body + sizeof(uint64_t);
+  layout.enc_offset = layout.size_offset + sizes_bytes;
+  layout.data_offset = layout.enc_offset + enc_bytes;
+  layout.data_end = body + len;
+  return layout;
 }
 
 inline charvec_serialized_layout charvec_parse_serialized(SEXP serialized_state) {
@@ -195,49 +284,36 @@ inline charvec_serialized_layout charvec_parse_serialized(SEXP serialized_state)
     throw std::runtime_error("invalid serialized_state endian flag");
   }
   const bool swap = source_endian != charvec_native_endian_flag();
-
-  const uint64_t n64 = charvec_read_u64(serialized_ptr + prefix_bytes, swap);
-  if(n64 > static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
-     n64 > static_cast<uint64_t>(std::numeric_limits<R_xlen_t>::max())) {
-    throw std::runtime_error("serialized_state length exceeds R_xlen_t");
-  }
-
-  const size_t n = static_cast<size_t>(n64);
-  const size_t sizes_bytes = cpi::checked_mul_size(n, sizeof(uint32_t), "serialized_state header");
-  const size_t enc_bytes = cpi::checked_mul_size(n, sizeof(uint8_t), "serialized_state header");
-  const size_t header_bytes = cpi::checked_add_size(
-    cpi::checked_add_size(
-      cpi::checked_add_size(prefix_bytes, sizeof(uint64_t), "serialized_state header"),
-      sizes_bytes,
-      "serialized_state header"),
-    enc_bytes,
-    "serialized_state header"
-  );
-
-  if(raw_len < header_bytes) {
-    throw std::runtime_error("serialized_state header is truncated");
-  }
-
-  charvec_serialized_layout layout;
-  layout.n = n;
-  layout.swap = swap;
-  layout.size_offset = serialized_ptr + prefix_bytes + sizeof(uint64_t);
-  layout.enc_offset = layout.size_offset + sizes_bytes;
-  layout.data_offset = layout.enc_offset + enc_bytes;
-  layout.data_end = serialized_ptr + raw_len;
-  return layout;
+  return charvec_parse_packed(serialized_ptr + prefix_bytes, raw_len - prefix_bytes, swap);
 }
 
-inline const char * charvec_serialized_payload(const unsigned char *& data_offset,
-                                               const unsigned char * data_end,
-                                               size_t len) {
-  const size_t remaining = static_cast<size_t>(data_end - data_offset);
-  if(len > remaining) {
-    throw std::runtime_error("serialized_state payload is truncated");
+// Untrusted input: accepts every encoding a record can legitimately hold,
+// rejects an out-of-range encoding byte, and requires the sizes to cover the
+// payload exactly.
+inline void charvec_check_records(const charvec_serialized_layout & layout) {
+  const unsigned char * size_offset = layout.size_offset;
+  const size_t payload = static_cast<size_t>(layout.data_end - layout.data_offset);
+  size_t used = 0;
+  for(size_t i = 0; i < layout.n; ++i) {
+    const uint32_t size = charvec_read_u32_advance(size_offset, layout.swap);
+    if(!cpi::check_r_string_len(size)) {
+      throw std::runtime_error("serialized string size exceeds R string size");
+    }
+    const cetype_ext_t encoding = charport_cetype_ext(layout.enc_offset[i]);
+    if(!cpi::valid_view_encoding(encoding)) {
+      throw std::runtime_error("invalid string encoding in serialized_state");
+    }
+    if(encoding == CETYPE_EXT_NA && size != 0) {
+      throw std::runtime_error("serialized NA string must have zero length");
+    }
+    if(size > payload - used) {
+      throw std::runtime_error("serialized_state payload is truncated");
+    }
+    used += size;
   }
-  const char * ptr = reinterpret_cast<const char *>(data_offset);
-  data_offset += len;
-  return ptr;
+  if(used != payload) {
+    throw std::runtime_error("serialized_state has trailing bytes");
+  }
 }
 
 namespace charvec_detail {
@@ -351,44 +427,20 @@ inline cpv::Store * subset_store(
 }
 
 inline cpv::Store * unserialize_store(const charvec_serialized_layout & layout) {
+  charvec_check_records(layout);
   const unsigned char * size_offset = layout.size_offset;
-  const unsigned char * enc_offset = layout.enc_offset;
   const unsigned char * data_offset = layout.data_offset;
 
   cpv::Builder out(static_cast<R_xlen_t>(layout.n));
   for(size_t i = 0; i < layout.n; ++i) {
-    const uint32_t size = charvec_read_u32_advance(size_offset, layout.swap);
-    if(!cpi::check_r_string_len(size)) {
-      throw std::runtime_error("serialized string size exceeds R string size");
-    }
-    const cetype_ext_t encoding = charport_cetype_ext(*enc_offset++);
-    const size_t stored_len = static_cast<size_t>(size);
-    const char * payload = charvec_serialized_payload(
-      data_offset, layout.data_end, stored_len);
-    // Untrusted input: accept every encoding a record can legitimately hold
-    // and reject only an out-of-range encoding byte.
-    switch(encoding.value) {
-    case CETYPE_EXT_ASCII.value:
-    case CETYPE_EXT_UTF8.value:
-    case CETYPE_EXT_ASCII_OR_UTF8.value:
-    case CETYPE_EXT_LATIN1.value:
-    case CETYPE_EXT_NATIVE.value:
-    case CETYPE_EXT_BYTES.value:
-      out.set(static_cast<R_xlen_t>(i), payload, stored_len, encoding);
-      break;
-    case CETYPE_EXT_NA.value:
-      if(stored_len != 0) {
-        throw std::runtime_error("serialized NA string must have zero length");
-      }
+    const size_t size = charvec_read_u32_advance(size_offset, layout.swap);
+    const cetype_ext_t encoding = charport_cetype_ext(layout.enc_offset[i]);
+    if(encoding == CETYPE_EXT_NA) {
       out.set_na(static_cast<R_xlen_t>(i));
-      break;
-    default:
-      throw std::runtime_error("invalid string encoding in serialized_state");
+    } else {
+      out.set(static_cast<R_xlen_t>(i), reinterpret_cast<const char *>(data_offset), size, encoding);
     }
-  }
-
-  if(data_offset != layout.data_end) {
-    throw std::runtime_error("serialized_state has trailing bytes");
+    data_offset += size;
   }
   cpv::Store store = out.release_store();
   return heap_store(std::move(store));
@@ -751,16 +803,15 @@ struct charvec_altrep {
       serialized_ptr[1] = 'P';
       serialized_ptr[2] = 'V';
       serialized_ptr[3] = '1';
-      serialized_ptr[4] = charvec_native_endian_flag();
-      const uint64_t n64 = static_cast<uint64_t>(n);
-      std::memcpy(serialized_ptr + charvec_serialized_prefix_bytes(), &n64, sizeof(uint64_t));
+      serialized_ptr[4] = 1;  // little-endian
+      charvec_write_u64_le(serialized_ptr + charvec_serialized_prefix_bytes(),
+                           static_cast<uint64_t>(n));
       unsigned char * current_offset =
         serialized_ptr + charvec_serialized_prefix_bytes() + sizeof(uint64_t);
 
       for(size_t i = 0; i < n; ++i) {
         const int len = data1.length(i);
-        const uint32_t size = len < 0 ? 0U : static_cast<uint32_t>(len);
-        std::memcpy(current_offset, &size, sizeof(uint32_t));
+        charvec_write_u32_le(current_offset, len < 0 ? 0U : static_cast<uint32_t>(len));
         current_offset += sizeof(uint32_t);
       }
 

@@ -1,4 +1,5 @@
 #include "charvec_altrep.h"
+#include "charpack_altrep.h"
 #include "charport_registry.h"
 
 #include <cstdio>
@@ -36,24 +37,6 @@ size_t checked_len_arg(SEXP n_) {
   return static_cast<size_t>(n);
 }
 
-bool valid_bulk_encoding(cetype_ext_t enc) noexcept {
-  switch(enc.value) {
-  case CETYPE_EXT_NATIVE.value:
-  case CETYPE_EXT_UTF8.value:
-  case CETYPE_EXT_LATIN1.value:
-  case CETYPE_EXT_BYTES.value:
-  case CETYPE_EXT_ASCII_OR_UTF8.value:
-  case CETYPE_EXT_ASCII.value:
-  case CETYPE_EXT_NA.value:
-    return true;
-  }
-  return false;
-}
-
-bool bulk_view_is_na(const char * ptr, int len, cetype_ext_t enc) noexcept {
-  return ptr == nullptr || len == NA_INTEGER || enc == CETYPE_EXT_NA;
-}
-
 struct bulk_builder_state {
   charport::charvec::Builder * builder;
 };
@@ -87,11 +70,11 @@ extern "C" SEXP charport_charvec_from_views_impl(
     Rf_error("charport charvec from views: input arrays must not be NULL");
   }
   for(R_xlen_t i = 0; i < n; ++i) {
-    if(!valid_bulk_encoding(encodings[i])) {
+    if(!cpi::valid_view_encoding(encodings[i])) {
       Rf_error("charport charvec from views: invalid encoding at index %lld",
                static_cast<long long>(i));
     }
-    if(!bulk_view_is_na(ptrs[i], lengths[i], encodings[i]) && lengths[i] < 0) {
+    if(!cpi::view_is_na(ptrs[i], lengths[i], encodings[i]) && lengths[i] < 0) {
       Rf_error("charport charvec from views: negative length at index %lld",
                static_cast<long long>(i));
     }
@@ -103,7 +86,7 @@ extern "C" SEXP charport_charvec_from_views_impl(
   try {
     builder = new charport::charvec::Builder(n);
     for(R_xlen_t i = 0; i < n; ++i) {
-      if(bulk_view_is_na(ptrs[i], lengths[i], encodings[i])) {
+      if(cpi::view_is_na(ptrs[i], lengths[i], encodings[i])) {
         builder->set_na(i);
       } else {
         builder->set(i, ptrs[i], static_cast<size_t>(lengths[i]), encodings[i]);
@@ -139,6 +122,32 @@ extern "C" SEXP C_as_charvec(SEXP x) {
   });
 }
 
+extern "C" SEXP charport_charvec_alloc_na_impl(R_xlen_t n) {
+  if(n < 0) {
+    Rf_error("charport charvec alloc_na: negative length");
+  }
+  return charport_sexp_guard("charvec alloc_na", [&]() -> SEXP {
+    cpv::Store * store = new cpv::Store(static_cast<size_t>(n), 0);
+    return charvec_detail::wrap_store_with_cleanup(store);
+  });
+}
+
+// No data2 and no Elt cache means R holds no CHARSXP derived from the Store.
+// A Reader leaves no trace, so the caller must own the vector (see writer.h).
+extern "C" void * charport_charvec_get_store_impl(SEXP x) {
+  if(TYPEOF(x) != STRSXP || ALTREP(x) != TRUE || !is_charvec_sexp(x)) {
+    return nullptr;
+  }
+  if(R_altrep_data2(x) != R_NilValue) {
+    return nullptr;
+  }
+  SEXP xp = R_altrep_data1(x);
+  if(R_ExternalPtrProtected(xp) != R_NilValue) {
+    return nullptr;
+  }
+  return R_ExternalPtrAddr(xp);
+}
+
 extern "C" SEXP C_charvec_alloc(SEXP n_) {
   return charport_sexp_guard("charvec_alloc", [&]() -> SEXP {
     const size_t n = checked_len_arg(n_);
@@ -155,6 +164,10 @@ extern "C" SEXP C_charport_materialize(SEXP x) {
   return charport_sexp_guard("charport_materialize", [&]() -> SEXP {
     if(is_charvec_sexp(x)) {
       charvec_altrep::Materialize(x);
+      return x;
+    }
+    if(charpack_altrep::is(x)) {
+      charpack_altrep::Materialize(x);
       return x;
     }
     if(TYPEOF(x) != STRSXP) {

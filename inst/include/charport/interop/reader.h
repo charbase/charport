@@ -23,6 +23,13 @@
 extern "C" {
 #endif
 
+/*
+ * init starts a borrow and returns the state passed to the callbacks, or NULL
+ * to decline this vector, after which Reader falls back to STRING_PTR_RO.
+ * Reader calls init even on a vector that is already in R storage, so init
+ * must decline a vector it cannot serve, including one whose data
+ * materialization released.
+ */
 typedef void * (*charport_reader_init_fn)(SEXP x);
 typedef void (*charport_reader_release_fn)(void * state);
 /*
@@ -145,6 +152,14 @@ typedef SEXP (*charport_charvec_wrap_t)(void * store);
 typedef SEXP (*charport_charvec_from_views_t)(
     R_xlen_t n, const char * const * ptrs, const int * lengths,
     const cetype_ext_t * encodings);
+/*
+ * charvec in-place fill. alloc_na returns a charvec of n NA strings and may
+ * raise an R error. get_store returns the native Store of a charvec that has
+ * never been read (not materialized, no cached elements), or NULL. It does
+ * not call R or raise errors. The Store type is C++ only.
+ */
+typedef SEXP (*charport_charvec_alloc_na_t)(R_xlen_t n);
+typedef void * (*charport_charvec_get_store_t)(SEXP x);
 
 #ifndef __cplusplus
 static inline charport_reader charport_resolve(SEXP x) {
@@ -189,6 +204,21 @@ static inline SEXP charport_charvec_from_views(
 #endif
   }
   return fn(n, ptrs, lengths, encodings);
+}
+
+static inline SEXP charport_charvec_alloc_na(R_xlen_t n) {
+  static charport_charvec_alloc_na_t fn = NULL;
+  if(fn == NULL) {
+#ifdef __cplusplus
+    fn = reinterpret_cast<charport_charvec_alloc_na_t>(
+      R_GetCCallable("charport", "charport_charvec_alloc_na_v1")
+    );
+#else
+    fn = (charport_charvec_alloc_na_t)
+      R_GetCCallable("charport", "charport_charvec_alloc_na_v1");
+#endif
+  }
+  return fn(n);
 }
 
 #ifdef __cplusplus

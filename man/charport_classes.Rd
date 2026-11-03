@@ -17,9 +17,9 @@ A list with elements `n` (integer: number of registered
 Reports on the broker's ALTREP class registry. Registered classes are
 ALTREP character vector classes whose authors registered a reader with
 charport (via the `charport_register_altrep_v1` C entry point, fetched with
-`R_GetCCallable`). The reference `charvec` class is registered when
-`charport` loads, so a freshly loaded session normally reports at least
-that class.
+`R_GetCCallable`). The built-in `charvec` and `charpack` classes are
+registered when `charport` loads, so a freshly loaded session normally
+reports at least those two classes.
 }
 \details{
 ALTREP class names require an instance to query (R's

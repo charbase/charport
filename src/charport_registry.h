@@ -18,6 +18,18 @@ SEXP charport_charvec_wrap(void * store);
 SEXP charport_charvec_from_views_impl(
     R_xlen_t n, const char * const * ptrs, const int * lengths,
     const cetype_ext_t * encodings);
+SEXP charport_charvec_alloc_na_impl(R_xlen_t n);
+void * charport_charvec_get_store_impl(SEXP x);
+
+SEXP charport_charpack_placeholder_impl(void);
+void charport_charpack_fill_views_impl(
+    SEXP x, R_xlen_t n, const char * const * ptrs, const int * lengths,
+    const cetype_ext_t * encodings);
+void charport_charpack_fill_slices_impl(
+    SEXP x, R_xlen_t n, const int * lengths, const cetype_ext_t * encodings,
+    R_xlen_t n_slices, const char * const * slices, const size_t * slice_bytes);
+SEXP charport_charpack_fill_materialized_na_impl(SEXP x, R_xlen_t n);
+int charport_is_charpack_impl(SEXP x);
 
 SEXP C_as_charvec(SEXP x);
 SEXP C_charvec_alloc(SEXP n);
@@ -31,6 +43,16 @@ SEXP C_charport_classes(void);
 SEXP C_charport_info(SEXP x);
 SEXP C_unregister_charvec(void);
 SEXP C_register_charvec(void);
+
+SEXP C_charpack_placeholder(void);
+SEXP C_charpack_fill_from(SEXP x, SEXP strings, SEXP n_slices);
+SEXP C_charpack_fill_materialized_na(SEXP x, SEXP n);
+SEXP C_is_charpack(SEXP x);
+SEXP C_charpack_state(SEXP x);
+SEXP C_charpack_data1(SEXP x);
+SEXP C_charpack_bswap_packed(SEXP raw);
+SEXP C_unregister_charpack(void);
+SEXP C_register_charpack(void);
 
 void charport_registry_init(DllInfo * dll);
 
