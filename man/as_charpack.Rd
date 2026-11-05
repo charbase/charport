@@ -18,10 +18,11 @@ Converts a character vector (or anything \code{\link[=as.character]{as.character
 returned unchanged. Names are preserved; other attributes are dropped.
 }
 \details{
-A \code{charpack} stays compact only while it is read through charport. Any
-element access from R, such as \code{x[1]} or \code{print(x)}, materializes the whole
-vector. This makes it mainly useful for testing code that reads strings
-through charport.
+A \code{charpack} stays compact while it is read through charport, and vector
+subsets such as \code{x[i]} stay packed. Reading individual strings from R, such
+as \code{x[[1]]} or \code{print(x)}, extracting matrix columns, or modifying elements
+materializes the whole vector. This makes it mainly useful for testing code
+that reads strings through charport.
 }
 \examples{
 x <- as_charpack(c("a", NA, "b"))

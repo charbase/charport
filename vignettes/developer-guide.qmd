@@ -639,6 +639,10 @@ SEXP x = charpack::from_views(n, ptrs, lengths, encodings);
 // string data is copied from slices
 SEXP y = charpack::from_slices(n, lengths, encodings, n_slices, slices, slice_bytes);
 
+// strings of a finished charvec Store, e.g. from Builder::release_store();
+// the store is not modified, so the caller can free or reuse it
+SEXP z = charpack::from_store(store);
+
 // create first, fill later from views
 SEXP p = PROTECT(charpack::placeholder());
 charpack::fill_views(p, n, ptrs, lengths, encodings);
@@ -653,26 +657,6 @@ SEXP rdata2 = charpack::fill_materialized_na(r, n);
 ```
 
 A placeholder has length 0 until it is filled. Because `charpack` always one-shot copies the entire vector, large vectors or large strings temporarily need to be stored twice and might become memory inefficient. So `fill_materialized_na(x, n)` is a way out by materializing early. It materializes `x` as `n` NA strings and returns the materialized vector, so you can fill it with `SET_STRING_ELT`.
-
-## Serialization {#serialization}
-
-A filled `charvec` or `charpack` serializes in its packed form without materializing, and `readRDS()` or `unserialize()` restores the same class. A materialized vector serializes as an ordinary character vector.
-
-Native-tagged strings need care. R records the writer's native encoding in the stream header and converts ordinary strings on reading, but the packed bytes never pass through that conversion. charport therefore writes the packed form only when its native records have a known meaning:
-
-| When saving | State written |
-|------------------------|------------------------------------------|
-| No `CETYPE_EXT_NATIVE` records | Packed, in any locale |
-| Native records, UTF-8 locale | Packed |
-| Native records, any other locale | A temporary character vector, which R serializes and converts like any other. The source stays packed. |
-
-So the native records in a packed state are always UTF-8 text. Read in a UTF-8 locale, they keep their native tag; read in any other locale, they are tagged `CETYPE_EXT_UTF8` with the bytes unchanged. Other tags come back as written. A vector saved as a temporary character vector reads back as an ordinary character vector.
-
-Some consequences:
-
-- Native bytes that are not valid UTF-8 but were saved in a UTF-8 locale are tagged UTF-8 as they are, without validation.
-- R strings cannot hold an embedded NUL, so a vector that contains one cannot be saved as a temporary character vector.
-- A `charvec` packed state is version 2 (`"CPV2"`). Version 1 states, written by `charport` 0.1 in any locale, still load; their native records keep the native tag and are read as the current locale's, as before. A `charpack` state is the same packed body without the version prefix, independent of how a `charpack` is laid out in memory. It is new in this release and follows the rule above.
 
 ## ABI Compatibility {#abi-compatibility-guard}
 

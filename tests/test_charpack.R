@@ -183,12 +183,12 @@ for (input in list(character(0), NA_character_, "", mixed, w_utf8)) {
     data1 <- charpack_data1(x)
     for (xdr in c(TRUE, FALSE)) {
       z <- unserialize(serialize(x, NULL, xdr = xdr))
-      # the width is chosen again on reading: u32 for any payload below 4 GiB
-      stopifnot(is_charpack(z), charpack_state(z) == "filled", !read_layout(z)$wide)
+      # the state is data1, so the offset width comes back as written
+      stopifnot(is_charpack(z), charpack_state(z) == "filled", identical(read_layout(z)$wide, wide))
       stopifnot(bytes_identical(z, input))
     }
-    # the source is not materialized, keeps concurrent access, and its data1
-    # is unchanged (the state is a copy)
+    # the source is not materialized, keeps concurrent access, and its data1,
+    # which serialization only reads, is unchanged
     stopifnot(charpack_state(x) == "filled", charport_info(x)$concurrent_access,
               identical(charpack_data1(x), data1))
   }
@@ -212,7 +212,7 @@ stopifnot(!is_charpack(z), bytes_identical(z, mixed))
 z <- unserialize(serialize(charpack_from_slices(mixed), NULL, version = 2))
 stopifnot(!is_charpack(z), bytes_identical(z, mixed))
 
-catn("the serialized state is charvec's packed body in little-endian order, not data1")
+catn("the serialized state is data1 in little-endian order")
 le_u <- function(x, size) {
   out <- raw(size)
   for (i in seq_len(size)) {
@@ -221,14 +221,16 @@ le_u <- function(x, size) {
   }
   out
 }
-# charpack(c("ab", NA)): u64 n=2 | u32 sizes 2, 0 | u8 254, 255 | "ab"
-state_le <- c(le_u(2, 8L), le_u(2, 4L), le_u(0, 4L), as.raw(c(254L, 255L)), charToRaw("ab"))
-for (wide in c(FALSE, TRUE)) {
-  stopifnot(identical(charpack_packed_state(charpack_from_slices(c("ab", NA), wide = wide)), state_le))
+# charpack(c("ab", NA)): u64 head n=2 | u32 ends 2, 2 | u8 254, 255 | "ab"
+state_le <- c(le_u(2, 8L), le_u(2, 4L), le_u(2, 4L), as.raw(c(254L, 255L)), charToRaw("ab"))
+# wide: bit 63 set | u64 ends 2, 2 | the same tags and bytes
+wide_le <- c(le_u(2, 7L), as.raw(128L), le_u(2, 8L), le_u(2, 8L), as.raw(c(254L, 255L)), charToRaw("ab"))
+stopifnot(identical(charpack_serialized_state(charpack_from_slices(c("ab", NA))), state_le))
+stopifnot(identical(charpack_serialized_state(charpack_from_slices(c("ab", NA), wide = TRUE)), wide_le))
+if (.Platform$endian == "little") {
+  x <- charpack_from_slices(mixed)
+  stopifnot(identical(charpack_serialized_state(x), charpack_data1(x)))
 }
-# sizes, not end offsets: the third record's size is 3, its end 5
-stopifnot(identical(charpack_packed_state(charpack_from_slices(c("ab", NA, "cde")))[9:20],
-                    c(le_u(2, 4L), le_u(0, 4L), le_u(3, 4L))))
 find_raw <- function(haystack, needle) {
   for (i in seq_len(length(haystack) - length(needle) + 1L)) {
     if (identical(haystack[i:(i + length(needle) - 1L)], needle)) return(i)
@@ -249,12 +251,13 @@ z <- unserialize(mutate_state(identity))
 stopifnot(is_charpack(z), identical(as.character(z), c("ab", NA)))
 malformed <- list(
   function(s) {s[1:8] <- le_u(3, 8L); s},                      # header truncated
-  function(s) {s[1:8] <- c(le_u(2, 7L), as.raw(128L)); s},     # count with bit 63 set
+  function(s) {s[[7]] <- as.raw(16L); s},                      # a later version (bit 52)
+  function(s) {s[[8]] <- as.raw(128L); s},                     # u64 ends that are not there
   function(s) {s[[17]] <- as.raw(4L); s},                      # not a cetype_ext_t
   function(s) {s[9:12] <- le_u(3, 4L); s},                     # runs past the payload
-  function(s) {s[9:12] <- le_u(1, 4L); s},                     # trailing byte
-  function(s) {s[13:16] <- le_u(1, 4L); s},                    # NA with a size
-  function(s) {s[9:12] <- as.raw(c(0L, 0L, 0L, 128L)); s}      # longer than R allows
+  function(s) {s[13:16] <- le_u(1, 4L); s},                    # ends out of order
+  function(s) {s[9:16] <- c(le_u(1, 4L), le_u(1, 4L)); s},     # trailing byte
+  function(s) {s[9:12] <- le_u(0, 4L); s}                      # NA with a size
 )
 for (mutate in malformed) {
   expect_unserialize_error(mutate_state(mutate))
@@ -263,18 +266,17 @@ for (mutate in malformed) {
 malformed <- c(malformed, function(s) s[-length(s)],          # payload truncated
                function(s) s[1:7])                            # no header
 for (mutate in malformed) {
-  for (wide in c(FALSE, TRUE)) {
-    expect_error_matching(charpack_from_state(mutate(state_le), wide), "charport charpack Unserialize")
-  }
+  expect_error_matching(charpack_from_state(mutate(state_le)), "charport charpack Unserialize")
 }
-# A state becomes data1 with u32 or u64 offsets: the u64 path is otherwise
-# taken only above 4 GiB of payload.
+# Either offset width reads back as written, and the caller's state is left
+# as it was.
 for (input in list(character(0), c("ab", NA), c(NA, "", NA), mixed, w_utf8)) {
-  state <- charpack_packed_state(charpack_from_slices(input))
   for (wide in c(FALSE, TRUE)) {
-    z <- charpack_from_state(state, wide)
+    state <- charpack_serialized_state(charpack_from_slices(input, wide = wide))
+    copy <- as.raw(as.integer(state))
+    z <- charpack_from_state(state)
     l <- read_layout(z)
-    stopifnot(identical(charpack_packed_state(z), state))
+    stopifnot(identical(state, copy), identical(charpack_serialized_state(z), state))
     stopifnot(identical(l$wide, wide), bytes_identical(z, input),
               identical(l$ends, cumsum(c(0, ifelse(is.na(input), 0, nchar(input, "bytes"))))[-1L]))
   }
@@ -352,6 +354,19 @@ x <- cpc("C_cpc_from_slices", c("", NA, ""), 1L)
 stopifnot(identical(as.character(x), c("", NA, "")))
 expect_error_matching(cpc("C_cpc_fill_twice", mixed), "not an unfilled placeholder")
 
+catn("public header: charpack::from_store copies and leaves the store as it was")
+for (input in list(character(0), NA_character_, c("", NA, ""), mixed, w_utf8)) {
+  r <- cpc("C_cpc_from_store", input, NA_integer_)
+  stopifnot(r[[3]], is_charpack(r[[1]]), is_charpack(r[[2]]), charpack_state(r[[1]]) == "filled")
+  stopifnot(bytes_identical(r[[1]], input), bytes_identical(r[[2]], input))
+  stopifnot(bytes_identical(unserialize(serialize(r[[2]], NULL)), input))
+}
+# ASCII-or-UTF-8 records resolve when materialized: ASCII unmarked, the rest UTF-8
+input <- c("plain", "café", NA, "")
+r <- cpc("C_cpc_from_store", input, 0L)
+stopifnot(r[[3]], identical(as.character(r[[1]]), input),
+          identical(Encoding(as.character(r[[1]])), c("unknown", "UTF-8", "unknown", "unknown")))
+
 catn("public header: charvec alloc_na, get_store and Writer")
 x <- cpc("C_cpc_charvec_fill", mixed, FALSE)
 stopifnot(is_charvec(x), bytes_identical(x, mixed))
@@ -368,6 +383,38 @@ stopifnot(cpc("C_cpc_get_store_is_null", x))
 stopifnot(cpc("C_cpc_get_store_is_null", letters))
 stopifnot(cpc("C_cpc_get_store_is_null", charpack_from_slices("a")))
 
+catn("subsetting a filled charpack copies records into a new charpack")
+# Fresh sources each time: the state checks come before any R element read.
+subset_cases <- list(
+  c(3L, 1L), integer(0), c(2L, NA, 2L), c(1L, 99L), -1L, c(TRUE, FALSE),
+  c(2.9, 1), c(NA_real_, 4), 1:length(mixed)
+)
+for (wide in c(FALSE, TRUE)) {
+  for (i in subset_cases) {
+    x <- charpack_from_slices(mixed, wide = wide)
+    y <- x[i]
+    stopifnot(charpack_state(x) == "filled", is_charpack(y), charpack_state(y) == "filled",
+              identical(read_layout(y)$wide, FALSE))
+    stopifnot(bytes_identical(y, mixed[i]), bytes_identical(x, mixed))
+  }
+}
+# names come along through R, and the source stays packed
+x <- charpack_from_slices(c("a", NA, "é"))
+names(x) <- c("p", "q", "r")
+y <- x[c("r", "p", "zz")]
+stopifnot(charpack_state(x) == "filled", is_charpack(y), charpack_state(y) == "filled")
+stopifnot(identical(as.character(y), c("é", "a", NA)),
+          identical(names(y), c("r", "p", NA)))
+# a materialized charpack, or an empty one, subsets through R
+x <- charpack_from_slices(mixed)
+charport_materialize(x)
+stopifnot(bytes_identical(x[c(2L, 1L)], mixed[c(2L, 1L)]))
+stopifnot(identical(charpack_from_slices(character(0))[1:2], c(NA_character_, NA_character_)))
+# the Reader reads a subset like any charpack
+x <- charpack_from_slices(mixed)[c(4L, 2L)]
+stopifnot(bytes_identical(consumer("C_consumer_reader_roundtrip", x), mixed[c(4L, 2L)]),
+          charpack_state(x) == "filled")
+
 catn("gctorture")
 gctorture(TRUE)
 x <- charpack_from_slices(c("a", NA, "", "é", "long string here"), 2L)
@@ -377,7 +424,7 @@ z <- consumer("C_consumer_reader_roundtrip", x)
 w <- cpc("C_cpc_from_views", c("q", NA))
 v <- cpc("C_cpc_fill_materialized_na", c("q", NA, "é"))
 u <- unserialize(serialize(charpack_from_slices(c("q", NA, "", "é"), wide = TRUE), NULL))
-w2 <- charpack_from_state(charpack_packed_state(charpack_from_slices(c("q", NA, "é"))), TRUE)
+w2 <- charpack_from_state(charpack_serialized_state(charpack_from_slices(c("q", NA, "é"), wide = TRUE)))
 gctorture(FALSE)
 stopifnot(identical(as.character(x), c("a", NA, "", "é", "long string here")))
 stopifnot(identical(y[[2]], "b"), identical(z, as.character(x)), identical(as.character(w), c("q", NA)),

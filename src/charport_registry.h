@@ -51,8 +51,8 @@ SEXP C_charpack_fill_materialized_na(SEXP x, SEXP n);
 SEXP C_is_charpack(SEXP x);
 SEXP C_charpack_state(SEXP x);
 SEXP C_charpack_data1(SEXP x);
-SEXP C_charpack_packed_state(SEXP x);
-SEXP C_charpack_from_state(SEXP state, SEXP wide);
+SEXP C_charpack_serialized_state(SEXP x);
+SEXP C_charpack_from_state(SEXP state);
 SEXP C_unregister_charpack(void);
 SEXP C_register_charpack(void);
 

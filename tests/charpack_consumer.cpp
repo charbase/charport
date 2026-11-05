@@ -104,6 +104,46 @@ SEXP C_cpc_from_views(SEXP strings) {
   });
 }
 
+// Builds a charvec Store from strings, with records at or above ascii_or_utf8
+// (0-based; NA for none) tagged CETYPE_EXT_ASCII_OR_UTF8, and packs it twice
+// with from_store. Returns list(first, second, store_unchanged): the store
+// must still hold the same records afterwards, so the caller can reuse it.
+SEXP C_cpc_from_store(SEXP strings, SEXP ascii_or_utf8_) {
+  return charport_consumer::boundary("from_store", [&]() -> SEXP {
+    Views v;
+    read_views(strings, v);
+    const R_xlen_t n = static_cast<R_xlen_t>(v.ptrs.size());
+    const int ascii_or_utf8 = Rf_asInteger(ascii_or_utf8_);
+    charport::charvec::Builder builder(n);
+    for(R_xlen_t i = 0; i < n; ++i) {
+      if(v.encodings[i] == CETYPE_EXT_NA) {
+        builder.set_na(i);
+        continue;
+      }
+      const bool relabel = ascii_or_utf8 != NA_INTEGER && i >= ascii_or_utf8 &&
+                           (v.encodings[i] == CETYPE_EXT_ASCII || v.encodings[i] == CETYPE_EXT_UTF8);
+      builder.set(i, v.ptrs[i], static_cast<size_t>(v.lengths[i]),
+                  relabel ? CETYPE_EXT_ASCII_OR_UTF8 : v.encodings[i]);
+    }
+    charport::charvec::Store store = builder.release_store();
+    std::vector<charport::StrView> before;
+    for(size_t i = 0; i < store.size(); ++i) before.push_back(store.records.view(i));
+    return charport_consumer::unwind_protect([&]() -> SEXP {
+      SEXP out = PROTECT(Rf_allocVector(VECSXP, 3));
+      SET_VECTOR_ELT(out, 0, charport::charpack::from_store(store));
+      SET_VECTOR_ELT(out, 1, charport::charpack::from_store(store));
+      bool unchanged = store.size() == before.size();
+      for(size_t i = 0; unchanged && i < store.size(); ++i) {
+        const charport::StrView now = store.records.view(i);
+        unchanged = now.ptr == before[i].ptr && now.len == before[i].len && now.enc == before[i].enc;
+      }
+      SET_VECTOR_ELT(out, 2, Rf_ScalarLogical(unchanged ? TRUE : FALSE));
+      UNPROTECT(1);
+      return out;
+    });
+  });
+}
+
 // The payload is cut into n_slices pieces at arbitrary byte offsets.
 SEXP C_cpc_from_slices(SEXP strings, SEXP n_slices_) {
   return charport_consumer::boundary("from_slices", [&]() -> SEXP {

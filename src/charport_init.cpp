@@ -23,8 +23,8 @@ static const R_CallMethodDef call_entries[] = {
   {"C_is_charpack",                 (DL_FUNC) &C_is_charpack,                 1},
   {"C_charpack_state",              (DL_FUNC) &C_charpack_state,              1},
   {"C_charpack_data1",              (DL_FUNC) &C_charpack_data1,              1},
-  {"C_charpack_packed_state",       (DL_FUNC) &C_charpack_packed_state,       1},
-  {"C_charpack_from_state",         (DL_FUNC) &C_charpack_from_state,         2},
+  {"C_charpack_serialized_state",   (DL_FUNC) &C_charpack_serialized_state,   1},
+  {"C_charpack_from_state",         (DL_FUNC) &C_charpack_from_state,         1},
   {"C_unregister_charpack",         (DL_FUNC) &C_unregister_charpack,         0},
   {"C_register_charpack",           (DL_FUNC) &C_register_charpack,           0},
   {NULL, NULL, 0}

@@ -19,10 +19,11 @@ is_charpack <- function(x) {
 #' `charpack`, copying its strings. If `x` is already a `charpack` it is
 #' returned unchanged. Names are preserved; other attributes are dropped.
 #'
-#' A `charpack` stays compact only while it is read through charport. Any
-#' element access from R, such as `x[1]` or `print(x)`, materializes the whole
-#' vector. This makes it mainly useful for testing code that reads strings
-#' through charport.
+#' A `charpack` stays compact while it is read through charport, and vector
+#' subsets such as `x[i]` stay packed. Reading individual strings from R, such
+#' as `x[[1]]` or `print(x)`, extracting matrix columns, or modifying elements
+#' materializes the whole vector. This makes it mainly useful for testing code
+#' that reads strings through charport.
 #'
 #' @param x object to convert.
 #' @return A `charpack` (an ALTREP character vector).

@@ -274,25 +274,23 @@ extern "C" SEXP C_charpack_data1(SEXP x) {
   return R_altrep_data1(x);
 }
 
-// The serialized state of a filled charpack (a copy, never data1).
-extern "C" SEXP C_charpack_packed_state(SEXP x) {
+// The serialized state of a filled charpack: data1 itself on a little-endian
+// host.
+extern "C" SEXP C_charpack_serialized_state(SEXP x) {
   if(!charpack_altrep::is(x) || R_altrep_data1(x) == R_NilValue) {
-    Rf_error("charport charpack packed_state: x must be a filled charpack");
+    Rf_error("charport charpack serialized_state: x must be a filled charpack");
   }
-  return charpack_altrep::packed_state(R_altrep_data1(x));
+  return charpack_altrep::Serialized_state(x);
 }
 
-// A charpack read from a copy of a serialized state, as Unserialize does
-// before its locale step. wide forces u64 end offsets, which a real state
-// gets only above 4 GiB of payload.
-extern "C" SEXP C_charpack_from_state(SEXP state, SEXP wide) {
+// A charpack unserialized from a copy of a state, leaving the caller's intact.
+extern "C" SEXP C_charpack_from_state(SEXP state) {
   if(TYPEOF(state) != RAWSXP) {
     Rf_error("charport charpack from_state: state must be a raw vector");
   }
   SEXP copy = PROTECT(Rf_duplicate(state));
-  SEXP data1 = PROTECT(charpack_altrep::data1_from_state(copy, Rf_asLogical(wide) == TRUE));
-  SEXP x = R_new_altrep(charpack_altrep::class_t, data1, R_NilValue);
-  UNPROTECT(2);
+  SEXP x = charpack_altrep::Unserialize(R_NilValue, copy);
+  UNPROTECT(1);
   return x;
 }
 

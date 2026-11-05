@@ -13,14 +13,19 @@
 //
 // head holds n in its low 63 bits. Bit 63 clear means u32 end offsets, set
 // means u64; u64 is used only when the payload exceeds 2^32 - 1 bytes.
-// Record i spans bytes [end[i-1], end[i]), with end[-1] = 0, so any record is
-// found in constant time. NA (CETYPE_EXT_NA) and "" span zero bytes. The
-// payload is end[n-1] bytes (0 when n is 0) and data1 ends exactly there.
+// Bits 52-62 are always zero, since R's maximum vector length is 2^52 - 1:
+// this layout is version 0, and a later layout can put a nonzero version
+// there. A reader that predates it rejects that state without a version check,
+// because the count then exceeds the state's length. Record i spans bytes
+// [end[i-1], end[i]), with end[-1] = 0, so any record is found in constant
+// time. NA (CETYPE_EXT_NA) and "" span zero bytes. The payload is end[n-1]
+// bytes (0 when n is 0) and data1 ends exactly there.
 //
-// The serialized state is not data1 but charvec's packed body,
-// [u64 n][u32 size x n][u8 cetype_ext x n][bytes] in little-endian order, so
-// the in-memory layout is free to change. Its parser rejects a count with bit
-// 63 set, which leaves that bit to mark a future format.
+// The serialized state is data1 itself, little-endian: a little-endian host
+// sends data1 and adopts the incoming raw vector after validating it, without
+// copying; a big-endian host byte-swaps the head and end offsets on the way
+// out (into a copy) and in (in place). A later format could also send a state
+// of another type, which Unserialize rejects.
 //
 // States:
 //   unfilled      data1 and data2 nil; length 0
@@ -222,6 +227,92 @@ struct charpack_altrep {
     return R_new_altrep(class_t, data1, R_NilValue);
   }
 
+  // The zero-based record an index selects, or n for NA: R passes one-based
+  // INTSXP or REALSXP subscripts, with NA or beyond-the-end entries selecting
+  // NA. A real subscript truncates, as in R.
+  static size_t selected(const int * ints, const double * reals, R_xlen_t j,
+                         size_t n) noexcept {
+    if(ints != nullptr) {
+      const int k = ints[j];
+      return k == NA_INTEGER || k < 1 || static_cast<size_t>(k) > n
+               ? n : static_cast<size_t>(k) - 1;
+    }
+    const double k = reals[j];
+    return R_FINITE(k) && k >= 1.0 && k < static_cast<double>(n) + 1.0
+             ? static_cast<size_t>(k) - 1 : n;
+  }
+
+  // Subset copies the selected records into a new charpack without reading R
+  // strings. A materialized charpack, or another subscript type, falls back
+  // to R's default; R copies names and other attributes itself. Nothing here
+  // owns a C++ object, so R errors (allocation, size) need no cleanup.
+  static SEXP Extract_subset(SEXP x, SEXP indx, SEXP /* call */) {
+    SEXP data1 = R_altrep_data1(x);
+    if(R_altrep_data2(x) != R_NilValue || data1 == R_NilValue) {
+      return nullptr;
+    }
+    if(TYPEOF(indx) != INTSXP && TYPEOF(indx) != REALSXP) {
+      return nullptr;
+    }
+    const R_xlen_t m = Rf_xlength(indx);
+    // May expand a compact sequence, so before any pointer into data1 is taken.
+    const int * ints = TYPEOF(indx) == INTSXP ? INTEGER(indx) : nullptr;
+    const double * reals = ints == nullptr ? REAL(indx) : nullptr;
+
+    const size_t n = charpack_layout::parse(data1).n;
+    size_t payload = 0;
+    {
+      const charpack_layout::view v = charpack_layout::parse(data1);
+      for(R_xlen_t j = 0; j < m; ++j) {
+        const size_t i = selected(ints, reals, j, n);
+        if(i == n) {
+          continue;
+        }
+        const uint64_t begin = i == 0 ? 0 : charpack_layout::end_at(v, i - 1);
+        const size_t len = static_cast<size_t>(charpack_layout::end_at(v, i) - begin);
+        if(payload > static_cast<size_t>(-1) - len) {
+          Rf_error("charport charpack Extract_subset: total size overflows");
+        }
+        payload += len;
+      }
+    }
+    const size_t count = static_cast<size_t>(m);
+    const bool wide = charpack_layout::needs_wide(payload);
+    const size_t total = charpack_layout::total_bytes(count, payload, wide);
+    if(total == 0) {
+      Rf_error("charport charpack Extract_subset: vector exceeds the maximum raw vector size");
+    }
+    SEXP out = PROTECT(Rf_allocVector(RAWSXP, static_cast<R_xlen_t>(total)));
+    // Neither data1 nor indx moves during the allocation, so both views hold.
+    const charpack_layout::view v = charpack_layout::parse(data1);
+    unsigned char * p = RAW(out);
+    charpack_layout::write_head(p, count, wide);
+    unsigned char * ends = p + charpack_layout::header_bytes;
+    unsigned char * tags = ends + charpack_layout::offset_bytes(wide) * count;
+    char * dest = reinterpret_cast<char *>(tags + count);
+    uint64_t end = 0;
+    for(R_xlen_t j = 0; j < m; ++j) {
+      const size_t out_j = static_cast<size_t>(j);
+      const size_t i = selected(ints, reals, j, n);
+      if(i == n) {
+        tags[out_j] = CETYPE_EXT_NA.value;
+      } else {
+        const uint64_t begin = i == 0 ? 0 : charpack_layout::end_at(v, i - 1);
+        const size_t len = static_cast<size_t>(charpack_layout::end_at(v, i) - begin);
+        tags[out_j] = v.tags[i];
+        if(len > 0) {
+          std::memcpy(dest, v.bytes + begin, len);
+          dest += len;
+        }
+        end += len;
+      }
+      charpack_layout::write_end(ends, wide, out_j, end);
+    }
+    SEXP result = R_new_altrep(class_t, out, R_NilValue);
+    UNPROTECT(1);
+    return result;
+  }
+
   static int No_NA(SEXP x) {
     SEXP data2 = R_altrep_data2(x);
     if(data2 != R_NilValue) {
@@ -402,80 +493,75 @@ struct charpack_altrep {
     return CHARPORT_STATUS_OK;
   }
 
-  // data1 as a serialized state: charvec's packed body, little-endian.
-  static SEXP packed_state(SEXP data1) {
-    const charpack_layout::view v = charpack_layout::parse(data1);
-    const size_t payload = charpack_layout::payload(v);
-    // Never larger than data1, whose offsets take at least 4 bytes each.
-    const size_t total = charpack_layout::header_bytes +
-                         v.n * (sizeof(uint32_t) + 1) + payload;
-    SEXP state = Rf_allocVector(RAWSXP, static_cast<R_xlen_t>(total));
-    // data1 is not moved by the allocation, so v stays valid.
-    unsigned char * p = RAW(state);
-    charvec_write_u64_le(p, static_cast<uint64_t>(v.n));
-    unsigned char * sizes = p + charpack_layout::header_bytes;
+  static uint64_t read_word(const unsigned char * p, bool wide, bool swap) noexcept {
+    if(wide) {
+      return charvec_read_u64(p, swap);
+    }
+    uint32_t out;
+    std::memcpy(&out, p, sizeof(out));
+    return swap ? charvec_bswap32(out) : out;
+  }
+
+  // Why a serialized state is invalid, or nullptr. With swap, its head and end
+  // offsets are read byte-swapped. Reads only.
+  static const char * state_error(const unsigned char * raw, size_t len, bool swap) noexcept {
+    if(len < charpack_layout::header_bytes) {
+      return "state is truncated";
+    }
+    const uint64_t head = charvec_read_u64(raw, swap);
+    const bool wide = (head & charpack_layout::wide_bit) != 0;
+    const uint64_t n = head & ~charpack_layout::wide_bit;
+    const size_t width = charpack_layout::offset_bytes(wide);
+    if(n > (len - charpack_layout::header_bytes) / (width + 1)) {
+      return "state is truncated";
+    }
+    const size_t count = static_cast<size_t>(n);
+    const size_t meta = charpack_layout::header_bytes + count * (width + 1);
+    const uint64_t payload = len - meta;
+    const unsigned char * ends = raw + charpack_layout::header_bytes;
+    const unsigned char * tags = ends + width * count;
     uint64_t begin = 0;
-    for(size_t i = 0; i < v.n; ++i) {
-      const uint64_t end = charpack_layout::end_at(v, i);
-      charvec_write_u32_le(sizes + sizeof(uint32_t) * i, static_cast<uint32_t>(end - begin));
+    for(size_t i = 0; i < count; ++i) {
+      const uint64_t end = read_word(ends + width * i, wide, swap);
+      if(end < begin || end > payload) {
+        return "end offsets are out of order or past the payload";
+      }
+      if(!cpi::check_r_string_len(end - begin)) {
+        return "string size exceeds R string size";
+      }
+      const cetype_ext_t tag = charport_cetype_ext(tags[i]);
+      if(!cpi::valid_view_encoding(tag)) {
+        return "invalid string encoding";
+      }
+      if(tag == CETYPE_EXT_NA && end != begin) {
+        return "NA string must have zero length";
+      }
       begin = end;
     }
-    unsigned char * tags = sizes + sizeof(uint32_t) * v.n;
-    if(v.n > 0) {
-      std::memcpy(tags, v.tags, v.n);
+    if(begin != payload) {
+      return "state has trailing bytes";
     }
-    if(payload > 0) {
-      std::memcpy(tags + v.n, v.bytes, payload);
-    }
-    return state;
+    return nullptr;
   }
 
-  // A data1 from a serialized state, which is validated first. Nothing else
-  // holds a state fresh from the stream, so with u32 offsets the sizes become
-  // end offsets in place; u64 offsets, or force_wide (for tests), need a new
-  // vector.
-  static SEXP data1_from_state(SEXP state, bool force_wide) {
-    const bool swap = !charvec_host_is_little_endian();
-    charvec_serialized_layout layout;
-    charport_sexp_guard("charpack Unserialize", [&]() -> SEXP {
-      layout = charvec_parse_packed(RAW(state), static_cast<size_t>(Rf_xlength(state)), swap);
-      charvec_check_records(layout);
-      return R_NilValue;
-    });
-    const size_t n = layout.n;
-    const size_t payload = static_cast<size_t>(layout.data_end - layout.data_offset);
-    const bool wide = force_wide || charpack_layout::needs_wide(payload);
-    const unsigned char * sizes = layout.size_offset;
-    SEXP data1 = state;
-    if(wide) {
-      const size_t total = charpack_layout::total_bytes(n, payload, true);
-      if(total == 0) {
-        Rf_error("charport charpack Unserialize: vector exceeds the maximum raw vector size");
-      }
-      data1 = Rf_allocVector(RAWSXP, static_cast<R_xlen_t>(total));
-      // state is not moved by the allocation, so layout stays valid.
-      unsigned char * tags = RAW(data1) + charpack_layout::header_bytes + sizeof(uint64_t) * n;
-      if(n > 0) {
-        std::memcpy(tags, layout.enc_offset, n);
-      }
-      if(payload > 0) {
-        std::memcpy(tags + n, layout.data_offset, payload);
-      }
-    }
-    // In place, each size is read before its slot is overwritten.
-    unsigned char * out = RAW(data1);
-    unsigned char * ends = out + charpack_layout::header_bytes;
-    uint64_t end = 0;
+  // Byte-swaps the head and end offsets of a valid layout in place. The head
+  // is read in native order when head_native, else byte-swapped.
+  static void swap_words(unsigned char * raw, bool head_native) noexcept {
+    const uint64_t head = charvec_read_u64(raw, !head_native);
+    const bool wide = (head & charpack_layout::wide_bit) != 0;
+    const size_t n = static_cast<size_t>(head & ~charpack_layout::wide_bit);
+    const uint64_t swapped_head = charvec_bswap64(charvec_read_u64(raw, false));
+    std::memcpy(raw, &swapped_head, sizeof(swapped_head));
+    unsigned char * ends = raw + charpack_layout::header_bytes;
+    const size_t width = charpack_layout::offset_bytes(wide);
     for(size_t i = 0; i < n; ++i) {
-      end += charvec_read_u32_advance(sizes, swap);
-      charpack_layout::write_end(ends, wide, i, end);
+      charpack_layout::write_end(ends, wide, i, read_word(ends + width * i, wide, true));
     }
-    charpack_layout::write_head(out, n, wide);
-    return data1;
   }
 
-  // Filled: charvec's packed body. Materialized: data2, which unserializes to
-  // an ordinary character vector. Unfilled: NULL, so R writes an empty one.
+  // Filled: data1, little-endian (see the layout comment). Materialized:
+  // data2, which unserializes to an ordinary character vector. Unfilled:
+  // NULL, so R writes an empty one.
   //
   // A packed state's native-tagged records are UTF-8 by construction: one
   // written outside a UTF-8 locale is sent instead as a temporary character
@@ -493,7 +579,14 @@ struct charpack_altrep {
     if(has_native(data1) && !charport_native_is_utf8_impl()) {
       return strings(data1);
     }
-    return packed_state(data1);
+    if(charvec_host_is_little_endian()) {
+      return data1;
+    }
+    const R_xlen_t len = Rf_xlength(data1);
+    SEXP state = Rf_allocVector(RAWSXP, len);
+    std::memcpy(RAW(state), RAW(data1), static_cast<size_t>(len));
+    swap_words(RAW(state), true);
+    return state;
   }
 
   static SEXP Unserialize(SEXP /* class */, SEXP state) {
@@ -505,7 +598,18 @@ struct charpack_altrep {
     if(TYPEOF(state) != RAWSXP) {
       Rf_error("charport charpack Unserialize: invalid serialized_state type");
     }
-    SEXP data1 = PROTECT(data1_from_state(state, false));
+    // Nothing else holds a state fresh from the stream, so it becomes data1
+    // after validation, converted in place on a big-endian host.
+    const bool swap = !charvec_host_is_little_endian();
+    unsigned char * raw = RAW(state);
+    const char * error = state_error(raw, static_cast<size_t>(Rf_xlength(state)), swap);
+    if(error != nullptr) {
+      Rf_error("charport charpack Unserialize: %s", error);
+    }
+    if(swap) {
+      swap_words(raw, false);
+    }
+    SEXP data1 = state;
     // Native-tagged records were written in a UTF-8 locale (see
     // Serialized_state); outside one, say so explicitly.
     if(has_native(data1) && !charport_native_is_utf8_impl()) {
@@ -517,9 +621,7 @@ struct charpack_altrep {
         }
       }
     }
-    SEXP x = R_new_altrep(class_t, data1, R_NilValue);
-    UNPROTECT(1);
-    return x;
+    return R_new_altrep(class_t, data1, R_NilValue);
   }
 
   static void Init(DllInfo * dll) {
@@ -535,6 +637,7 @@ struct charpack_altrep {
 
     R_set_altvec_Dataptr_method(class_t, Dataptr);
     R_set_altvec_Dataptr_or_null_method(class_t, Dataptr_or_null);
+    R_set_altvec_Extract_subset_method(class_t, Extract_subset);
 
     R_set_altstring_Elt_method(class_t, Elt);
     R_set_altstring_Set_elt_method(class_t, Set_elt);

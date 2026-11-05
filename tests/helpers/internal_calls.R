@@ -52,12 +52,12 @@ charpack_data1 <- function(x) {
   .Call(charport_native_symbol("C_charpack_data1"), x)
 }
 
-charpack_packed_state <- function(x) {
-  .Call(charport_native_symbol("C_charpack_packed_state"), x)
+charpack_serialized_state <- function(x) {
+  .Call(charport_native_symbol("C_charpack_serialized_state"), x)
 }
 
-charpack_from_state <- function(state, wide = FALSE) {
-  .Call(charport_native_symbol("C_charpack_from_state"), state, wide)
+charpack_from_state <- function(state) {
+  .Call(charport_native_symbol("C_charpack_from_state"), state)
 }
 
 register_charpack <- function() {

@@ -94,5 +94,4 @@ When a `charvec` is fully materialized, it caches an ordinary `STRSXP` in ALTREP
 
 ## `charpack`: compact representation of short vectors
 
-A `charvec` holds its `Store` through an external pointer with a finalizer. It makes sense for large vectors and is often more memory efficient than base R strings. However, using an external pointer costs extra R objects and churn from garbage collection. `charpack` stores `[n][u32 size x n][u8 encoding x n][bytes]` in an ordinary raw vector. It has smaller per-vector overhead compared to `charvec` and frequently base R strings as well. The tradeoff is it requires a copy of the full vector at construction, so is not suited for large vectors.
-
+A `charvec` holds its `Store` through an external pointer with a finalizer. It makes sense for large vectors and is usually more memory efficient than base R strings. However, using an external pointer costs extra R objects and churn from garbage collection. `charpack` stores its strings and metadata in one ordinary R raw vector. It has smaller per-vector overhead compared to `charvec` and frequently base R strings as well. The tradeoff is it requires a copy of the full vector at construction, so is not suited for large vectors.

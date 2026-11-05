@@ -114,6 +114,8 @@ static inline SEXP charport_charpack_from_slices(
 #ifdef __cplusplus
 } // extern "C"
 
+#include "charvec/store.h"
+
 namespace charport {
 namespace charpack {
 
@@ -149,6 +151,16 @@ inline SEXP from_slices(R_xlen_t n, const int * lengths, const cetype_ext_t * en
                         R_xlen_t n_slices, const char * const * slices,
                         const size_t * slice_bytes) {
   return charport_charpack_from_slices(n, lengths, encodings, n_slices, slices, slice_bytes);
+}
+
+// Copies the strings of a finished charvec Store into a new charpack. The
+// store is never modified: it stays with the caller, who may free or reuse
+// it. On an R error nothing has changed. Raises no C++ exception, but may
+// raise R errors (allocation, or a length R cannot hold); main thread only.
+inline SEXP from_store(const charvec::Store & store) noexcept {
+  return charport_charpack_from_views(static_cast<R_xlen_t>(store.size()),
+                                      store.records.ptrs(), store.records.lengths(),
+                                      store.records.encodings());
 }
 
 } // namespace charpack

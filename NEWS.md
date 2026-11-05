@@ -3,14 +3,20 @@
 * New `charpack` class: a compact ALTREP character vector whose strings live
   in one R raw vector, for many short vectors. A `Reader` reaches any element
   directly, without allocating. `as_charpack()` converts to one and
-  `is_charpack()` tests for one.
+  `is_charpack()` tests for one. In C++, `charpack::from_store()` copies a
+  finished `charvec::Store` into one, so a producer can build with the
+  `charvec` builders and choose the class at the end. Reading an element
+  through ordinary R access materializes the whole `charpack`; a `Reader`
+  keeps it packed, and so do vector subsets such as `x[i]`, which return a
+  new `charpack`.
 * `charvec::alloc_na()`, `charvec::get_store()` and `charvec::Writer` fill a
   `charvec` in place after it is created.
 * On R >= 4.6, `Reader` now handles base `wrap_string` ALTREP without materialization
 * `charport_materialize()` also materializes a `charpack`.
 * A filled `charpack` serializes in its compact form, like `charvec`, without
-  materializing. Both write little-endian on every host; big-endian `charvec`
-  states from earlier versions still load.
+  materializing; on a little-endian host its raw vector is written and read
+  back without a copy. Both write little-endian on every host; big-endian
+  `charvec` states from earlier versions still load.
 * Serialization is now safe across locales. A `charvec` or `charpack` with
   native-encoded strings is saved in packed form only in a UTF-8 locale;
   elsewhere it is saved as an ordinary character vector, so R converts its
