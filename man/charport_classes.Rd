@@ -7,25 +7,25 @@
 charport_classes()
 }
 \value{
-A list with elements `n` (integer: number of registered
-  classes), `persistent_views` (logical vector: whether returned byte
-  views remain valid until the reader borrow ends), `concurrent_access`
-  (logical vector: whether reader access calls may run concurrently),
-  and `reentrant` (logical vector: whether both capabilities are true).
+A list with elements \code{n} (integer: number of registered
+classes), \code{persistent_views} (logical vector: whether returned byte
+views remain valid until the reader borrow ends), \code{concurrent_access}
+(logical vector: whether reader access calls may run concurrently),
+and \code{reentrant} (logical vector: whether both capabilities are true).
 }
 \description{
 Reports on the broker's ALTREP class registry. Registered classes are
 ALTREP character vector classes whose authors registered a reader with
-charport (via the `charport_register_altrep_v1` C entry point, fetched with
-`R_GetCCallable`). The built-in `charvec` and `charpack` classes are
-registered when `charport` loads, so a freshly loaded session normally
+charport (via the \code{charport_register_altrep_v1} C entry point, fetched with
+\code{R_GetCCallable}). The built-in \code{charvec} and \code{charpack} classes are
+registered when \code{charport} loads, so a freshly loaded session normally
 reports at least those two classes.
 }
 \details{
 ALTREP class names require an instance to query (R's
-`R_altrep_class_name` takes a vector, not a class descriptor), so this
+\code{R_altrep_class_name} takes a vector, not a class descriptor), so this
 registry view reports the count and capability flags; use
-[charport_class_of()] on a vector to get its registered class name.
+\code{\link[=charport_class_of]{charport_class_of()}} on a vector to get its registered class name.
 }
 \examples{
 charport_classes()

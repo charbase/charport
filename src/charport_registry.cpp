@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <Rversion.h>
+#include <R_ext/Riconv.h>
 
 namespace {
 
@@ -272,21 +273,18 @@ bool resolve_registered(SEXP x, const altrep_entry * registered,
 }
 
 #if (R_VERSION >= R_Version(4, 6, 0))
-// Base R wraps a vector of length >= 64 in a wrap_string ALTREP when an
-// attribute is set on it while it is shared (names<- on a copy, setNames(),
-// attr<-, structure() and others). On R 4.6, taking such a wrapper's data
-// pointer first duplicates the shared wrapped vector, since the pointer could
-// be written through, and then materializes the copy. The broker only reads, so it resolves the wrapped vector directly,
-// before touching the wrapper's data pointer.
+// Base R wraps a shared vector of length >= 64 in a wrap_string when an
+// attribute is set (setNames(), names<- on a copy, attr<-, structure()). On
+// R 4.6 the wrapper's data pointer duplicates the shared vector and
+// materializes the copy, so the broker, which only reads, resolves the wrapped
+// vector first.
 //
-// This relies on base internals that R does not document: data1 of a
-// wrap_string is the whole wrapped vector, and the wrapper's strings are that
-// vector's strings. The guards: identify the class only through the R 4.6
-// accessors; require data1 to be a character vector of the same length; use
-// the inner vector only when it resolves without materializing (a data
-// pointer or a registered reader), so every other case reads the wrapper as
-// before. tests/test_wrapper_unwrap.R checks the assumptions and runs against
-// R-devel in CI.
+// This relies on undocumented base internals: data1 is the whole wrapped
+// vector, and its strings are the wrapper's. Guards: identify the class only
+// through the R 4.6 accessors, require data1 to be a character vector of the
+// same length, and use the inner vector only when it resolves without
+// materializing; anything else reads the wrapper as before.
+// tests/test_wrapper_unwrap.R checks the assumptions against R-devel in CI.
 SEXP wrap_string_name = nullptr;
 SEXP base_package_name = nullptr;
 constexpr int max_unwrap_depth = 8;
@@ -358,6 +356,38 @@ extern "C" charport_reader charport_resolve(SEXP x) {
 extern "C" int charport_abi_version(void) {
   return CHARPORT_ABI_VERSION;
 }
+
+#if (R_VERSION >= R_Version(4, 5, 0))
+namespace {
+// An unmarked, non-ASCII CHARSXP. It carries no encoding bits, so
+// Rf_charIsUTF8() on it reads only R's current utf8locale flag.
+SEXP native_probe = nullptr;
+}
+
+extern "C" int charport_native_is_utf8_impl(void) {
+  return Rf_charIsUTF8(native_probe) == TRUE;
+}
+#else
+// Before 4.5 there is no API view of utf8locale. Ask R's iconv whether
+// UTF-8 bytes for U+00E9 read as native come back unchanged; any other
+// encoding changes them or fails.
+extern "C" int charport_native_is_utf8_impl(void) {
+  void * cd = Riconv_open("UTF-8", "");
+  if(cd == reinterpret_cast<void *>(-1)) {
+    return 0;
+  }
+  const char probe[2] = {'\xc3', '\xa9'};
+  char out[8];
+  const char * in_ptr = probe;
+  char * out_ptr = out;
+  size_t in_left = sizeof(probe);
+  size_t out_left = sizeof(out);
+  const size_t status = Riconv(cd, &in_ptr, &in_left, &out_ptr, &out_left);
+  Riconv_close(cd);
+  return status != static_cast<size_t>(-1) && in_left == 0 &&
+         out_ptr - out == 2 && std::memcmp(out, probe, 2) == 0;
+}
+#endif
 
 extern "C" charport_sexp_info charport_get_sexp_info(SEXP x) {
   charport_sexp_info out;
@@ -476,6 +506,12 @@ extern "C" void charport_registry_init(DllInfo * dll) {
   wrap_string_name = Rf_install("wrap_string");
   base_package_name = Rf_install("base");
 #endif
+#if (R_VERSION >= R_Version(4, 5, 0))
+  native_probe = Rf_mkCharLenCE("\xc3\xa9", 2, CE_NATIVE);
+  R_PreserveObject(native_probe);
+#endif
+  R_RegisterCCallable("charport", "charport_native_is_utf8_v1",
+                      reinterpret_cast<DL_FUNC>(&charport_native_is_utf8_impl));
   R_RegisterCCallable("charport", "charport_register_altrep_v1",
                       reinterpret_cast<DL_FUNC>(&charport_register_altrep));
   R_RegisterCCallable("charport", "charport_unregister_altrep_v1",

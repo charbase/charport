@@ -1,7 +1,7 @@
 Package: charport
 Title: ALTREP String Interoperability
-Version: 0.1.1
-Date: 2026-09-18
+Version: 0.2.0
+Date: 2026-11-03
 Authors@R: c(
     person("Travers", "Ching", email = "traversc@gmail.com", role = c("aut", "cre", "cph")),
     person("R Consortium", role = "fnd",
@@ -28,5 +28,6 @@ VignetteBuilder: quarto
 Depends: R (>= 3.6.0)
 URL: https://github.com/charbase/charport, https://charbase.github.io/charport/
 BugReports: https://github.com/charbase/charport/issues
-Config/roxygen2/version: 8.0.0
+Roxygen: list(markdown = TRUE)
+Config/roxygen2/version: 8.1.0
 Config/Needs/website: pkgdown, xml2

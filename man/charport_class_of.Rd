@@ -10,15 +10,15 @@ charport_class_of(x)
 \item{x}{a character vector.}
 }
 \value{
-`"package::class"` for a registered class match when class metadata
-  is available; otherwise `NA_character_`.
+\code{"package::class"} for a registered class match when class metadata
+is available; otherwise \code{NA_character_}.
 }
 \description{
-Identifies whether a registered ALTREP class claims `x`. This is a
+Identifies whether a registered ALTREP class claims \code{x}. This is a
 class-membership question answered without touching the vector's data:
-it never materializes `x` and reports a match even when the class reader
+it never materializes \code{x} and reports a match even when the class reader
 would decline to serve this particular instance (for example, a
-materialized `charvec`).
+materialized \code{charvec}).
 }
 \examples{
 charport_class_of(charvec("a"))

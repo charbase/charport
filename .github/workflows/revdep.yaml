@@ -1,0 +1,86 @@
+# Reverse dependency checks: CRAN charport (old) vs this branch (new).
+# Runs code from other packages, so the job gets no secrets, a read-only token
+# that is not left in .git/config, and no shared cache.
+# macOS: CRAN binaries for dependencies, source tarballs for the checked
+# packages, which is how revdepcheck expects to run.
+on:
+  workflow_dispatch:
+
+name: revdep
+
+permissions:
+  contents: read
+
+concurrency:
+  group: revdep-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  revdep:
+    runs-on: macos-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - uses: r-lib/actions/setup-pandoc@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+
+      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+
+      - uses: r-lib/actions/setup-r-dependencies@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+        with:
+          extra-packages: |
+            r-lib/revdepcheck@fe363843c340191f56aaf03514af4301f2ccf5c1
+          needs: check
+          cache: false
+
+      - name: Run revdep checks
+        # below the job limit, so the report and upload steps still run
+        timeout-minutes: 150
+        shell: Rscript {0}
+        run: |
+          revdepcheck::revdep_check(
+            num_workers = 2,
+            timeout = as.difftime(60, units = "mins"),
+            bioc = TRUE,
+            cran = TRUE
+          )
+
+      - name: Summarize revdep results
+        if: always()
+        shell: Rscript {0}
+        run: |
+          try(revdepcheck::revdep_report(bioc = TRUE, cran = TRUE), silent = TRUE)
+
+      - name: Print revdep results
+        if: always()
+        shell: bash
+        run: |
+          for path in revdep/README.md revdep/problems.md revdep/failures.md; do
+            echo "===== ${path} ====="
+            if [ -f "${path}" ]; then cat "${path}"; else echo "<missing>"; fi
+            echo
+            {
+              echo "## ${path}"
+              echo
+              if [ -f "${path}" ]; then cat "${path}"; else echo "_Missing._"; fi
+              echo
+            } >> "${GITHUB_STEP_SUMMARY}"
+          done
+
+      # reports, check logs and the results database; revdep/library is large.
+      # On macOS revdepcheck writes checks to revdep/checks.noindex.
+      - name: Upload revdep results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: revdep-results
+          path: |
+            revdep/*.md
+            revdep/data.sqlite
+            revdep/checks*/*/*/*.Rcheck/00check.log
+            revdep/checks*/*/*/*.Rcheck/00install.out
+            revdep/checks*/*/*/*.Rcheck/tests/*.Rout.fail
+          if-no-files-found: warn

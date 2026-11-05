@@ -22,3 +22,4 @@
 ^pkgdown$
 ^_pkgdown\.yml$
 ^CLAUDE\.md$
+^revdep$

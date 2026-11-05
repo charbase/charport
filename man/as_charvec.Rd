@@ -10,11 +10,11 @@ as_charvec(x)
 \item{x}{object to convert.}
 }
 \value{
-A `charvec` (an ALTREP character vector).
+A \code{charvec} (an ALTREP character vector).
 }
 \description{
-Converts a character vector (or anything [as.character()] accepts) to a
-`charvec`. If `x` is already a `charvec` it is returned unchanged. Names
+Converts a character vector (or anything \code{\link[=as.character]{as.character()}} accepts) to a
+\code{charvec}. If \code{x} is already a \code{charvec} it is returned unchanged. Names
 are preserved; other attributes are dropped.
 }
 \examples{

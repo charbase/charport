@@ -1,10 +1,9 @@
 #ifndef CHARPORT_CHARVEC_WRITER_H
 #define CHARPORT_CHARVEC_WRITER_H
 
-// In-place charvec fill: allocate a charvec of NA strings first, then write
-// its strings later. For producers that must create the R object before its
-// strings are available, such as deserializers that read an object tree
-// before its data. Include charport.h from packages.
+// In-place charvec fill, for producers that create the R object before its
+// strings are available, such as deserializers. Include charport.h from
+// packages.
 
 #include "builder.h"
 
@@ -32,16 +31,13 @@ inline SEXP alloc_na(R_xlen_t n) {
   return charport_charvec_alloc_na(n);
 }
 
-// The Store of a charvec that is not materialized and has no cached elements.
-// Returns nullptr otherwise, including for any vector that is not a charvec.
-// Does not call R in a way that can raise an error.
+// The Store of a charvec that is neither materialized nor cached, or nullptr
+// (also for a non-charvec). Raises no R errors.
 //
-// The check does not prove the vector is unread: a Reader leaves no trace.
-// Use it only on a vector the caller owns, such as one just returned by
-// alloc_na(), that no R code or Reader has seen. Nothing else may read the
-// vector while it is filled, and every record must point into this Store's
-// slices (Writer does this). The pointer is valid until the vector is read
-// from R, materialized or garbage collected.
+// A Reader leaves no trace, so use it only on a vector the caller owns, such as
+// one fresh from alloc_na(). Nothing may read the vector while it is filled,
+// and records must point into the Store's slices (Writer does this). The
+// pointer is valid until the vector is read from R or collected.
 inline attribute_hidden Store * get_store(SEXP x) noexcept {
   static charport_charvec_get_store_t fn = nullptr;
   if(fn == nullptr) {
@@ -52,18 +48,17 @@ inline attribute_hidden Store * get_store(SEXP x) noexcept {
   return static_cast<Store *>(fn(x));
 }
 
-// Writes strings into a Store from get_store(), in any order. A slice belongs
-// to the Store as soon as it is allocated, and a record changes only in set(),
-// after its bytes are written, so an R error or C++ exception partway leaves
-// a valid vector. Trivially destructible, so a longjmp past it leaks nothing.
+// Writes strings into a Store from get_store(), in any order. Slices belong to
+// the Store once allocated and set() runs after the bytes are written, so an
+// error partway leaves a valid vector. Trivially destructible, so a longjmp
+// past it leaks nothing.
 class Writer {
 public:
   explicit Writer(Store & store) noexcept
     : store_(store),
       initial_(builder_detail::initial_slice_heuristic(store.size())) {}
 
-  // A copy would share the slice cursor, so two Writers would hand out the
-  // same bytes.
+  // A copy would share the slice cursor and hand out the same bytes twice.
   Writer(const Writer &) = delete;
   Writer & operator=(const Writer &) = delete;
 

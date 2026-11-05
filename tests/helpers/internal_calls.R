@@ -32,20 +32,16 @@ charpack_placeholder <- function() {
 
 # Fills placeholder x from strings: fill_views when n_slices <= 0, otherwise
 # fill_slices with the payload cut into n_slices pieces.
-charpack_fill_from <- function(x, strings, n_slices = 0L) {
-  .Call(charport_native_symbol("C_charpack_fill_from"), x, strings, as.integer(n_slices))
+charpack_fill_from <- function(x, strings, n_slices = 0L, wide = FALSE) {
+  .Call(charport_native_symbol("C_charpack_fill_from"), x, strings, as.integer(n_slices), wide)
 }
 
-as_charpack <- function(strings, n_slices = 0L) {
-  charpack_fill_from(charpack_placeholder(), strings, n_slices)
+charpack_from_slices <- function(strings, n_slices = 0L, wide = FALSE) {
+  charpack_fill_from(charpack_placeholder(), strings, n_slices, wide)
 }
 
 charpack_fill_materialized_na <- function(x, n) {
   .Call(charport_native_symbol("C_charpack_fill_materialized_na"), x, n)
-}
-
-is_charpack <- function(x) {
-  .Call(charport_native_symbol("C_is_charpack"), x)
 }
 
 charpack_state <- function(x) {
@@ -56,8 +52,12 @@ charpack_data1 <- function(x) {
   .Call(charport_native_symbol("C_charpack_data1"), x)
 }
 
-charpack_bswap_packed <- function(raw) {
-  .Call(charport_native_symbol("C_charpack_bswap_packed"), raw)
+charpack_packed_state <- function(x) {
+  .Call(charport_native_symbol("C_charpack_packed_state"), x)
+}
+
+charpack_from_state <- function(state, wide = FALSE) {
+  .Call(charport_native_symbol("C_charpack_from_state"), state, wide)
 }
 
 register_charpack <- function() {

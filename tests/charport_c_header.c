@@ -49,6 +49,10 @@ SEXP C_charport_c_abi_ok(void) {
   );
 }
 
+SEXP C_charport_c_native_is_utf8(void) {
+  return Rf_ScalarLogical(charport_native_is_utf8() ? TRUE : FALSE);
+}
+
 SEXP C_charport_c_reader_roundtrip(SEXP x) {
   R_xlen_t i;
   R_xlen_t n;

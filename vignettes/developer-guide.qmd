@@ -63,7 +63,7 @@ import(charport)
 
 There is one public header: `charport.h`. If you use `Rcpp` or `cpp11`, you should include that framework's header first.
 
-The same header can be included from C. Its C interface exposes ABI checks, reader borrows, vector inspection, and complete-vector `charvec` construction through R's `R_GetCCallable()`. C++ packages also get the `Reader` class, `charvec` builders, and ALTREP registration. The C++ interface requires C++11 or higher.
+The same header can be included from C. Its C interface exposes ABI checks, reader borrows, vector inspection, the native-encoding check, and complete-vector `charvec` construction through R's `R_GetCCallable()`. C++ packages also get the `Reader` class, `charvec` builders, and ALTREP registration. The C++ interface requires C++11 or higher.
 
 The main entry points have direct C and C++ counterparts:
 
@@ -73,6 +73,7 @@ The main entry points have direct C and C++ counterparts:
 | Acquire a reader borrow | `charport_resolve(x)` | `charport::Reader(x)` |
 | Release a raw reader borrow | `charport_reader_release(&reader)` | RAII destruction in `charport::Reader` |
 | Inspect a string vector | `charport_get_sexp_info(x)` | `charport::sexp_info(x)` |
+| Check whether native strings are UTF-8 | `charport_native_is_utf8()` | `charport::native_is_utf8()` |
 | Build a `charvec` | `charport_charvec_from_views(...)` | `charvec::Builder` |
 
 ## Using the Universal Reader {#universal-reader}
@@ -219,10 +220,10 @@ r.byteviews(idx.data(), idx.size(), byteviews); // outputs elements 0, 10 and 20
 
 | Value | Meaning |
 |----------------------------|--------------------------------------------|
-| `CETYPE_EXT_NATIVE` | Native encoding based on machine locale. |
-| `CETYPE_EXT_UTF8` | UTF-8. |
-| `CETYPE_EXT_LATIN1` | Latin-1. |
-| `CETYPE_EXT_BYTES` | Bytes encoding. |
+| `CETYPE_EXT_NATIVE` | Non-ASCII text in the session's native encoding. |
+| `CETYPE_EXT_UTF8` | Non-ASCII UTF-8. |
+| `CETYPE_EXT_LATIN1` | Non-ASCII Latin-1. |
+| `CETYPE_EXT_BYTES` | Non-ASCII bytes encoding. |
 | `CETYPE_EXT_ASCII_OR_UTF8` | ASCII/UTF-8-compatible bytes. |
 | `CETYPE_EXT_ASCII` | ASCII bytes, equivalent to `Rf_charIsASCII(x)`. |
 | `CETYPE_EXT_NA` | Missing string. `ptr` is `NULL` and `len` is `NA_INTEGER`. |
@@ -235,13 +236,19 @@ R's encoding scheme is aggregated into this single type. `CETYPE_EXT_ASCII`, `CE
 
 `CETYPE_EXT_NA` carries the missing-string case alongside the pointer and length.
 
-Ordinary `cetype_t` values correspond to `cetype_ext_t` values, so you can wrap R's encoding mark when you already have a `cetype_t`:
+ASCII text is always tagged `CETYPE_EXT_ASCII` or `CETYPE_EXT_ASCII_OR_UTF8`. R drops the encoding mark of every ASCII string, so the other four tags always describe at least one non-ASCII byte. charport's own conversions from R strings follow this rule. Constructors and `Writer` store the tags they are given without checking them, so a producer that tags its own strings must follow it too. Tags are part of `charport_strview` equality: `"a"` tagged `CETYPE_EXT_NATIVE` does not compare equal to `"a"` tagged `CETYPE_EXT_ASCII`.
+
+Ordinary `cetype_t` values correspond to `cetype_ext_t` values, so you can wrap R's encoding mark when you already have a `cetype_t`. `Rf_getCharCE()` reports `CE_NATIVE` for ASCII strings, so check the ASCII mark first:
 
 ``` cpp
-cetype_ext_t enc = charport_cetype_ext(static_cast<uint8_t>(Rf_getCharCE(x)));
+cetype_ext_t enc = Rf_charIsASCII(x)
+  ? CETYPE_EXT_ASCII
+  : charport_cetype_ext(static_cast<uint8_t>(Rf_getCharCE(x)));
 ```
 
-That cast preserves the encoding marks for native, UTF-8, Latin-1 and byte strings.
+That cast preserves the encoding marks for native, UTF-8, Latin-1 and byte strings. `Rf_charIsASCII()` needs R 4.5 or later; before that, scan the bytes.
+
+What a native-tagged string means depends on the session's locale, which `Sys.setlocale()` can change. `charport_native_is_utf8()` (C++: `charport::native_is_utf8()`) reports whether R currently reads native strings as UTF-8. It follows `Sys.setlocale()`, so call it at the start of each operation rather than caching the answer. On R 4.5 or later it costs a few nanoseconds; older versions run a short iconv probe. Call it from the main thread.
 
 ### Reader Lifetime and Multithreading
 
@@ -620,7 +627,7 @@ w.set_na(k);
 
 ## `charpack`: compact vectors {#charpack}
 
-While `charvec` works well for long vectors, `charpack` is optimized for short vectors. It does so by keeping all data in a raw vector, avoiding object storage and external pointer overhead. 
+While `charvec` works well for long vectors, `charpack` is optimized for short vectors. It does so by keeping all data in a raw vector, avoiding object storage and external pointer overhead. A `Reader` reads that raw vector in place and reaches any element directly, without allocating.
 
 Construction is always one-shot:
 
@@ -646,6 +653,26 @@ SEXP rdata2 = charpack::fill_materialized_na(r, n);
 ```
 
 A placeholder has length 0 until it is filled. Because `charpack` always one-shot copies the entire vector, large vectors or large strings temporarily need to be stored twice and might become memory inefficient. So `fill_materialized_na(x, n)` is a way out by materializing early. It materializes `x` as `n` NA strings and returns the materialized vector, so you can fill it with `SET_STRING_ELT`.
+
+## Serialization {#serialization}
+
+A filled `charvec` or `charpack` serializes in its packed form without materializing, and `readRDS()` or `unserialize()` restores the same class. A materialized vector serializes as an ordinary character vector.
+
+Native-tagged strings need care. R records the writer's native encoding in the stream header and converts ordinary strings on reading, but the packed bytes never pass through that conversion. charport therefore writes the packed form only when its native records have a known meaning:
+
+| When saving | State written |
+|------------------------|------------------------------------------|
+| No `CETYPE_EXT_NATIVE` records | Packed, in any locale |
+| Native records, UTF-8 locale | Packed |
+| Native records, any other locale | A temporary character vector, which R serializes and converts like any other. The source stays packed. |
+
+So the native records in a packed state are always UTF-8 text. Read in a UTF-8 locale, they keep their native tag; read in any other locale, they are tagged `CETYPE_EXT_UTF8` with the bytes unchanged. Other tags come back as written. A vector saved as a temporary character vector reads back as an ordinary character vector.
+
+Some consequences:
+
+- Native bytes that are not valid UTF-8 but were saved in a UTF-8 locale are tagged UTF-8 as they are, without validation.
+- R strings cannot hold an embedded NUL, so a vector that contains one cannot be saved as a temporary character vector.
+- A `charvec` packed state is version 2 (`"CPV2"`). Version 1 states, written by `charport` 0.1 in any locale, still load; their native records keep the native tag and are read as the current locale's, as before. A `charpack` state is the same packed body without the version prefix, independent of how a `charpack` is laid out in memory. It is new in this release and follows the rule above.
 
 ## ABI Compatibility {#abi-compatibility-guard}
 

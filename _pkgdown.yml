@@ -43,6 +43,8 @@ reference:
   contents:
   - charvec
   - is_charvec
+  - is_charpack
+  - as_charpack
   - as_charvec
   - charport_materialize
 - title: Class Diagnostics

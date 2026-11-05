@@ -344,6 +344,10 @@ SEXP C_consumer_abi_ok(void) {
   return Rf_ScalarLogical(charport::check_abi() ? TRUE : FALSE);
 }
 
+SEXP C_consumer_native_is_utf8(void) {
+  return Rf_ScalarLogical(charport::native_is_utf8() ? TRUE : FALSE);
+}
+
 SEXP C_consumer_callable_v1(void) {
   const char * names[] = {
     "charport_register_altrep_v1",

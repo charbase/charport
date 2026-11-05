@@ -10,9 +10,9 @@ is_charvec(x)
 \item{x}{object to test.}
 }
 \value{
-`TRUE` if `x` is a `charvec` ALTREP vector, `FALSE` otherwise.
-  Note a materialized `charvec` is still a `charvec`; serialization of a
-  materialized `charvec` round-trips to a plain character vector.
+\code{TRUE} if \code{x} is a \code{charvec} ALTREP vector, \code{FALSE} otherwise.
+Note a materialized \code{charvec} is still a \code{charvec}; serialization of a
+materialized \code{charvec} round-trips to a plain character vector.
 }
 \description{
 Test for a charvec

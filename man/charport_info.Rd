@@ -10,21 +10,21 @@ charport_info(x)
 \item{x}{object to inspect.}
 }
 \value{
-A named list containing `is_strsxp`, `length`, `is_altrep`,
-  `is_materialized`, `is_registered`, reader capability flags,
-  `stateful_reader`, `reentrant`, ALTREP class name/package fields, and
-  `altrep_class` as `"package::class"` when class metadata is available.
+A named list containing \code{is_strsxp}, \code{length}, \code{is_altrep},
+\code{is_materialized}, \code{is_registered}, reader capability flags,
+\code{stateful_reader}, \code{reentrant}, ALTREP class name/package fields, and
+\code{altrep_class} as \code{"package::class"} when class metadata is available.
 }
 \description{
 Reports non-forcing diagnostics for a possible character vector. This is a
-preflight/development helper: it does not call `STRING_ELT()`,
-`STRING_PTR_RO()`, `DATAPTR()`, or any registered reader callback.
+preflight/development helper: it does not call \code{STRING_ELT()},
+\code{STRING_PTR_RO()}, \code{DATAPTR()}, or any registered reader callback.
 }
 \details{
-`is_materialized` means ordinary string pointer storage is available without
-forcing (`DATAPTR_OR_NULL(x) != NULL`). For base R deferred strings, some
-elements may have been cached by `STRING_ELT()` while this still reports
-`FALSE`; the field is a full-materialization/direct-pointer diagnostic.
+\code{is_materialized} means ordinary string pointer storage is available without
+forcing (\code{DATAPTR_OR_NULL(x) != NULL}). For base R deferred strings, some
+elements may have been cached by \code{STRING_ELT()} while this still reports
+\code{FALSE}; the field is a full-materialization/direct-pointer diagnostic.
 }
 \examples{
 charport_info(charvec("a"))

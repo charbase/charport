@@ -7,23 +7,23 @@
 charvec(...)
 }
 \arguments{
-\item{...}{values to combine, as in [c()]; non-character values are coerced
-with [as.character()].}
+\item{...}{values to combine, as in \code{\link[=c]{c()}}; non-character values are coerced
+with \code{\link[=as.character]{as.character()}}.}
 }
 \value{
-A `charvec` (an ALTREP character vector).
+A \code{charvec} (an ALTREP character vector).
 }
 \description{
-Builds a `charvec`, charport's reference ALTREP character vector class,
-from the given values. A `charvec` is an ordinary character vector to R
-code (`typeof(x)` is `"character"`); its strings live as byte views in
-stable native memory blocks and are only converted to R's interned `CHARSXP`
+Builds a \code{charvec}, charport's reference ALTREP character vector class,
+from the given values. A \code{charvec} is an ordinary character vector to R
+code (\code{typeof(x)} is \code{"character"}); its strings live as byte views in
+stable native memory blocks and are only converted to R's interned \code{CHARSXP}
 strings when something forces materialization.
 }
 \details{
-Element bytes and encoding marks are preserved verbatim. `charvec` is a
+Element bytes and encoding marks are preserved verbatim. \code{charvec} is a
 storage/reference class, not an encoding-normalization layer; translation
-policy belongs in consumers built above charport. `NA_character_` is
+policy belongs in consumers built above charport. \code{NA_character_} is
 preserved.
 }
 \examples{

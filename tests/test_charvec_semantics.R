@@ -219,9 +219,9 @@ expect_unserialize_error <- function(serialized) {
   stopifnot(grepl("charport", conditionMessage(err), fixed = TRUE))
 }
 # state layout for charvec("abc"), written little-endian on every host:
-# "CPV1" | u8 endian flag 1 | u64 n=1 | u32 len=3 | u8 enc=254 (ascii) | "abc"
+# "CPV2" | u8 endian flag 1 | u64 n=1 | u32 len=3 | u8 enc=254 (ascii) | "abc"
 state_abc <- c(
-  charToRaw("CPV1"),
+  charToRaw("CPV2"),
   as.raw(1L),
   encode_uint(1L, 8L, "little"),
   encode_uint(3L, 4L, "little"),
@@ -230,7 +230,7 @@ state_abc <- c(
 )
 # flag 2 marks a big-endian state, which is still read
 state_abc_big_endian <- c(
-  charToRaw("CPV1"),
+  charToRaw("CPV2"),
   as.raw(2L),
   encode_uint(1L, 8L, "big"),
   encode_uint(3L, 4L, "big"),
@@ -241,8 +241,18 @@ y <- unserialize(mutate_serialized_state(charvec("abc"), state_abc, function(sta
   state_abc_big_endian
 }))
 stopifnot(is_charvec(y), identical(as.character(y), "abc"))
+# CPV1, written by charport 0.1, is still read
+y <- unserialize(mutate_serialized_state(charvec("abc"), state_abc, function(state) {
+  state[[4L]] <- charToRaw("1")
+  state
+}))
+stopifnot(is_charvec(y), identical(as.character(y), "abc"))
 expect_unserialize_error(mutate_serialized_state(charvec("abc"), state_abc, function(state) {
   state[[1L]] <- charToRaw("X")[[1L]]  # invalid magic
+  state
+}))
+expect_unserialize_error(mutate_serialized_state(charvec("abc"), state_abc, function(state) {
+  state[[4L]] <- charToRaw("3")  # unknown version
   state
 }))
 expect_unserialize_error(mutate_serialized_state(charvec("abc"), state_abc, function(state) {

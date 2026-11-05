@@ -18,6 +18,9 @@ namespace cpi = charport::internal;
 namespace cpv = charport::charvec;
 namespace cpc = charport::charvec::components;
 
+// Defined in charport_registry.cpp; exported as charport_native_is_utf8_v1.
+extern "C" int charport_native_is_utf8_impl(void);
+
 namespace charvec_detail {
 inline SEXP wrap_store_with_cleanup(cpv::Store * source) noexcept;
 }
@@ -120,15 +123,20 @@ inline SEXP charport_sexp_guard(const char * op, Fun fun) {
   return R_NilValue;
 }
 
-// serialized_state is "CPV1", an endian flag, then a packed body:
+// serialized_state is "CPV2", an endian flag, then a packed body:
 //
 //   [u64 n][u32 size x n][u8 cetype_ext x n][bytes]
 //
 // It is written little-endian (flag 1) on every host. A body with flag 2 is
 // big-endian and is still read. charpack's data1 is the same packed body.
+//
+// CPV2 is only written in a UTF-8 locale when it holds native records, so
+// they are UTF-8 text. CPV1 (charport 0.1) could come from any locale; its
+// native records are read as the current locale's, as they always were.
 struct charvec_serialized_layout {
   size_t n = 0;
   bool swap = false;
+  bool native_is_utf8_text = false;  // CPV2
   const unsigned char * size_offset = nullptr;
   const unsigned char * enc_offset = nullptr;
   const unsigned char * data_offset = nullptr;
@@ -206,7 +214,7 @@ inline void charvec_bswap_packed(unsigned char * body, size_t n) noexcept {
 }
 
 inline size_t charvec_serialized_prefix_bytes() noexcept {
-  return 5;  // "CPV1" + endian flag
+  return 5;  // "CPV2" + endian flag
 }
 
 inline size_t charvec_serialized_length(size_t n, size_t payload_bytes) {
@@ -276,7 +284,7 @@ inline charvec_serialized_layout charvec_parse_serialized(SEXP serialized_state)
 
   const unsigned char * serialized_ptr = RAW(serialized_state);
   if(serialized_ptr[0] != 'C' || serialized_ptr[1] != 'P' ||
-     serialized_ptr[2] != 'V' || serialized_ptr[3] != '1') {
+     serialized_ptr[2] != 'V' || (serialized_ptr[3] != '1' && serialized_ptr[3] != '2')) {
     throw std::runtime_error("invalid serialized_state format");
   }
   const unsigned char source_endian = serialized_ptr[4];
@@ -284,7 +292,10 @@ inline charvec_serialized_layout charvec_parse_serialized(SEXP serialized_state)
     throw std::runtime_error("invalid serialized_state endian flag");
   }
   const bool swap = source_endian != charvec_native_endian_flag();
-  return charvec_parse_packed(serialized_ptr + prefix_bytes, raw_len - prefix_bytes, swap);
+  charvec_serialized_layout layout =
+    charvec_parse_packed(serialized_ptr + prefix_bytes, raw_len - prefix_bytes, swap);
+  layout.native_is_utf8_text = serialized_ptr[3] == '2';
+  return layout;
 }
 
 // Untrusted input: accepts every encoding a record can legitimately hold,
@@ -431,10 +442,22 @@ inline cpv::Store * unserialize_store(const charvec_serialized_layout & layout) 
   const unsigned char * size_offset = layout.size_offset;
   const unsigned char * data_offset = layout.data_offset;
 
+  // A CPV2 state's native-tagged records were written in a UTF-8 locale (see
+  // Serialized_state); outside one, say so explicitly. Checked only once a
+  // native record turns up. CPV1 keeps native as the current locale's.
+  int native_as_utf8 = layout.native_is_utf8_text ? -1 : 0;
   cpv::Builder out(static_cast<R_xlen_t>(layout.n));
   for(size_t i = 0; i < layout.n; ++i) {
     const size_t size = charvec_read_u32_advance(size_offset, layout.swap);
-    const cetype_ext_t encoding = charport_cetype_ext(layout.enc_offset[i]);
+    cetype_ext_t encoding = charport_cetype_ext(layout.enc_offset[i]);
+    if(encoding == CETYPE_EXT_NATIVE && native_as_utf8 != 0) {
+      if(native_as_utf8 < 0) {
+        native_as_utf8 = !charport_native_is_utf8_impl();
+      }
+      if(native_as_utf8) {
+        encoding = CETYPE_EXT_UTF8;
+      }
+    }
     if(encoding == CETYPE_EXT_NA) {
       out.set_na(static_cast<R_xlen_t>(i));
     } else {
@@ -564,6 +587,17 @@ struct charvec_altrep {
             static_cast<void*>(Ptr(x)),
             materialized ? "materialized" : "not materialized");
     return TRUE;
+  }
+
+  // The store's strings as a new character vector, leaving the store alone.
+  static SEXP strings(const cpv::Store & store) {
+    const R_xlen_t n = static_cast<R_xlen_t>(store.size());
+    SEXP out = PROTECT(Rf_allocVector(STRSXP, n));
+    for(R_xlen_t i = 0; i < n; ++i) {
+      SET_STRING_ELT(out, i, cpi::make_charsxp(store.view(static_cast<size_t>(i))));
+    }
+    UNPROTECT(1);
+    return out;
   }
 
   static void install_materialized(SEXP vec, SEXP xp, SEXP data2) {
@@ -790,6 +824,17 @@ struct charvec_altrep {
       }
       auto & data1 = Get(vec);
       const size_t n = data1.size();
+      // A packed state's native-tagged records are UTF-8 by construction:
+      // outside a UTF-8 locale, send a temporary character vector instead,
+      // which R serializes with the stream's native encoding.
+      for(size_t i = 0; i < n; ++i) {
+        if(data1.encoding(i) == CETYPE_EXT_NATIVE) {
+          if(!charport_native_is_utf8_impl()) {
+            return strings(data1);
+          }
+          break;
+        }
+      }
       size_t total_size = 0;
       for(size_t i = 0; i < n; ++i) {
         const int len = data1.length(i);
@@ -802,7 +847,7 @@ struct charvec_altrep {
       serialized_ptr[0] = 'C';
       serialized_ptr[1] = 'P';
       serialized_ptr[2] = 'V';
-      serialized_ptr[3] = '1';
+      serialized_ptr[3] = '2';
       serialized_ptr[4] = 1;  // little-endian
       charvec_write_u64_le(serialized_ptr + charvec_serialized_prefix_bytes(),
                            static_cast<uint64_t>(n));
@@ -835,7 +880,8 @@ struct charvec_altrep {
   static SEXP Unserialize(SEXP /* class */, SEXP serialized_state) {
     return charport_sexp_guard("charvec Unserialize", [&]() -> SEXP {
       if(TYPEOF(serialized_state) == STRSXP) {
-        // state from a materialized charvec: stays a plain character vector
+        // state from a materialized charvec, or one saved with native records
+        // outside a UTF-8 locale: stays a plain character vector
         return serialized_state;
       }
       charvec_serialized_layout layout = charvec_parse_serialized(serialized_state);

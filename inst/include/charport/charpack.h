@@ -1,31 +1,23 @@
 #ifndef CHARPORT_CHARPACK_H
 #define CHARPORT_CHARPACK_H
 
-// charpack: a compact ALTREP character vector whose strings live in one R raw
-// vector. Include charport.h from packages.
+// charpack: an ALTREP character vector whose strings live in one R raw vector,
+// with no external pointer or finalizer, for many short vectors. The first
+// element access from R materializes the whole vector. Include charport.h from
+// packages.
 //
-// A charvec keeps its strings in native memory owned through an external
-// pointer and a finalizer, which suits long vectors. For many short vectors
-// that per-vector cost dominates. A charpack copies its strings into a single
-// RAWSXP that R owns: no external pointer, no finalizer, and R accounts for
-// the memory. The first element access materializes the whole vector.
+// Construction copies the strings. Fill an unfilled placeholder once, or use a
+// from_ constructor (placeholder plus fill):
 //
-// Construction always copies. Fill an unfilled placeholder once, or use a
-// from_ constructor, which allocates a placeholder and fills it:
+//   placeholder()         an unfilled charpack, length 0 until filled
+//   fill_views            strings from pointer, length and encoding arrays
+//   fill_slices           strings from byte slices, split in order by lengths
+//   fill_materialized_na  materialize x as n NA strings and return that STRSXP
+//                         to fill with SET_STRING_ELT (x keeps it alive)
 //
-//   placeholder()  an unfilled charpack, length 0 until it is filled
-//   fill_views     strings from pointer, length and encoding arrays
-//   fill_slices    strings from byte slices, split in order by the lengths
-//   fill_materialized_na
-//                  skip packing: make x an ordinary character vector of n NA
-//                  strings, already materialized, and return that vector to
-//                  fill with SET_STRING_ELT; x keeps it alive
-//
-// Lengths use NA_INTEGER for NA, as in charport_charvec_from_views. A fill
-// raises an R error if x is not an unfilled placeholder, so a filled or
-// materialized charpack is never refilled. Reading or duplicating a
-// placeholder never yields another placeholder, so a read before the fill
-// makes the fill fail. Fills call R and must run on the main thread.
+// Lengths use NA_INTEGER for NA. A fill raises an R error unless x is an
+// unfilled placeholder, and a read or duplicate never yields one, so a read
+// before the fill makes the fill fail. Fills call R; main thread only.
 
 #include "interop/reader.h"
 

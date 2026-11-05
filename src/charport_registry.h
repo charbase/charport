@@ -14,6 +14,7 @@ void charport_unregister_altrep(R_altrep_class_t cls);
 charport_reader charport_resolve(SEXP x);
 charport_sexp_info charport_get_sexp_info(SEXP x);
 int charport_abi_version(void);
+int charport_native_is_utf8_impl(void);
 SEXP charport_charvec_wrap(void * store);
 SEXP charport_charvec_from_views_impl(
     R_xlen_t n, const char * const * ptrs, const int * lengths,
@@ -45,12 +46,13 @@ SEXP C_unregister_charvec(void);
 SEXP C_register_charvec(void);
 
 SEXP C_charpack_placeholder(void);
-SEXP C_charpack_fill_from(SEXP x, SEXP strings, SEXP n_slices);
+SEXP C_charpack_fill_from(SEXP x, SEXP strings, SEXP n_slices, SEXP wide);
 SEXP C_charpack_fill_materialized_na(SEXP x, SEXP n);
 SEXP C_is_charpack(SEXP x);
 SEXP C_charpack_state(SEXP x);
 SEXP C_charpack_data1(SEXP x);
-SEXP C_charpack_bswap_packed(SEXP raw);
+SEXP C_charpack_packed_state(SEXP x);
+SEXP C_charpack_from_state(SEXP state, SEXP wide);
 SEXP C_unregister_charpack(void);
 SEXP C_register_charpack(void);
 

@@ -82,7 +82,7 @@ wrap_ways <- list(
 # wrapper; the others must behave as before.
 inners <- list(
   charvec = function() as_charvec(values),
-  charpack = function() as_charpack(values),
+  charpack = function() charpack_from_slices(values),
   plain = function() values,
   materialized_charvec = function() { x <- as_charvec(values); charport_materialize(x); x }
 )
@@ -134,7 +134,7 @@ stopifnot(is.null(wrapped(setNames(x, nm[1:10]))))
 
 catn("charpack inside a wrapper, unregistered: falls back")
 unregister_charpack()
-x <- as_charpack(values)
+x <- charpack_from_slices(values)
 y <- setNames(x, nm)
 stopifnot(bytes_identical(read_all(y), values))
 register_charpack()

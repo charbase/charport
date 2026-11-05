@@ -6,6 +6,8 @@
 #include "consumer-boundary.h"
 #include "charport.h"
 
+#include <cstring>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -202,6 +204,86 @@ SEXP C_cpc_charvec_fill(SEXP strings, SEXP partial_) {
 
 SEXP C_cpc_get_store_is_null(SEXP x) {
   return Rf_ScalarLogical(charport::charvec::get_store(x) == nullptr ? TRUE : FALSE);
+}
+
+// Reads x[start + 1, ..., start + size] and x[indices + 1] through every
+// Reader access path. Returns list(range, index), each a list of the bytes
+// (raw, or NULL for NA), view lengths, byteview lengths, lengths() and
+// encodings(), so a charpack can be compared with the same strings in an
+// ordinary vector, which the Reader serves through R.
+SEXP C_cpc_reader_access(SEXP x, SEXP start_, SEXP size_, SEXP indices_) {
+  return charport_consumer::boundary("reader_access", [&]() -> SEXP {
+    const R_xlen_t start = static_cast<R_xlen_t>(Rf_asReal(start_));
+    const R_xlen_t size = static_cast<R_xlen_t>(Rf_asReal(size_));
+    const R_xlen_t n_index = Rf_xlength(indices_);
+    std::vector<R_xlen_t> indices(n_index);
+    for(R_xlen_t j = 0; j < n_index; ++j) {
+      indices[j] = static_cast<R_xlen_t>(REAL(indices_)[j]);
+    }
+    struct Access {
+      std::vector<const char *> ptrs, byte_ptrs;
+      std::vector<int> lens, byte_lens, lengths;
+      std::vector<cetype_ext_t> encs, encodings;
+      explicit Access(R_xlen_t m)
+        : ptrs(m + 1), byte_ptrs(m + 1), lens(m + 1), byte_lens(m + 1), lengths(m + 1),
+          encs(m + 1), encodings(m + 1) {}
+    };
+    Access range(size), index(n_index);
+    charport::Reader r(x);
+    r.views(start, size, range.ptrs.data(), range.lens.data(), range.encs.data());
+    r.byteviews(start, size, range.byte_ptrs.data(), range.byte_lens.data());
+    r.lengths(start, size, range.lengths.data());
+    r.encodings(start, size, range.encodings.data());
+    r.views(indices.data(), n_index, index.ptrs.data(), index.lens.data(), index.encs.data());
+    r.byteviews(indices.data(), n_index, index.byte_ptrs.data(), index.byte_lens.data());
+    r.lengths(indices.data(), n_index, index.lengths.data());
+    r.encodings(indices.data(), n_index, index.encodings.data());
+    for(R_xlen_t j = 0; j < size; ++j) {
+      if(range.ptrs[j] != range.byte_ptrs[j] || range.encs[j] != range.encodings[j]) {
+        throw std::runtime_error("views and byteviews or encodings disagree");
+      }
+    }
+    for(R_xlen_t j = 0; j < n_index; ++j) {
+      if(index.ptrs[j] != index.byte_ptrs[j] || index.encs[j] != index.encodings[j]) {
+        throw std::runtime_error("indexed views and byteviews or encodings disagree");
+      }
+    }
+    return charport_consumer::unwind_protect([&]() -> SEXP {
+      SEXP out = PROTECT(Rf_allocVector(VECSXP, 2));
+      Access * parts[2] = {&range, &index};
+      const R_xlen_t counts[2] = {size, n_index};
+      for(int k = 0; k < 2; ++k) {
+        const Access & a = *parts[k];
+        const R_xlen_t m = counts[k];
+        SEXP part = PROTECT(Rf_allocVector(VECSXP, 5));
+        SEXP bytes = PROTECT(Rf_allocVector(VECSXP, m));
+        SEXP lens = PROTECT(Rf_allocVector(INTSXP, m));
+        SEXP byte_lens = PROTECT(Rf_allocVector(INTSXP, m));
+        SEXP lengths = PROTECT(Rf_allocVector(INTSXP, m));
+        SEXP encs = PROTECT(Rf_allocVector(INTSXP, m));
+        for(R_xlen_t j = 0; j < m; ++j) {
+          if(a.ptrs[j] != nullptr) {
+            SEXP b = Rf_allocVector(RAWSXP, a.lens[j]);
+            SET_VECTOR_ELT(bytes, j, b);
+            if(a.lens[j] > 0) std::memcpy(RAW(b), a.ptrs[j], static_cast<size_t>(a.lens[j]));
+          }
+          INTEGER(lens)[j] = a.lens[j];
+          INTEGER(byte_lens)[j] = a.byte_lens[j];
+          INTEGER(lengths)[j] = a.lengths[j];
+          INTEGER(encs)[j] = a.encs[j].value;
+        }
+        SET_VECTOR_ELT(part, 0, bytes);
+        SET_VECTOR_ELT(part, 1, lens);
+        SET_VECTOR_ELT(part, 2, byte_lens);
+        SET_VECTOR_ELT(part, 3, lengths);
+        SET_VECTOR_ELT(part, 4, encs);
+        SET_VECTOR_ELT(out, k, part);
+        UNPROTECT(6);
+      }
+      UNPROTECT(1);
+      return out;
+    });
+  });
 }
 
 } // extern "C"
