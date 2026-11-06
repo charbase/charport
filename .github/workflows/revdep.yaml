@@ -58,7 +58,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          for path in revdep/README.md revdep/problems.md revdep/failures.md; do
+          for path in revdep/cran.md revdep/README.md revdep/problems.md revdep/failures.md; do
             echo "===== ${path} ====="
             if [ -f "${path}" ]; then cat "${path}"; else echo "<missing>"; fi
             echo
