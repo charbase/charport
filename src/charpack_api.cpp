@@ -65,7 +65,8 @@ void write_records(size_t count, const char * const * ptrs, const int * lengths,
 
 // Allocates data1 and writes its head, end offsets and encodings. The offsets
 // are u32 unless the payload needs u64, or force_wide asks for it (tests).
-// Returns data1 protected.
+// Nothing allocates after data1, so it is returned unprotected for the caller
+// to protect (rchk does not follow a PROTECT across a return).
 SEXP alloc_data1(R_xlen_t n, const char * const * ptrs, const int * lengths,
                  const cetype_ext_t * encodings, size_t payload, bool force_wide,
                  const char * op) {
@@ -75,7 +76,7 @@ SEXP alloc_data1(R_xlen_t n, const char * const * ptrs, const int * lengths,
   if(total == 0) {
     Rf_error("charport charpack %s: vector exceeds the maximum raw vector size", op);
   }
-  SEXP data1 = PROTECT(Rf_allocVector(RAWSXP, static_cast<R_xlen_t>(total)));
+  SEXP data1 = Rf_allocVector(RAWSXP, static_cast<R_xlen_t>(total));
   unsigned char * p = RAW(data1);
   charpack_layout::write_head(p, count, wide);
   unsigned char * ends = p + charpack_layout::header_bytes;
@@ -103,7 +104,7 @@ void fill_views(SEXP x, R_xlen_t n, const char * const * ptrs, const int * lengt
     Rf_error("charport charpack %s: input arrays must not be NULL", op);
   }
   const size_t payload = checked_payload(n, ptrs, lengths, encodings, op);
-  SEXP data1 = alloc_data1(n, ptrs, lengths, encodings, payload, force_wide, op);
+  SEXP data1 = PROTECT(alloc_data1(n, ptrs, lengths, encodings, payload, force_wide, op));
   char * dest = payload_start(data1);
   for(R_xlen_t i = 0; i < n; ++i) {
     if(cpi::view_is_na(ptrs[i], lengths[i], encodings[i]) || lengths[i] == 0) {
@@ -146,7 +147,7 @@ void fill_slices(SEXP x, R_xlen_t n, const int * lengths, const cetype_ext_t * e
              op, static_cast<unsigned long long>(sliced),
              static_cast<unsigned long long>(payload));
   }
-  SEXP data1 = alloc_data1(n, nullptr, lengths, encodings, payload, force_wide, op);
+  SEXP data1 = PROTECT(alloc_data1(n, nullptr, lengths, encodings, payload, force_wide, op));
   char * dest = payload_start(data1);
   for(R_xlen_t k = 0; k < n_slices; ++k) {
     if(slice_bytes[k] > 0) {

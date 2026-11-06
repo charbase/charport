@@ -87,10 +87,10 @@ read_layout <- function(x) {
        payload = raw[-seq_len(tags_at + n)])
 }
 for (wide in c(FALSE, TRUE)) {
-  l <- read_layout(charpack_from_slices(c("ab", NA, "", "é"), wide = wide))
+  l <- read_layout(charpack_from_slices(c("ab", NA, "", "\u00e9"), wide = wide))
   stopifnot(identical(l$wide, wide), l$n == 4, identical(l$ends, c(2, 2, 2, 4)))
   stopifnot(identical(l$tags, c(254L, 255L, 254L, 1L)))
-  stopifnot(identical(l$payload, c(charToRaw("ab"), charToRaw("é"))))
+  stopifnot(identical(l$payload, c(charToRaw("ab"), charToRaw("\u00e9"))))
   l <- read_layout(charpack_from_slices(c(NA, "", NA), wide = wide))
   stopifnot(identical(l$ends, c(0, 0, 0)), length(l$payload) == 0L)
 }
@@ -165,8 +165,13 @@ catn("behaves like a character vector")
 x <- charpack_from_slices(mixed)
 stopifnot(identical(x[2:3], mixed[2:3]), identical(x[[1]], "plain"))
 stopifnot(identical(nchar(x, "bytes"), nchar(mixed, "bytes")))
-stopifnot(identical(rev(x), rev(mixed)), identical(unique(x), unique(mixed)))
-stopifnot(identical(paste0(x, "!"), paste0(mixed, "!")), identical(x == "plain", mixed == "plain"))
+stopifnot(identical(rev(x), rev(mixed)))
+# unique, paste and == may translate strings, which R refuses for "bytes"
+# strings outside a UTF-8 locale (Windows before R 4.2), so these use text.
+text <- mixed[Encoding(mixed) != "bytes"]
+x <- charpack_from_slices(text)
+stopifnot(identical(unique(x), unique(text)))
+stopifnot(identical(paste0(x, "!"), paste0(text, "!")), identical(x == "plain", text == "plain"))
 x <- charpack_from_slices(mixed)
 y <- x
 y[1] <- "changed"
@@ -362,7 +367,7 @@ for (input in list(character(0), NA_character_, c("", NA, ""), mixed, w_utf8)) {
   stopifnot(bytes_identical(unserialize(serialize(r[[2]], NULL)), input))
 }
 # ASCII-or-UTF-8 records resolve when materialized: ASCII unmarked, the rest UTF-8
-input <- c("plain", "café", NA, "")
+input <- c("plain", "caf\u00e9", NA, "")
 r <- cpc("C_cpc_from_store", input, 0L)
 stopifnot(r[[3]], identical(as.character(r[[1]]), input),
           identical(Encoding(as.character(r[[1]])), c("unknown", "UTF-8", "unknown", "unknown")))
@@ -399,11 +404,11 @@ for (wide in c(FALSE, TRUE)) {
   }
 }
 # names come along through R, and the source stays packed
-x <- charpack_from_slices(c("a", NA, "é"))
+x <- charpack_from_slices(c("a", NA, "\u00e9"))
 names(x) <- c("p", "q", "r")
 y <- x[c("r", "p", "zz")]
 stopifnot(charpack_state(x) == "filled", is_charpack(y), charpack_state(y) == "filled")
-stopifnot(identical(as.character(y), c("é", "a", NA)),
+stopifnot(identical(as.character(y), c("\u00e9", "a", NA)),
           identical(names(y), c("r", "p", NA)))
 # a materialized charpack, or an empty one, subsets through R
 x <- charpack_from_slices(mixed)
@@ -417,18 +422,18 @@ stopifnot(bytes_identical(consumer("C_consumer_reader_roundtrip", x), mixed[c(4L
 
 catn("gctorture")
 gctorture(TRUE)
-x <- charpack_from_slices(c("a", NA, "", "é", "long string here"), 2L)
+x <- charpack_from_slices(c("a", NA, "", "\u00e9", "long string here"), 2L)
 y <- x
 y[2] <- "b"
 z <- consumer("C_consumer_reader_roundtrip", x)
 w <- cpc("C_cpc_from_views", c("q", NA))
-v <- cpc("C_cpc_fill_materialized_na", c("q", NA, "é"))
-u <- unserialize(serialize(charpack_from_slices(c("q", NA, "", "é"), wide = TRUE), NULL))
-w2 <- charpack_from_state(charpack_serialized_state(charpack_from_slices(c("q", NA, "é"), wide = TRUE)))
+v <- cpc("C_cpc_fill_materialized_na", c("q", NA, "\u00e9"))
+u <- unserialize(serialize(charpack_from_slices(c("q", NA, "", "\u00e9"), wide = TRUE), NULL))
+w2 <- charpack_from_state(charpack_serialized_state(charpack_from_slices(c("q", NA, "\u00e9"), wide = TRUE)))
 gctorture(FALSE)
-stopifnot(identical(as.character(x), c("a", NA, "", "é", "long string here")))
+stopifnot(identical(as.character(x), c("a", NA, "", "\u00e9", "long string here")))
 stopifnot(identical(y[[2]], "b"), identical(z, as.character(x)), identical(as.character(w), c("q", NA)),
-          identical(as.character(v), c("q", NA, "é")), identical(as.character(u), c("q", NA, "", "é")),
-          identical(as.character(w2), c("q", NA, "é")))
+          identical(as.character(v), c("q", NA, "\u00e9")), identical(as.character(u), c("q", NA, "", "\u00e9")),
+          identical(as.character(w2), c("q", NA, "\u00e9")))
 
 catn("OK")

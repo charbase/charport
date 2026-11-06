@@ -1,10 +1,11 @@
 // Consumer of the public charpack and charvec in-place fill API, compiled
 // against the installed headers like a downstream package would be.
 
-#include <Rinternals.h>
-#include <Rversion.h>
-#include "consumer-boundary.h"
+// charport.h first: it defines R_NO_REMAP before including R's headers, whose
+// remapped names (length, error, ...) would otherwise break libc++ headers.
 #include "charport.h"
+#include "consumer-boundary.h"
+#include <Rversion.h>
 
 #include <cstring>
 #include <stdexcept>

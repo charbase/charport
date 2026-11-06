@@ -12,7 +12,8 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Not ubuntu-latest: see R-CMD-check.yaml.
+    runs-on: ubuntu-24.04
 
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
