@@ -1,7 +1,7 @@
 Package: charport
 Title: ALTREP String Interoperability
 Version: 0.2.0
-Date: 2026-11-03
+Date: 2026-11-06
 Authors@R: c(
     person("Travers", "Ching", email = "traversc@gmail.com", role = c("aut", "cre", "cph")),
     person("R Consortium", role = "fnd",

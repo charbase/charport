@@ -598,6 +598,12 @@ struct charpack_altrep {
     if(TYPEOF(state) != RAWSXP) {
       Rf_error("charport charpack Unserialize: invalid serialized_state type");
     }
+    // Serialized_state only sends an ordinary raw vector. An ALTREP one comes
+    // from a crafted stream, and could not serve as data1, which is read in
+    // place without calling R.
+    if(ALTREP(state)) {
+      Rf_error("charport charpack Unserialize: serialized_state must be an ordinary raw vector");
+    }
     // Nothing else holds a state fresh from the stream, so it becomes data1
     // after validation, converted in place on a big-endian host.
     const bool swap = !charvec_host_is_little_endian();

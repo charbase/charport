@@ -273,6 +273,10 @@ malformed <- c(malformed, function(s) s[-length(s)],          # payload truncate
 for (mutate in malformed) {
   expect_error_matching(charpack_from_state(mutate(state_le)), "charport charpack Unserialize")
 }
+# A valid state inside an ALTREP raw vector (base wrap_raw), which only a
+# crafted stream sends.
+expect_error_matching(charpack_from_state(.Internal(wrap_meta(state_le, 0L, 0L))),
+                      "must be an ordinary raw vector")
 # Either offset width reads back as written, and the caller's state is left
 # as it was.
 for (input in list(character(0), c("ab", NA), c(NA, "", NA), mixed, w_utf8)) {
@@ -394,6 +398,10 @@ subset_cases <- list(
   c(3L, 1L), integer(0), c(2L, NA, 2L), c(1L, 99L), -1L, c(TRUE, FALSE),
   c(2.9, 1), c(NA_real_, 4), 1:length(mixed)
 )
+# stays real past INT_MAX and truncates to the last; 32-bit R rejects it
+if (.Machine$sizeof.pointer == 8L) {
+  subset_cases <- c(subset_cases, list(c(length(mixed) + 0.5, 3e9)))
+}
 for (wide in c(FALSE, TRUE)) {
   for (i in subset_cases) {
     x <- charpack_from_slices(mixed, wide = wide)

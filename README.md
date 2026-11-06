@@ -6,7 +6,7 @@
 **ALTREP string interoperability**
 
 R’s ALTREP system lets packages represent string data more efficiently.
-But acrosses packages, ALTREP vectors usually *materialize* back into
+But across packages, ALTREP vectors usually *materialize* back into
 ordinary R strings, and that step can be costly.
 
 `charport` is an experimental package with the goal of removing that

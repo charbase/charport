@@ -107,6 +107,11 @@ stopifnot(marks_identical(x[c(3L, NA, 99L)], ref[c(3L, NA, 99L)]))
 stopifnot(marks_identical(x[c(TRUE, FALSE, NA)], ref[c(TRUE, FALSE, NA)]))
 stopifnot(marks_identical(x[0L], ref[0L]), length(x[0L]) == 0L)
 stopifnot(marks_identical(x[c(2.0, 4.0)], ref[c(2.0, 4.0)]))
+# An index above INT_MAX keeps the subscript real, so R passes 9.5 through; it
+# truncates to the last element. 32-bit R rejects such an index.
+if (.Machine$sizeof.pointer == 8L) {
+  stopifnot(marks_identical(x[c(length(ref) + 0.5, 3e9)], ref[c(length(ref) + 0.5, 3e9)]))
+}
 stopifnot(identical(names(x[c(2L, 5L)]), names(ref[c(2L, 5L)])))
 for (i in 1:25) {
   idx <- sample(c(seq_along(ref), NA, 50L), size = sample(0:12, 1), replace = TRUE)

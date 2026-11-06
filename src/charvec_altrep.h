@@ -128,7 +128,8 @@ inline SEXP charport_sexp_guard(const char * op, Fun fun) {
 //   [u64 n][u32 size x n][u8 cetype_ext x n][bytes]
 //
 // It is written little-endian (flag 1) on every host. A body with flag 2 is
-// big-endian and is still read. charpack's data1 is the same packed body.
+// big-endian and is still read. charpack uses its own layout, with end offsets
+// rather than sizes (see charpack_altrep.h).
 //
 // CPV2 is only written in a UTF-8 locale when it holds native records, so
 // they are UTF-8 text. CPV1 (charport 0.1) could come from any locale; its
@@ -425,8 +426,9 @@ inline cpv::Store * subset_store(
   } else {
     for(R_xlen_t i = 0; i < output_length; ++i) {
       const double one_based = real_indices[i];
+      // A real subscript truncates, as in R, so 3.5 selects element 3.
       if(R_FINITE(one_based) && one_based >= 1.0 &&
-         one_based <= static_cast<double>(source_length)) {
+         one_based < static_cast<double>(source_length) + 1.0) {
         copy_element(static_cast<size_t>(i),
                      static_cast<R_xlen_t>(one_based) - 1);
       }
