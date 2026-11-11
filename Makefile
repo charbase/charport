@@ -74,8 +74,13 @@ rhub-platforms:
 doc:
 	Rscript -e 'roxygen2::roxygenise(roclets = "rd")'
 
+# R CMD build copies the whole tree, following symlinks, before it applies
+# .Rbuildignore. The vignette and pkgdown targets keep Quarto's cache under
+# local/cache, where Quarto leaves a symlink; on a filesystem that refuses to
+# follow symlinks (nosymfollow) the copy then fails. Drop the link first.
 $(BUILD): clean-native doc
 	rm -f $(BUILD)
+	rm -f local/cache/deno/node_compat_bin/node
 	R CMD build .
 	$(MAKE) clean-native
 
@@ -158,9 +163,9 @@ pkgdown: clean-native clean-pkgdown doc
 	  IN_PKGDOWN=true Rscript -e 'pkgdown::build_site(new_process = FALSE, install = FALSE, quiet = FALSE, override = list(home = list(sidebar = FALSE)))'
 	Rscript tools/quarto-tabsets-to-bootstrap.R docs/articles/*.html
 	# pkgdown turns every root-level .md into a page and its file list is hard
-	# coded, so CLAUDE.md becomes CLAUDE.html with no way to configure it out.
+	# coded, so AGENTS.md becomes AGENTS.html with no way to configure it out.
 	# The CI workflow that publishes the site drops the same two files.
-	rm -f docs/CLAUDE.html docs/CLAUDE.md
+	rm -f docs/AGENTS.html docs/AGENTS.md docs/CLAUDE.html docs/CLAUDE.md
 	$(MAKE) clean-native
 
 pkgdown-index:

@@ -42,6 +42,32 @@ Encoding(w_bytes) <- "bytes"
 mixed <- c("plain", NA, "", w_utf8[1:20], w_latin1[21:40], w_bytes, NA, "",
            strrep("long", 1000))
 
+catn("charvec conversion copies bytes without materializing the source")
+native <- rawToChar(as.raw(c(0xc3, 0xa9)))
+Encoding(native) <- "unknown"
+for (values in list(character(), c(mixed, native), rep(c(mixed, native), 20L))) {
+  source <- as_charvec(values)
+  converted <- as_charpack(source)
+  stopifnot(!charport_info(source)$is_materialized,
+            charpack_state(converted) == "filled",
+            bytes_identical(converted, values))
+  for (n_slices in c(0L, 7L)) {
+    for (wide in c(FALSE, TRUE)) {
+      converted <- charpack_from_slices(source, n_slices, wide)
+      stopifnot(!charport_info(source)$is_materialized,
+                charpack_state(converted) == "filled",
+                bytes_identical(converted, values))
+    }
+  }
+}
+
+catn("unregistered deferred strings retain the broker's R fallback")
+source <- as.character(seq_len(1000L))
+stopifnot(!charport_info(source)$is_materialized)
+converted <- as_charpack(source)
+stopifnot(charport_info(source)$is_materialized,
+          identical(as.character(converted), as.character(seq_len(1000L))))
+
 catn("compiling consumers (R CMD SHLIB)")
 dll <- compile_test_dso("charport_consumer.cpp", label = "charport wrapper consumer")
 cpc_dll <- compile_test_dso("charpack_consumer.cpp", label = "charpack consumer")

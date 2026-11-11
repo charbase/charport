@@ -14,44 +14,8 @@
 #include <string>
 #include <type_traits>
 
-#if defined(__AVX2__)
-#include <immintrin.h>
-#endif
-
 namespace charport {
 namespace internal {
-
-#if defined(__AVX2__)
-inline bool check_ascii(const void * ptr, size_t len) noexcept {
-  const uint8_t * p8 = reinterpret_cast<const uint8_t*>(ptr);
-  size_t i = 0;
-  if(len >= 32) {
-    __m256i sum = _mm256_setzero_si256();
-    for(; i + 32 <= len; i += 32) {
-      __m256i load = _mm256_lddqu_si256(reinterpret_cast<const __m256i*>(p8 + i));
-      sum = _mm256_or_si256(sum, load);
-    }
-    if(_mm256_movemask_epi8(sum) != 0) return false;
-  }
-  if(len >= i + 16) {
-    __m128i load = _mm_lddqu_si128(reinterpret_cast<const __m128i*>(p8 + i));
-    if(_mm_movemask_epi8(load) != 0) return false;
-    i += 16;
-  }
-  for(; i < len; ++i) {
-    if(p8[i] > 127) return false;
-  }
-  return true;
-}
-#else
-inline bool check_ascii(const void * ptr, size_t len) noexcept {
-  const uint8_t * p8 = reinterpret_cast<const uint8_t*>(ptr);
-  for(size_t i = 0; i < len; ++i) {
-    if(p8[i] > 127) return false;
-  }
-  return true;
-}
-#endif
 
 constexpr uint32_t r_string_size_max() noexcept {
   return static_cast<uint32_t>(std::numeric_limits<int>::max());

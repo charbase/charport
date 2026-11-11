@@ -899,8 +899,8 @@ SEXP C_consumer_builder_direct(void) {
     char * first = store.slices.front_data();
     std::memcpy(first, "alphabeta", 9);
 
-    char * second = store.slices.push_front(5);
-    std::memcpy(second, "gamma", 5);
+    char * second = store.slices.push_front(10);
+    std::memcpy(second, "gammagamma", 10);
 
     if(store.slices.data_slice(0) != second || store.slices.data_slice(1) != first) {
       throw std::runtime_error("unexpected direct slice order");
@@ -912,9 +912,9 @@ SEXP C_consumer_builder_direct(void) {
     store.records.set(0, first, 5, CETYPE_EXT_ASCII);
     store.records.set(1, first + 5, 4, CETYPE_EXT_ASCII);
     store.records.set_na(2);
-    store.records.set(3, first, 0, CETYPE_EXT_ASCII);
+    store.records.set(3, charport::charvec::components::empty_data(), 0, CETYPE_EXT_ASCII);
     store.records.set(4, second, 5, CETYPE_EXT_ASCII);
-    store.records.set(5, second, 5, CETYPE_EXT_ASCII);
+    store.records.set(5, second + 5, 5, CETYPE_EXT_ASCII);
 
     return charport::charvec::wrap(std::move(store));
   });
@@ -1041,6 +1041,28 @@ SEXP C_consumer_growable_state(void) {
     charport::charvec::Store fixed_store = fixed.release_store();
     ok = ok && fixed_store.records.capacity() == fixed_store.records.size();
 
+    return charport_consumer::unwind_protect([ok]() -> SEXP {
+      return Rf_ScalarLogical(ok ? TRUE : FALSE);
+    });
+  });
+}
+
+// is_ascii with one non-ASCII byte at every position, for every length
+// through four 64-byte blocks.
+SEXP C_consumer_is_ascii(void) {
+  return test_entrypoint_boundary("is_ascii", [&]() -> SEXP {
+    std::string text(300, 'a');
+    bool ok = true;
+    for(size_t len = 0; len <= text.size(); ++len) {
+      ok = ok && charport::is_ascii(text.data(), len);
+      for(size_t at = 0; at < len; ++at) {
+        text[at] = static_cast<char>(0x80 + at % 128);
+        ok = ok && !charport::is_ascii(text.data(), len);
+        ok = ok && charport::is_ascii(text.data(), at);
+        ok = ok && charport::is_ascii(text.data() + at + 1, len - at - 1);
+        text[at] = 'a';
+      }
+    }
     return charport_consumer::unwind_protect([ok]() -> SEXP {
       return Rf_ScalarLogical(ok ? TRUE : FALSE);
     });

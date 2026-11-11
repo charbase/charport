@@ -1,5 +1,24 @@
+if (!exists(".charport_test_dll", inherits = FALSE)) {
+  build_helper <- file.path("helpers", "build_dso.R")
+  if (!file.exists(build_helper)) build_helper <- file.path("tests", build_helper)
+  source(build_helper)
+  # White-box tests need the source headers. R CMD check retains the unpacked
+  # source beside tests/ in 00_pkg_src; direct Makefile runs use this checkout.
+  candidates <- c(Sys.getenv("CHARPORT_SOURCE_DIR"), ".", "..", "../..",
+                  "../00_pkg_src/charport", "../../charport")
+  candidates <- candidates[nzchar(candidates)]
+  roots <- candidates[file.exists(file.path(candidates, "src", "charpack_altrep.h"))]
+  if (!length(roots)) stop("charport source headers are required for white-box tests")
+  source_root <- normalizePath(roots[[1L]], winslash = "/", mustWork = TRUE)
+  .charport_test_dll <- compile_test_dso(
+    "internal_calls.cpp",
+    sprintf('PKG_CPPFLAGS += -I"%s"', file.path(source_root, "src")),
+    "charport white-box test helpers"
+  )
+}
+
 charport_native_symbol <- function(name) {
-  get(name, envir = asNamespace("charport"), inherits = FALSE)
+  getNativeSymbolInfo(name, PACKAGE = .charport_test_dll[["name"]])
 }
 
 charvec_alloc <- function(n) {

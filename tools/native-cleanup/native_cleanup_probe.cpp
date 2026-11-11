@@ -28,6 +28,13 @@ static_assert(sizeof(std::size_t) == 8,
               "the allocation wrappers require 64-bit size_t");
 
 R_altrep_class_t charvec_altrep::class_t;
+R_altrep_class_t charpack_altrep::class_t;
+
+// The included package source expects this private hook from the registry.
+// Delegate to the installed broker, whose callable follows the active locale.
+extern "C" int charport_native_is_utf8_impl(void) {
+  return charport::native_is_utf8() ? 1 : 0;
+}
 
 namespace {
 
@@ -156,6 +163,7 @@ extern "C" DL_FUNC native_cleanup_get_ccallable(
 
 extern "C" void R_init_native_cleanup_probe(DllInfo * dll) {
   charvec_altrep::Init(dll);
+  charpack_altrep::Init(dll);
   error_index_altrep_class = R_make_altinteger_class(
     "native_cleanup_error_index", "native_cleanup_probe", dll);
   R_set_altrep_Length_method(error_index_altrep_class, error_index_length);
@@ -179,7 +187,12 @@ extern "C" SEXP native_cleanup_count(void) {
 }
 
 extern "C" SEXP native_cleanup_alloc(SEXP n) {
-  return C_charvec_alloc(n);
+  const double size = Rf_asReal(n);
+  if(ISNAN(size) || size < 0 ||
+     size > static_cast<double>(std::numeric_limits<R_xlen_t>::max())) {
+    Rf_error("invalid length");
+  }
+  return charport_charvec_alloc_na_impl(static_cast<R_xlen_t>(size));
 }
 
 extern "C" SEXP native_cleanup_as(SEXP x) {

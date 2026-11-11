@@ -171,6 +171,8 @@ inline SEXP wrap_with_cpp11(Store && store) {
 }
 #endif
 
+// Fixed-size builders allocate uninitialized records. Set every output index
+// (including NA) before release_store() or to_sexp().
 class Builder {
 public:
   explicit Builder(R_xlen_t n)
@@ -243,6 +245,7 @@ private:
   builder_detail::Shard shard_;
 };
 
+// Each output index must be filled by its owning shard, including NA entries.
 class ParallelBuilder {
 public:
   ParallelBuilder(R_xlen_t n, size_t n_shards) : store_(), shards_() {

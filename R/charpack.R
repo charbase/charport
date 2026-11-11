@@ -39,7 +39,7 @@ as_charpack <- function(x) {
   if (!is.character(x)) {
     x <- as.character(x)
   }
-  ret <- .Call(C_charpack_fill_from, .Call(C_charpack_placeholder), x, 0L, FALSE)
+  ret <- .Call(C_as_charpack, x)
   if (!is.null(nm) && length(nm) == length(ret)) {
     names(ret) <- nm
   }

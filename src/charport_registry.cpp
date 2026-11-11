@@ -475,12 +475,7 @@ extern "C" SEXP C_charport_info(SEXP x) {
   return out;
 }
 
-extern "C" SEXP C_unregister_charvec(void) {
-  charport_unregister_altrep(charvec_altrep::class_t);
-  return R_NilValue;
-}
-
-extern "C" SEXP C_register_charvec(void) {
+extern "C" void charport_register_charvec_impl(void) {
   charport_register_altrep(
     charvec_altrep::class_t,
     charport_reader_state_fns{charvec_altrep::reader_init, nullptr},
@@ -498,7 +493,6 @@ extern "C" SEXP C_register_charvec(void) {
     },
     charport_reader_capabilities{true, true}
   );
-  return R_NilValue;
 }
 
 extern "C" void charport_registry_init(DllInfo * dll) {

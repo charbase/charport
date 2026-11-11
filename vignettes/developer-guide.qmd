@@ -246,7 +246,7 @@ cetype_ext_t enc = Rf_charIsASCII(x)
   : charport_cetype_ext(static_cast<uint8_t>(Rf_getCharCE(x)));
 ```
 
-That cast preserves the encoding marks for native, UTF-8, Latin-1 and byte strings. `Rf_charIsASCII()` needs R 4.5 or later; before that, scan the bytes.
+That cast preserves the encoding marks for native, UTF-8, Latin-1 and byte strings.
 
 What a native-tagged string means depends on the session's locale, which `Sys.setlocale()` can change. `charport_native_is_utf8()` (C++: `charport::native_is_utf8()`) reports whether R currently reads native strings as UTF-8. It follows `Sys.setlocale()`, so call it at the start of each operation rather than caching the answer. On R 4.5 or later it costs a few nanoseconds; older versions run a short iconv probe. Call it from the main thread.
 
@@ -526,6 +526,8 @@ SEXP out = charvec::wrap(std::move(store));
 
 You can use `charvec::ParallelBuilder` when several workers fill disjoint ranges of one fixed-length vector, via `RcppParallel`, `RcppThread`, `OpenMP`, etc. It keeps separate slice state for each shard while sharing the final record table, and then combines the slices on the main thread.
 
+Each worker must fill every index in its assigned range, including missing entries with `set_na(worker_id, i)`.
+
 ``` cpp
 charvec::ParallelBuilder b(n, n_workers);
 
@@ -565,7 +567,7 @@ SEXP out = b.to_sexp();
 
 ### Using `Store` directly
 
-`charvec::Store` is a public struct with `records` and `slices`. The constructor allocates a fixed record table and, when `initial_slice_bytes` is nonzero, one slice of storage. The caller must keep every record pointer, length, encoding, and slice consistent.
+`charvec::Store` is a public struct with `records` and `slices`. The constructor allocates a fixed record table and, when `initial_slice_bytes` is nonzero, one slice of storage.
 
 Example:
 

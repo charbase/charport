@@ -143,13 +143,12 @@ struct RecordTable {
   RecordTable() noexcept
     : ptrs_(), lens_(), encs_(), vector_length_(0), capacity_(0) {}
 
+  // Allocates uninitialized records. The caller must set every record before
+  // reading, copying, or publishing the table, including explicit NA entries.
   explicit RecordTable(size_t vector_length)
     : RecordTable() {
     reserve(vector_length);
     vector_length_ = vector_length;
-    for(size_t i = 0; i < vector_length; ++i) {
-      set_na(i);
-    }
   }
 
   RecordTable(const RecordTable & other)
@@ -283,6 +282,11 @@ private:
 
 } // namespace components
 
+// In a finished Store, every non-missing, non-empty record points into the
+// owned slices and has an exclusive byte range: different records must not
+// overlap, even when their text is identical. Element assignment can rewrite
+// a record's bytes in place. Empty strings may share empty_data(); NA records
+// share the null pointer and have no bytes.
 class Store {
 public:
   components::SliceChain slices;

@@ -35,7 +35,7 @@ inline bool charsxp_is_ascii(SEXP x) {
   // Before 4.5 there is no CRAN-safe accessor for the CHARSXP ASCII flag, so
   // this scans the bytes (O(len) per native-encoded string). Reading the
   // levels bit directly would be free but is not API-safe; revisit later.
-  return check_ascii(CHAR(x), static_cast<size_t>(Rf_xlength(x)));
+  return charport::is_ascii(CHAR(x), static_cast<size_t>(Rf_xlength(x)));
 #endif
 }
 
@@ -353,6 +353,7 @@ inline cpv::Store rebuild_store(const cpc::RecordTable & source) {
       for(size_t k = i; k < j; ++k) {
         const charport_strview record = source.view(k);
         if(record.is_na()) {
+          out.records.set_na(k);
           continue;
         }
         if(record.len == 0) {
@@ -366,7 +367,9 @@ inline cpv::Store rebuild_store(const cpc::RecordTable & source) {
     } else {
       for(size_t k = i; k < j; ++k) {
         const charport_strview record = source.view(k);
-        if(!record.is_na() && record.len == 0) {
+        if(record.is_na()) {
+          out.records.set_na(k);
+        } else if(record.len == 0) {
           out.records.set(k, cpc::empty_data(), 0, record.enc);
         }
       }
@@ -388,15 +391,6 @@ inline cpv::Store * heap_store(cpv::Store && source) {
   return new cpv::Store(std::move(source));
 }
 
-inline cpv::Store * store_from_chars(R_xlen_t n, const SEXP * ptr) {
-  cpv::Builder builder(n);
-  for(R_xlen_t i = 0; i < n; ++i) {
-    builder.set(i, cpi::charsxp_to_view(ptr[i]));
-  }
-  cpv::Store store = builder.release_store();
-  return heap_store(std::move(store));
-}
-
 inline cpv::Store * duplicate_store(const cpv::Store & source) {
   cpv::Store store = deep_copy_store(source);
   return heap_store(std::move(store));
@@ -408,12 +402,11 @@ inline cpv::Store * subset_store(
   cpv::Builder out(output_length);
   auto copy_element = [&](size_t out_i, R_xlen_t zero_based) {
     if(zero_based < 0 || zero_based >= source_length) {
+      out.set_na(static_cast<R_xlen_t>(out_i));
       return;
     }
     const charport_strview record = source.view(static_cast<size_t>(zero_based));
-    if(!record.is_na()) {
-      out.set(static_cast<R_xlen_t>(out_i), record);
-    }
+    out.set(static_cast<R_xlen_t>(out_i), record);
   };
 
   if(integer_indices != nullptr) {
@@ -421,6 +414,8 @@ inline cpv::Store * subset_store(
       if(integer_indices[i] != NA_INTEGER) {
         copy_element(static_cast<size_t>(i),
                      static_cast<R_xlen_t>(integer_indices[i]) - 1);
+      } else {
+        out.set_na(i);
       }
     }
   } else {
@@ -431,6 +426,8 @@ inline cpv::Store * subset_store(
          one_based < static_cast<double>(source_length) + 1.0) {
         copy_element(static_cast<size_t>(i),
                      static_cast<R_xlen_t>(one_based) - 1);
+      } else {
+        out.set_na(i);
       }
     }
   }
@@ -471,6 +468,7 @@ inline cpv::Store * unserialize_store(const charvec_serialized_layout & layout) 
   return heap_store(std::move(store));
 }
 
+// In-place reuse below depends on Store records owning disjoint byte ranges.
 inline char * store_reserve(cpv::Store & store, size_t idx, size_t len,
                             cetype_ext_t enc) {
   const int stored_len = cpc::checked_string_size(len, "stored string length");
@@ -509,9 +507,7 @@ inline void store_assign(cpv::Store & store, size_t idx,
   }
 }
 
-inline void compact_store(cpv::Store & store) {
-  store = rebuild_store(store.records);
-}
+
 
 } // namespace charvec_detail
 

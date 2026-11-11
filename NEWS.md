@@ -1,3 +1,18 @@
+# charport 0.3.0 (2026-11-10)
+
+* `RecordTable(n)` and fixed-size builders allocate uninitialized records.
+  Callers must fill every output index, including explicit missing values.
+  `charvec::alloc_na(n)` continues to initialize every element to NA.
+* New `charport::is_ascii(ptr, len)` in `charport/ascii.h`: an R-free ASCII
+  scan that is fast on ASCII text and stops early on non-ASCII text.
+* Test-only native entry points and forced-wide charpack controls now live in
+  a test-built library. `as_charpack()` has a dedicated production converter.
+* `as_charvec()` and `as_charpack()` read registered ALTREP inputs through the
+  broker, so conversion between charvec and charpack keeps the source packed.
+  Unregistered ALTREP inputs retain the ordinary R fallback.
+* Document that non-empty records in a finished `charvec::Store` must have
+  disjoint byte ranges, because element assignment can reuse those bytes.
+
 # charport 0.2.0 (2026-11-06)
 
 * New `charpack` class: a compact ALTREP character vector whose strings live

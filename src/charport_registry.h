@@ -33,28 +33,16 @@ SEXP charport_charpack_fill_materialized_na_impl(SEXP x, R_xlen_t n);
 int charport_is_charpack_impl(SEXP x);
 
 SEXP C_as_charvec(SEXP x);
-SEXP C_charvec_alloc(SEXP n);
+SEXP C_as_charpack(SEXP x);
+void charport_register_charvec_impl(void);
+void charport_register_charpack_impl(void);
 SEXP C_is_charvec(SEXP x);
 SEXP C_charport_materialize(SEXP x);
-SEXP C_charvec_stats(SEXP x);
-SEXP C_charvec_assign(SEXP x, SEXP i, SEXP value);
-SEXP C_charvec_compact(SEXP x);
 
 SEXP C_charport_classes(void);
 SEXP C_charport_info(SEXP x);
-SEXP C_unregister_charvec(void);
-SEXP C_register_charvec(void);
 
-SEXP C_charpack_placeholder(void);
-SEXP C_charpack_fill_from(SEXP x, SEXP strings, SEXP n_slices, SEXP wide);
-SEXP C_charpack_fill_materialized_na(SEXP x, SEXP n);
 SEXP C_is_charpack(SEXP x);
-SEXP C_charpack_state(SEXP x);
-SEXP C_charpack_data1(SEXP x);
-SEXP C_charpack_serialized_state(SEXP x);
-SEXP C_charpack_from_state(SEXP state);
-SEXP C_unregister_charpack(void);
-SEXP C_register_charpack(void);
 
 void charport_registry_init(DllInfo * dll);
 

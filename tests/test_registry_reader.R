@@ -3,6 +3,12 @@
 
 suppressPackageStartupMessages(library(charport))
 
+stopifnot(identical(
+  sort(names(getDLLRegisteredRoutines(getLoadedDLLs()[["charport"]])$.Call)),
+  sort(c("C_as_charvec", "C_as_charpack", "C_is_charvec", "C_is_charpack",
+         "C_charport_materialize", "C_charport_classes", "C_charport_info"))
+))
+
 catn <- function(...) cat(..., "\n")
 
 helper <- file.path("helpers", "build_dso.R")

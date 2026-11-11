@@ -3,6 +3,7 @@
 
 // Common C++ API. Include charport.h from package code.
 
+#include "ascii.h"
 #include "interop/reader.h"
 #include "charvec/builder.h"
 #include "charvec/writer.h"

@@ -36,8 +36,10 @@ inline SEXP alloc_na(R_xlen_t n) {
 //
 // A Reader leaves no trace, so use it only on a vector the caller owns, such as
 // one fresh from alloc_na(). Nothing may read the vector while it is filled,
-// and records must point into the Store's slices (Writer does this). The
-// pointer is valid until the vector is read from R or collected.
+// and non-empty records must point into disjoint ranges of the Store's slices
+// (Writer does this): element assignment reuses those bytes in place. Empty
+// strings may share empty_data(). The pointer is valid until the vector is
+// read from R or collected.
 inline attribute_hidden Store * get_store(SEXP x) noexcept {
   static charport_charvec_get_store_t fn = nullptr;
   if(fn == nullptr) {

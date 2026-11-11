@@ -74,6 +74,26 @@ x <- as_charvec(c("a", b))
 stopifnot(identical(Encoding(as.character(x)), c("unknown", "bytes")))
 stopifnot(identical(charToRaw(as.character(x)[[2L]]), as.raw(0xE9)))
 
+catn("charpack conversion copies bytes without materializing the source")
+native <- rawToChar(as.raw(c(0xc3, 0xa9)))
+Encoding(native) <- "unknown"
+for (values in list(character(), c(mixed_in, b, native),
+                    rep(c(mixed_in, b, native), 300L))) {
+  source <- as_charpack(values)
+  stopifnot(charpack_state(source) == "filled")
+  converted <- as_charvec(source)
+  stopifnot(charpack_state(source) == "filled", is_charvec(converted))
+  stopifnot(marks_identical(converted, values))
+  stopifnot(charpack_state(source) == "filled")
+}
+
+catn("unregistered deferred strings retain the broker's R fallback")
+source <- as.character(seq_len(1000L))
+stopifnot(!charport_info(source)$is_materialized)
+converted <- as_charvec(source)
+stopifnot(charport_info(source)$is_materialized,
+          identical(as.character(converted), as.character(seq_len(1000L))))
+
 catn("element access and coercions")
 ref <- enc2utf8(c("10", "20", w_utf8[[1L]], NA, ""))
 x <- as_charvec(ref)

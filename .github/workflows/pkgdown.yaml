@@ -53,7 +53,7 @@ jobs:
 
           # pkgdown turns every root-level .md into a page and its file list is
           # hard coded, so the agent instructions would be published too.
-          unlink(c("docs/CLAUDE.html", "docs/CLAUDE.md"))
+          unlink(c("docs/AGENTS.html", "docs/AGENTS.md", "docs/CLAUDE.html", "docs/CLAUDE.md"))
         shell: Rscript {0}
 
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3

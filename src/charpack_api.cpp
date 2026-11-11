@@ -64,14 +64,14 @@ void write_records(size_t count, const char * const * ptrs, const int * lengths,
 }
 
 // Allocates data1 and writes its head, end offsets and encodings. The offsets
-// are u32 unless the payload needs u64, or force_wide asks for it (tests).
+// are u32 unless the payload needs u64.
 // Nothing allocates after data1, so it is returned unprotected for the caller
 // to protect (rchk does not follow a PROTECT across a return).
 SEXP alloc_data1(R_xlen_t n, const char * const * ptrs, const int * lengths,
-                 const cetype_ext_t * encodings, size_t payload, bool force_wide,
+                 const cetype_ext_t * encodings, size_t payload,
                  const char * op) {
   const size_t count = static_cast<size_t>(n);
-  const bool wide = force_wide || charpack_layout::needs_wide(payload);
+  const bool wide = charpack_layout::needs_wide(payload);
   const size_t total = charpack_layout::total_bytes(count, payload, wide);
   if(total == 0) {
     Rf_error("charport charpack %s: vector exceeds the maximum raw vector size", op);
@@ -94,7 +94,7 @@ char * payload_start(SEXP data1) {
 }
 
 void fill_views(SEXP x, R_xlen_t n, const char * const * ptrs, const int * lengths,
-                const cetype_ext_t * encodings, bool force_wide) {
+                const cetype_ext_t * encodings) {
   const char * op = "fill_views";
   check_unfilled(x, op);
   if(n < 0) {
@@ -104,7 +104,7 @@ void fill_views(SEXP x, R_xlen_t n, const char * const * ptrs, const int * lengt
     Rf_error("charport charpack %s: input arrays must not be NULL", op);
   }
   const size_t payload = checked_payload(n, ptrs, lengths, encodings, op);
-  SEXP data1 = PROTECT(alloc_data1(n, ptrs, lengths, encodings, payload, force_wide, op));
+  SEXP data1 = PROTECT(alloc_data1(n, ptrs, lengths, encodings, payload, op));
   char * dest = payload_start(data1);
   for(R_xlen_t i = 0; i < n; ++i) {
     if(cpi::view_is_na(ptrs[i], lengths[i], encodings[i]) || lengths[i] == 0) {
@@ -118,8 +118,7 @@ void fill_views(SEXP x, R_xlen_t n, const char * const * ptrs, const int * lengt
 }
 
 void fill_slices(SEXP x, R_xlen_t n, const int * lengths, const cetype_ext_t * encodings,
-                 R_xlen_t n_slices, const char * const * slices, const size_t * slice_bytes,
-                 bool force_wide) {
+                 R_xlen_t n_slices, const char * const * slices, const size_t * slice_bytes) {
   const char * op = "fill_slices";
   check_unfilled(x, op);
   if(n < 0 || n_slices < 0) {
@@ -147,7 +146,7 @@ void fill_slices(SEXP x, R_xlen_t n, const int * lengths, const cetype_ext_t * e
              op, static_cast<unsigned long long>(sliced),
              static_cast<unsigned long long>(payload));
   }
-  SEXP data1 = PROTECT(alloc_data1(n, nullptr, lengths, encodings, payload, force_wide, op));
+  SEXP data1 = PROTECT(alloc_data1(n, nullptr, lengths, encodings, payload, op));
   char * dest = payload_start(data1);
   for(R_xlen_t k = 0; k < n_slices; ++k) {
     if(slice_bytes[k] > 0) {
@@ -168,13 +167,13 @@ extern "C" SEXP charport_charpack_placeholder_impl(void) {
 extern "C" void charport_charpack_fill_views_impl(
     SEXP x, R_xlen_t n, const char * const * ptrs, const int * lengths,
     const cetype_ext_t * encodings) {
-  fill_views(x, n, ptrs, lengths, encodings, false);
+  fill_views(x, n, ptrs, lengths, encodings);
 }
 
 extern "C" void charport_charpack_fill_slices_impl(
     SEXP x, R_xlen_t n, const int * lengths, const cetype_ext_t * encodings,
     R_xlen_t n_slices, const char * const * slices, const size_t * slice_bytes) {
-  fill_slices(x, n, lengths, encodings, n_slices, slices, slice_bytes, false);
+  fill_slices(x, n, lengths, encodings, n_slices, slices, slice_bytes);
 }
 
 extern "C" SEXP charport_charpack_fill_materialized_na_impl(SEXP x, R_xlen_t n) {
@@ -196,111 +195,73 @@ extern "C" int charport_is_charpack_impl(SEXP x) {
   return charpack_altrep::is(x) ? 1 : 0;
 }
 
-// R entry points for tests and diagnostics.
+namespace {
 
-extern "C" SEXP C_charpack_placeholder(void) {
-  return charport_charpack_placeholder_impl();
+struct as_charpack_state {
+  charport_reader reader;
+  R_xlen_t n;
+  const char ** ptrs;
+  int * lengths;
+  cetype_ext_t * encodings;
+};
+
+SEXP as_charpack_build(void * data) {
+  const as_charpack_state * state = static_cast<as_charpack_state *>(data);
+  SEXP out = PROTECT(charport_charpack_placeholder_impl());
+  fill_views(out, state->n, state->ptrs, state->lengths, state->encodings);
+  UNPROTECT(1);
+  return out;
 }
 
-// Fills x from an ordinary character vector through fill_views, or through
-// fill_slices with the payload cut into n_slices pieces at arbitrary byte
-// offsets (n_slices <= 0 selects fill_views). wide forces u64 end offsets.
-extern "C" SEXP C_charpack_fill_from(SEXP x, SEXP strings, SEXP n_slices_, SEXP wide_) {
-  if(TYPEOF(strings) != STRSXP) {
-    Rf_error("charport charpack fill_from: strings must be a character vector");
+void as_charpack_release(void * data) {
+  const as_charpack_state * state = static_cast<as_charpack_state *>(data);
+  if(state->reader.release != nullptr) {
+    state->reader.release(state->reader.state);
   }
-  const R_xlen_t n = Rf_xlength(strings);
-  const int n_slices = Rf_asInteger(n_slices_);
-  const bool wide = Rf_asLogical(wide_) == TRUE;
-  const SEXP * src = STRING_PTR_RO(strings);
-  const char ** ptrs = reinterpret_cast<const char **>(R_alloc(static_cast<size_t>(n) + 1, sizeof(const char *)));
-  int * lengths = reinterpret_cast<int *>(R_alloc(static_cast<size_t>(n) + 1, sizeof(int)));
-  cetype_ext_t * encodings =
-    reinterpret_cast<cetype_ext_t *>(R_alloc(static_cast<size_t>(n) + 1, sizeof(cetype_ext_t)));
-  size_t payload = 0;
-  for(R_xlen_t i = 0; i < n; ++i) {
-    const charport_strview view = cpi::charsxp_to_view(src[i]);
-    ptrs[i] = view.ptr;
-    lengths[i] = view.len;
-    encodings[i] = view.enc;
-    if(!view.is_na()) {
-      payload += static_cast<size_t>(view.len);
-    }
-  }
-  if(n_slices <= 0 || n_slices == NA_INTEGER) {
-    fill_views(x, n, ptrs, lengths, encodings, wide);
-    return x;
-  }
-  char * joined = R_alloc(payload + 1, 1);
-  char * p = joined;
-  for(R_xlen_t i = 0; i < n; ++i) {
-    if(!cpi::view_is_na(ptrs[i], lengths[i], encodings[i]) && lengths[i] > 0) {
-      std::memcpy(p, ptrs[i], static_cast<size_t>(lengths[i]));
-      p += lengths[i];
-    }
-  }
-  const char ** slices = reinterpret_cast<const char **>(R_alloc(static_cast<size_t>(n_slices), sizeof(const char *)));
-  size_t * slice_bytes = reinterpret_cast<size_t *>(R_alloc(static_cast<size_t>(n_slices), sizeof(size_t)));
-  size_t offset = 0;
-  for(int k = 0; k < n_slices; ++k) {
-    const size_t end = payload * static_cast<size_t>(k + 1) / static_cast<size_t>(n_slices);
-    slices[k] = joined + offset;
-    slice_bytes[k] = end - offset;
-    offset = end;
-  }
-  fill_slices(x, n, lengths, encodings, n_slices, slices, slice_bytes, wide);
-  return x;
 }
 
-extern "C" SEXP C_charpack_fill_materialized_na(SEXP x, SEXP n) {
-  return charport_charpack_fill_materialized_na_impl(x, static_cast<R_xlen_t>(Rf_asReal(n)));
+} // namespace
+
+// One read of the whole vector through the broker, then one copy into the
+// charpack, which needs every length before it can allocate. Copying through
+// an intermediate Store was measured twice as slow. The view arrays come from
+// R_alloc and are allocated before the borrow starts, so no R error can leak
+// it: from resolve() to R_ExecWithCleanup nothing calls R.
+extern "C" SEXP C_as_charpack(SEXP x) {
+  if(TYPEOF(x) != STRSXP) {
+    Rf_error("charport as_charpack: x must be a character vector");
+  }
+  const R_xlen_t n = Rf_xlength(x);
+  as_charpack_state state;
+  state.n = n;
+  state.ptrs = reinterpret_cast<const char **>(R_alloc(static_cast<size_t>(n) + 1, sizeof(const char *)));
+  state.lengths = reinterpret_cast<int *>(R_alloc(static_cast<size_t>(n) + 1, sizeof(int)));
+  state.encodings = reinterpret_cast<cetype_ext_t *>(R_alloc(static_cast<size_t>(n) + 1, sizeof(cetype_ext_t)));
+  state.reader = charport::resolve(x);
+
+  int status = CHARPORT_STATUS_OK;
+  if(state.reader.n != n) {
+    status = CHARPORT_STATUS_ERROR;
+  } else if(n > 0) {
+    status = state.reader.range.strviews(
+      state.reader.state, 0, n, state.ptrs, state.lengths, state.encodings);
+  }
+  if(status != CHARPORT_STATUS_OK) {
+    as_charpack_release(&state);
+    return charport_sexp_guard("as_charpack", [&]() -> SEXP {
+      charport::detail::check_access(status);
+      return R_NilValue;
+    });
+  }
+  return R_ExecWithCleanup(
+    &as_charpack_build, &state, &as_charpack_release, &state);
 }
 
 extern "C" SEXP C_is_charpack(SEXP x) {
   return Rf_ScalarLogical(charpack_altrep::is(x) ? TRUE : FALSE);
 }
 
-extern "C" SEXP C_charpack_state(SEXP x) {
-  if(!charpack_altrep::is(x)) {
-    return Rf_ScalarString(NA_STRING);
-  }
-  return Rf_mkString(charpack_altrep::state_name(x));
-}
-
-// The filled RAWSXP itself (shared, read only), or NULL.
-extern "C" SEXP C_charpack_data1(SEXP x) {
-  if(!charpack_altrep::is(x)) {
-    return R_NilValue;
-  }
-  return R_altrep_data1(x);
-}
-
-// The serialized state of a filled charpack: data1 itself on a little-endian
-// host.
-extern "C" SEXP C_charpack_serialized_state(SEXP x) {
-  if(!charpack_altrep::is(x) || R_altrep_data1(x) == R_NilValue) {
-    Rf_error("charport charpack serialized_state: x must be a filled charpack");
-  }
-  return charpack_altrep::Serialized_state(x);
-}
-
-// A charpack unserialized from a copy of a state, leaving the caller's intact.
-extern "C" SEXP C_charpack_from_state(SEXP state) {
-  if(TYPEOF(state) != RAWSXP) {
-    Rf_error("charport charpack from_state: state must be a raw vector");
-  }
-  SEXP copy = PROTECT(Rf_duplicate(state));
-  SEXP x = charpack_altrep::Unserialize(R_NilValue, copy);
-  UNPROTECT(1);
-  return x;
-}
-
-extern "C" SEXP C_unregister_charpack(void) {
-  charport_unregister_altrep(charpack_altrep::class_t);
-  return R_NilValue;
-}
-
-extern "C" SEXP C_register_charpack(void) {
+extern "C" void charport_register_charpack_impl(void) {
   charport_register_altrep(
     charpack_altrep::class_t,
     charport_reader_state_fns{charpack_altrep::reader_init, nullptr},
@@ -318,5 +279,4 @@ extern "C" SEXP C_register_charpack(void) {
     },
     charport_reader_capabilities{true, true}
   );
-  return R_NilValue;
 }

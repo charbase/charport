@@ -180,6 +180,42 @@ reader_eval <- function(x, expression, environment = parent.frame()) {
   .Call(consumer_symbol("C_consumer_reader_eval"), x, expression, environment)
 }
 invisible(.Call(consumer_symbol("C_consumer_register_release_test")))
+catn("conversions release registered borrows on success and access failure")
+for (convert in list(as_charvec, as_charpack,
+                     function(x) charpack_from_slices(x, 3L, TRUE))) {
+  before <- release_test_count()
+  converted <- convert(release_test_vector())
+  stopifnot(identical(release_test_count(), before + 1L),
+            identical(as.character(converted), c("alpha", "beta")))
+  for (status in 1:3) {
+    release_test_access_status(status)
+    before <- release_test_count()
+    error <- tryCatch(convert(release_test_vector()), error = identity)
+    release_test_access_status(0L)
+    stopifnot(inherits(error, "error"),
+              identical(release_test_count(), before + 1L))
+  }
+  condition <- structure(
+    list(message = "conversion init failed", call = NULL),
+    class = c("charport_test_error", "error", "condition")
+  )
+  release_test_init_condition(condition)
+  before <- release_test_count()
+  error <- tryCatch(convert(release_test_vector()),
+                    error = identity,
+                    finally = release_test_init_condition(NULL))
+  stopifnot(identical(error, condition),
+            identical(release_test_count(), before))
+}
+placeholder <- charpack_placeholder()
+release_test_access_status(1L)
+before <- release_test_count()
+error <- tryCatch(charpack_fill_from(placeholder, release_test_vector()),
+                  error = identity,
+                  finally = release_test_access_status(0L))
+stopifnot(inherits(error, "error"), charpack_state(placeholder) == "unfilled",
+          identical(release_test_count(), before + 1L))
+
 before <- release_test_count()
 stopifnot(identical(
   as.character(c_reader_roundtrip(release_test_vector())),
@@ -427,6 +463,9 @@ catn("direct Store payload and record access")
 out <- direct_build()
 stopifnot(is_charvec(out))
 stopifnot(marks_identical(out, c("alpha", "beta", NA, "", "gamma", "gamma")))
+out <- direct_build()
+charvec_assign(out, 5L, "omega")
+stopifnot(marks_identical(out, c("alpha", "beta", NA, "", "omega", "gamma")))
 
 catn("growable builder appends discovered-length output")
 stopifnot(isTRUE(growable_state()))
@@ -443,6 +482,7 @@ stopifnot(stats(out)$n_slices > 0, stats(out)$n_slices < 100)
 
 catn("builder error contract (throwing set/reserve, safe abandon)")
 stopifnot(isTRUE(builder_errors()))
+stopifnot(isTRUE(.Call(consumer_symbol("C_consumer_is_ascii"))))
 
 catn("builder edge cases")
 out <- rebuild(charvec(), 1L)
