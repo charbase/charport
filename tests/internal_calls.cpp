@@ -145,7 +145,7 @@ extern "C" SEXP C_unregister_charpack(void) {
 extern "C" SEXP C_register_charpack(void) {
   charport::register_altrep(
     charpack_altrep::class_t,
-    charport_reader_state_fns{charpack_altrep::reader_init, nullptr},
+    charport_reader_state_fns{charpack_altrep::reader_init, charpack_altrep::reader_release},
     charport_reader_range_fns{
       charpack_altrep::reader_strviews_range,
       charpack_altrep::reader_byteviews_range,
@@ -171,7 +171,7 @@ extern "C" SEXP C_unregister_charvec(void) {
 extern "C" SEXP C_register_charvec(void) {
   charport::register_altrep(
     charvec_altrep::class_t,
-    charport_reader_state_fns{charvec_altrep::reader_init, nullptr},
+    charport_reader_state_fns{charvec_altrep::reader_init, charvec_altrep::reader_release},
     charport_reader_range_fns{
       charvec_altrep::reader_strviews_range,
       charvec_altrep::reader_byteviews_range,
@@ -273,5 +273,27 @@ extern "C" SEXP C_charpack_fill_from(
       if(wide) force_wide_charpack(x);
       return x;
     });
+  });
+}
+
+// Readers counted on x's packed data: the charpack head's count or the
+// charvec Store's. NA once materialization has dropped the packed data.
+extern "C" SEXP C_reader_count(SEXP x) {
+  return charport_sexp_guard("reader_count", [&]() -> SEXP {
+    if(charpack_altrep::is(x)) {
+      SEXP data1 = R_altrep_data1(x);
+      if(data1 == R_NilValue) {
+        return Rf_ScalarInteger(NA_INTEGER);
+      }
+      return Rf_ScalarInteger(static_cast<int>(charpack_layout::readers(RAW(data1))));
+    }
+    if(is_charvec_sexp(x)) {
+      cpv::Store * store = charvec_altrep::Ptr(x);
+      if(store == nullptr) {
+        return Rf_ScalarInteger(NA_INTEGER);
+      }
+      return Rf_ScalarInteger(static_cast<int>(charvec_altrep::Owner(store)->readers));
+    }
+    throw std::runtime_error("x must be a charvec or charpack");
   });
 }

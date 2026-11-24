@@ -264,7 +264,7 @@ extern "C" SEXP C_is_charpack(SEXP x) {
 extern "C" void charport_register_charpack_impl(void) {
   charport_register_altrep(
     charpack_altrep::class_t,
-    charport_reader_state_fns{charpack_altrep::reader_init, nullptr},
+    charport_reader_state_fns{charpack_altrep::reader_init, charpack_altrep::reader_release},
     charport_reader_range_fns{
       charpack_altrep::reader_strviews_range,
       charpack_altrep::reader_byteviews_range,

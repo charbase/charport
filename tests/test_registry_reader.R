@@ -173,7 +173,7 @@ stopifnot(info$is_registered)
 stopifnot(info$persistent_views)
 stopifnot(info$concurrent_access)
 stopifnot(info$reentrant)
-stopifnot(!info$stateful_reader)
+stopifnot(info$stateful_reader)  # counts open Readers
 expect_registered_class(x)
 cinfo <- consumer_info(x)
 stopifnot(isTRUE(cinfo$has_class_name))
@@ -287,7 +287,6 @@ stopifnot(charport_classes()$n == n0)
 
 catn("reader release: per-reader state is released")
 register_release_test()
-on.exit(try(unregister_release_test(), silent = TRUE), add = TRUE)
 z <- release_test_vector()
 count0 <- release_test_count()
 n_before_init <- charport_classes()$n
@@ -339,6 +338,102 @@ for (trial in 1:20) {
   stopifnot(!charvec_stats(x)$materialized)
   stopifnot(marks_identical(out, input))
 }
+
+catn("moved-from Reader is empty")
+moved_from <- function(x) .Call(consumer_symbol("C_consumer_moved_from_reader"), x)
+for (x in list(c("a", "b", "c"), as_charvec(c("a", "b", "c")), as_charpack(c("a", "b", "c")))) {
+  stopifnot(identical(moved_from(x), c(0, 1, 0, 1, 3)))
+}
+
+# Each class counts the Readers open on its packed data and keeps that data
+# when the vector materializes during a borrow, so the borrow's views stay
+# valid. reader_count() is NA once materialization has dropped the data.
+readers_across_call <- function(x, k, fn) {
+  .Call(consumer_symbol("C_consumer_readers_across_call"), x, as.integer(k), fn)
+}
+words <- c("alpha", NA, "", "caf\u00e9", "delta")
+constructors <- list(charvec = as_charvec, charpack = as_charpack)
+
+catn("reader count: materializing without an open Reader drops the packed data")
+for (make in constructors) {
+  x <- make(words)
+  stopifnot(identical(reader_count(x), 0L), identical(charport_info(x)$stateful_reader, TRUE))
+  stopifnot(identical(roundtrip(x), words), identical(reader_count(x), 0L))
+  charport_materialize(x)
+  stopifnot(is.na(reader_count(x)), identical(x[], words))
+}
+
+catn("reader count: views stay valid when another reference materializes the vector")
+for (make in constructors) {
+  x <- make(words)
+  y <- x
+  during <- NULL
+  out <- readers_across_call(x, 3L, function() {
+    charport_materialize(y)
+    during <<- reader_count(x)
+  })
+  stopifnot(identical(during, 3L), charport_info(x)$is_materialized)
+  stopifnot(marks_identical(out[[1L]], words), marks_identical(out[[2L]], words))
+  # Released, and the packed data stays with the vector.
+  stopifnot(identical(reader_count(x), 0L), identical(x[], words))
+}
+
+if (getRversion() >= "4.6.0") {
+  catn("reader count: views stay valid when a wrapper materializes the vector")
+  long <- rep(words, 20L)
+  nm <- paste0("n", seq_along(long))
+  for (make in constructors) {
+    x <- make(long)
+    w <- setNames(x, nm)
+    out <- readers_across_call(w, 1L, function() charport_materialize(w))
+    stopifnot(marks_identical(out[[1L]], long), marks_identical(out[[2L]], long))
+    # Whether base R materialized x itself or a copy, x kept its packed data.
+    # Checked before reading x or w from R, which would materialize x now.
+    stopifnot(identical(reader_count(x), 0L))
+    stopifnot(identical(unname(w[]), long), identical(x[], long))
+  }
+}
+
+catn("reader count: a charpack serialized while a Reader is open sends a cleared copy")
+# Bits 52-62 of a head: the top nibble of byte 7 and the low seven bits of
+# byte 8, little-endian. A serialized state is little-endian; data1 is native.
+spare_bits_zero <- function(head, native = FALSE) {
+  if (native && .Platform$endian == "big") head <- rev(head[1:8])
+  bitwAnd(as.integer(head[7L]), 0xF0L) == 0L && bitwAnd(as.integer(head[8L]), 0x7FL) == 0L
+}
+x <- as_charpack(words)
+state <- bytes <- head_during <- NULL
+invisible(readers_across_call(x, 2L, function() {
+  head_during <<- charpack_data1(x)[1:8]  # a copy, taken while 2 Readers are open
+  state <<- charpack_serialized_state(x)
+  bytes <<- serialize(x, NULL)
+}))
+stopifnot(!spare_bits_zero(head_during, native = TRUE), spare_bits_zero(state))
+stopifnot(identical(reader_count(x), 0L), spare_bits_zero(charpack_data1(x), native = TRUE))
+stopifnot(identical(unserialize(bytes), words), identical(charpack_state(unserialize(bytes)), "filled"))
+if (.Platform$endian == "little") {
+  stopifnot(identical(charpack_serialized_state(x), charpack_data1(x)))
+}
+
+catn("reader count: a charpack count saturates at 255 and stays")
+x <- as_charpack(words)
+y <- x
+during <- NULL
+out <- readers_across_call(x, 300L, function() {
+  during <<- reader_count(x)
+  charport_materialize(y)
+})
+stopifnot(identical(during, 255L), marks_identical(out[[2L]], words))
+stopifnot(identical(reader_count(x), 255L), identical(x[], words))
+stopifnot(identical(unserialize(serialize(x, NULL)), words))
+
+catn("reader count: duplicates share a charpack's count")
+x <- as_charpack(words)
+z <- x
+attr(z, "tag") <- "copy"  # duplicates x, sharing its raw vector
+during <- NULL
+invisible(readers_across_call(x, 1L, function() during <<- reader_count(z)))
+stopifnot(identical(during, 1L), identical(reader_count(z), 0L))
 
 dyn.unload(dll[["path"]])
 catn("registry/reader tests passed")

@@ -1164,7 +1164,7 @@ SEXP C_consumer_context_cpp_error(void) {
 
 // C consumers routinely gather STRING_ELT results into C containers (which
 // R's GC cannot see) before storing them, relying on the source vector to
-// keep every element alive — true of any ordinary STRSXP. string_Elt must
+// keep every element alive, as any ordinary STRSXP does. string_Elt must
 // therefore never hand out an unrooted CHARSXP. Run under gctorture to make
 // a violation deterministic.
 SEXP C_consumer_elt_hold_across_alloc(SEXP x) {
@@ -1179,6 +1179,76 @@ SEXP C_consumer_elt_hold_across_alloc(SEXP x) {
   }
   UNPROTECT(1);
   return out;
+}
+
+// A moved-from Reader is empty. Returns the sizes of the moved-from Readers
+// and whether their ranges are empty, then the destination's size:
+// c(size_a, a_empty, size_b, b_empty, size_c).
+SEXP C_consumer_moved_from_reader(SEXP x) {
+  return test_entrypoint_boundary("moved_from_reader", [&]() -> SEXP {
+    charport::Reader a(x);
+    charport::Reader b(std::move(a));
+    charport::Reader c;
+    c = std::move(b);
+    const double out[5] = {
+      static_cast<double>(a.size()), a.begin() == a.end() ? 1.0 : 0.0,
+      static_cast<double>(b.size()), b.begin() == b.end() ? 1.0 : 0.0,
+      static_cast<double>(c.size())
+    };
+    return charport_consumer::unwind_protect([&]() -> SEXP {
+      SEXP result = Rf_allocVector(REALSXP, 5);
+      std::memcpy(REAL(result), out, sizeof(out));
+      return result;
+    });
+  });
+}
+
+// Opens k Readers on x, keeps the first Reader's views, and calls fn() while
+// all k are open. Returns list(views taken before the call, a read through
+// the last Reader after it). A provider whose views survive whatever fn() did
+// to the vector returns the same strings twice.
+SEXP C_consumer_readers_across_call(SEXP x, SEXP k_, SEXP fn) {
+  return test_entrypoint_boundary("readers_across_call", [&]() -> SEXP {
+    const int k = Rf_asInteger(k_);
+    if(k == NA_INTEGER || k < 1) {
+      throw std::runtime_error("k must be a positive integer");
+    }
+    std::vector<charport::Reader> readers;
+    readers.reserve(static_cast<size_t>(k));
+    for(int j = 0; j < k; ++j) {
+      charport_consumer::unwind_protect([&]() -> SEXP {
+        readers.emplace_back(x);
+        return R_NilValue;
+      });
+    }
+    const R_xlen_t n = readers.front().size();
+    charport::StrViews before(n);
+    if(n > 0) {
+      readers.front().views(0, n, before);
+    }
+    charport_consumer::unwind_protect([&]() -> SEXP {
+      SEXP call = PROTECT(Rf_lang1(fn));
+      Rf_eval(call, R_GlobalEnv);
+      UNPROTECT(1);
+      return R_NilValue;
+    });
+    return charport_consumer::unwind_protect([&]() -> SEXP {
+      SEXP out = PROTECT(Rf_allocVector(VECSXP, 2));
+      SEXP first = PROTECT(Rf_allocVector(STRSXP, n));
+      for(R_xlen_t i = 0; i < n; ++i) {
+        SET_STRING_ELT(first, i, make_charsxp(before[i]));
+      }
+      SET_VECTOR_ELT(out, 0, first);
+      SEXP second = PROTECT(Rf_allocVector(STRSXP, n));
+      R_xlen_t i = 0;
+      for(charport::StrView s : readers.back()) {
+        SET_STRING_ELT(second, i++, make_charsxp(s));
+      }
+      SET_VECTOR_ELT(out, 1, second);
+      UNPROTECT(3);
+      return out;
+    });
+  });
 }
 
 } // extern "C"

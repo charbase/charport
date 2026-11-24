@@ -7,17 +7,13 @@
 charport_materialize(x)
 }
 \arguments{
-\item{x}{a character vector (plain, \code{charvec} or \code{charpack}).}
+\item{x}{A character vector.}
 }
 \value{
-\code{x}, invisibly, after forcing materialization.
+\code{x}, invisibly.
 }
 \description{
-Forces a \code{charvec} or \code{charpack} to materialize its R-level strings
-(\code{CHARSXP}s), caching them on the object; the native store or raw payload
-is released. Ordinary character vectors are returned unchanged. This is a diagnostic/escape hatch: code
-that needs guaranteed-plain string storage (for example, before handing a
-vector to C code that bypasses ALTREP accessors) can call it explicitly.
+Materializes a character vector.
 }
 \examples{
 x <- charvec("a", "b")

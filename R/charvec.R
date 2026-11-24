@@ -76,14 +76,10 @@ is_charvec <- function(x) {
 
 #' Force materialization of a character vector
 #'
-#' Forces a `charvec` or `charpack` to materialize its R-level strings
-#' (`CHARSXP`s), caching them on the object; the native store or raw payload
-#' is released. Ordinary character vectors are returned unchanged. This is a diagnostic/escape hatch: code
-#' that needs guaranteed-plain string storage (for example, before handing a
-#' vector to C code that bypasses ALTREP accessors) can call it explicitly.
+#' Materializes a character vector.
 #'
-#' @param x a character vector (plain, `charvec` or `charpack`).
-#' @return `x`, invisibly, after forcing materialization.
+#' @param x A character vector.
+#' @return `x`, invisibly.
 #' @examples
 #' x <- charvec("a", "b")
 #' charport_materialize(x)

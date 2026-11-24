@@ -192,9 +192,9 @@ stopifnot(is_charvec(y), marks_identical(x, y))
 
 catn("serialization round trip through a file")
 tmp <- tempfile(fileext = ".rds")
-on.exit(unlink(tmp), add = TRUE)
 saveRDS(x, tmp)
 y <- readRDS(tmp)
+unlink(tmp)
 stopifnot(is_charvec(y), marks_identical(x, y))
 
 catn("materialized charvec round-trips to a plain character vector")
@@ -207,6 +207,12 @@ catn("charport_materialize is a no-op on plain character vectors")
 stopifnot(identical(charport_materialize(letters), letters))
 err <- tryCatch({charport_materialize(1:3); NULL}, error = identity)
 stopifnot(inherits(err, "error"))
+
+catn("charport_materialize forces base R deferred strings")
+x <- as.character(seq_len(100L))
+stopifnot(!charport_info(x)$is_materialized)
+charport_materialize(x)
+stopifnot(charport_info(x)$is_materialized)
 
 catn("corrupted serialized_state errors cleanly")
 encode_uint <- function(x, size, endian = .Platform$endian) {

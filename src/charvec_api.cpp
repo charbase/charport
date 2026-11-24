@@ -1,12 +1,10 @@
 #include "charvec_altrep.h"
-#include "charpack_altrep.h"
 #include "charport_registry.h"
 
 #include <cstdio>
 #include <exception>
 #include <limits>
 #include <memory>
-#include <stdexcept>
 
 namespace {
 
@@ -101,7 +99,7 @@ extern "C" SEXP C_as_charvec(SEXP x) {
     const R_xlen_t n = Rf_xlength(x);
     const SEXP * src = STRING_PTR_RO(x);
     return charport_sexp_guard("as_charvec", [&]() -> SEXP {
-      cpv::Store * store;
+      charvec_detail::owned_store * store;
       {
         cpv::Builder builder(n);
         for(R_xlen_t i = 0; i < n; ++i) {
@@ -115,7 +113,7 @@ extern "C" SEXP C_as_charvec(SEXP x) {
 
   const charport_reader resolved = charport::resolve(x);
   return charport_sexp_guard("as_charvec", [&]() -> SEXP {
-    cpv::Store * store;
+    charvec_detail::owned_store * store;
     {
       charport::Reader reader(resolved);
       const R_xlen_t n = reader.size();
@@ -142,14 +140,16 @@ extern "C" SEXP charport_charvec_alloc_na_impl(R_xlen_t n) {
     Rf_error("charport charvec alloc_na: negative length");
   }
   return charport_sexp_guard("charvec alloc_na", [&]() -> SEXP {
-    cpv::Store * store = new cpv::Store(static_cast<size_t>(n), 0);
+    charvec_detail::owned_store * store =
+      charvec_detail::heap_store(cpv::Store(static_cast<size_t>(n), 0));
     for(size_t i = 0; i < store->size(); ++i) store->records.set_na(i);
     return charvec_detail::wrap_store_with_cleanup(store);
   });
 }
 
 // No data2 and no Elt cache means R holds no CHARSXP derived from the Store.
-// A Reader leaves no trace, so the caller must own the vector (see writer.h).
+// get_store() cannot see other references to the vector, so the caller must
+// own it (see writer.h).
 extern "C" void * charport_charvec_get_store_impl(SEXP x) {
   if(TYPEOF(x) != STRSXP || ALTREP(x) != TRUE || !is_charvec_sexp(x)) {
     return nullptr;
@@ -169,18 +169,9 @@ extern "C" SEXP C_is_charvec(SEXP x) {
 }
 
 extern "C" SEXP C_charport_materialize(SEXP x) {
-  return charport_sexp_guard("charport_materialize", [&]() -> SEXP {
-    if(is_charvec_sexp(x)) {
-      charvec_altrep::Materialize(x);
-      return x;
-    }
-    if(charpack_altrep::is(x)) {
-      charpack_altrep::Materialize(x);
-      return x;
-    }
-    if(TYPEOF(x) != STRSXP) {
-      throw std::runtime_error("x must be a character vector");
-    }
-    return x;
-  });
+  if(TYPEOF(x) != STRSXP) {
+    Rf_error("charport charport_materialize: x must be a character vector");
+  }
+  (void) STRING_PTR_RO(x);
+  return x;
 }

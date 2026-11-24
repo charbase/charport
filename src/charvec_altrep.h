@@ -22,7 +22,8 @@ namespace cpc = charport::charvec::components;
 extern "C" int charport_native_is_utf8_impl(void);
 
 namespace charvec_detail {
-inline SEXP wrap_store_with_cleanup(cpv::Store * source) noexcept;
+struct owned_store;
+inline SEXP wrap_store_with_cleanup(owned_store * source) noexcept;
 }
 
 namespace charport {
@@ -384,19 +385,29 @@ inline cpv::Store deep_copy_store(const cpv::Store & source) {
   return rebuild_store(source.records);
 }
 
+// The Store behind a charvec, with a count of the Readers open on it. The
+// external pointer holds the Store base, so get_store() and every other user
+// see a plain Store; only charvec_altrep converts back, and every Store it
+// owns was allocated as an owned_store. The count lives here rather than in
+// Store, whose layout is public. Only the main thread changes it.
+struct owned_store : cpv::Store {
+  explicit owned_store(cpv::Store && source) noexcept : cpv::Store(std::move(source)) {}
+  size_t readers = 0;
+};
+
 // The private ALTREP wrapper consumes a heap Store.  Returning the pointer
 // from these native-only helpers lets every Builder/temporary Store finish
 // before R_ExecWithCleanup starts.
-inline cpv::Store * heap_store(cpv::Store && source) {
-  return new cpv::Store(std::move(source));
+inline owned_store * heap_store(cpv::Store && source) {
+  return new owned_store(std::move(source));
 }
 
-inline cpv::Store * duplicate_store(const cpv::Store & source) {
+inline owned_store * duplicate_store(const cpv::Store & source) {
   cpv::Store store = deep_copy_store(source);
   return heap_store(std::move(store));
 }
 
-inline cpv::Store * subset_store(
+inline owned_store * subset_store(
     const cpv::Store & source, R_xlen_t source_length, R_xlen_t output_length,
     const int * integer_indices, const double * real_indices) {
   cpv::Builder out(output_length);
@@ -436,7 +447,7 @@ inline cpv::Store * subset_store(
   return heap_store(std::move(store));
 }
 
-inline cpv::Store * unserialize_store(const charvec_serialized_layout & layout) {
+inline owned_store * unserialize_store(const charvec_serialized_layout & layout) {
   charvec_check_records(layout);
   const unsigned char * size_offset = layout.size_offset;
   const unsigned char * data_offset = layout.data_offset;
@@ -543,13 +554,18 @@ struct charvec_altrep {
 
     // Build the R shell before moving source. After the move, installing the
     // address cannot allocate, so the external pointer owns the Store.
-    cpv::Store * data = new(std::nothrow) cpv::Store(std::move(*source));
+    charvec_detail::owned_store * data =
+      new(std::nothrow) charvec_detail::owned_store(std::move(*source));
     if(data == nullptr) {
       Rf_error("charvec MoveStore: could not allocate Store owner");
     }
-    R_SetExternalPtrAddr(xp, data);
+    R_SetExternalPtrAddr(xp, static_cast<cpv::Store *>(data));
     UNPROTECT(2);
     return out;
+  }
+
+  static charvec_detail::owned_store * Owner(cpv::Store * store) noexcept {
+    return static_cast<charvec_detail::owned_store *>(store);
   }
 
   static void Finalize(SEXP xp) {
@@ -557,7 +573,7 @@ struct charvec_altrep {
     if(ptr == nullptr) {
       return;
     }
-    delete ptr;
+    delete Owner(ptr);
     R_ClearExternalPtr(xp);
   }
 
@@ -598,13 +614,19 @@ struct charvec_altrep {
     return out;
   }
 
+  // A Store with a Reader open stays, so the Reader's views remain valid; the
+  // external pointer's finalizer frees it with the vector.
   static void install_materialized(SEXP vec, SEXP xp, SEXP data2) {
     R_set_altrep_data2(vec, data2);
-    Finalize(xp);
+    cpv::Store * store = static_cast<cpv::Store *>(R_ExternalPtrAddr(xp));
+    if(store != nullptr && Owner(store)->readers == 0) {
+      Finalize(xp);
+    }
     R_SetExternalPtrProtected(xp, R_NilValue);
   }
 
-  // Materialize into data2, reusing cached CHARSXPs, then free the Store.
+  // Materialize into data2, reusing cached CHARSXPs, then free the Store
+  // unless a Reader has it open.
   static SEXP Materialize(SEXP vec) {
     SEXP data2 = R_altrep_data2(vec);
     if(data2 != R_NilValue) {
@@ -671,7 +693,7 @@ struct charvec_altrep {
       return Rf_duplicate(data2);
     }
     return charport_sexp_guard("charvec Duplicate", [&]() -> SEXP {
-      cpv::Store * store = charvec_detail::duplicate_store(Get(vec));
+      charvec_detail::owned_store * store = charvec_detail::duplicate_store(Get(vec));
       return charvec_detail::wrap_store_with_cleanup(store);
     });
   }
@@ -796,7 +818,6 @@ struct charvec_altrep {
       return nullptr;
     }
     return charport_sexp_guard("charvec Extract_subset", [&]() -> SEXP {
-      const R_xlen_t xlen = static_cast<R_xlen_t>(Get(x).size());
       const R_xlen_t len = Rf_xlength(indx);
       const int * integer_indices = nullptr;
       const double * real_indices = nullptr;
@@ -807,8 +828,14 @@ struct charvec_altrep {
       } else {
         real_indices = REAL(indx);
       }
-      cpv::Store * store = charvec_detail::subset_store(
-        Get(x), xlen, len, integer_indices, real_indices);
+      // ALTREP index methods can materialize x and clear its Store.
+      if(R_altrep_data2(x) != R_NilValue) {
+        return nullptr;
+      }
+      const auto & source = Get(x);
+      const R_xlen_t xlen = static_cast<R_xlen_t>(source.size());
+      charvec_detail::owned_store * store = charvec_detail::subset_store(
+        source, xlen, len, integer_indices, real_indices);
       return charvec_detail::wrap_store_with_cleanup(store);
     });
   }
@@ -883,20 +910,30 @@ struct charvec_altrep {
         return serialized_state;
       }
       charvec_serialized_layout layout = charvec_parse_serialized(serialized_state);
-      cpv::Store * store = charvec_detail::unserialize_store(layout);
+      charvec_detail::owned_store * store = charvec_detail::unserialize_store(layout);
       return charvec_detail::wrap_store_with_cleanup(store);
     });
   }
 
   // Broker hooks used when the reference class is registered.
-  // init borrows the store pointer that already hangs off data1; a materialized
-  // charvec has released its store, so init returns NULL and the broker serves
-  // it via the direct path over the cached data2.
+  // init borrows the store pointer that already hangs off data1 and counts the
+  // Reader until release, so materialization keeps the Store meanwhile. A
+  // materialized charvec declines, and the broker serves it via the direct
+  // path over the cached data2.
   static void * reader_init(SEXP x) {
     if(R_altrep_data2(x) != R_NilValue) {
       return nullptr;
     }
-    return Ptr(x);
+    cpv::Store * store = Ptr(x);
+    ++Owner(store)->readers;
+    return store;
+  }
+
+  static void reader_release(void * state) {
+    charvec_detail::owned_store * store = Owner(static_cast<cpv::Store *>(state));
+    if(store->readers > 0) {
+      --store->readers;
+    }
   }
 
   static int reader_strviews_range(
@@ -1034,7 +1071,7 @@ namespace charvec_detail {
 // trivially destructible because R_ExecWithCleanup may bypass ordinary C++
 // stack unwinding.
 struct store_wrap_state {
-  cpv::Store * pending;
+  owned_store * pending;
 };
 
 // R APIs below either return normally or unwind through R's cleanup context;
@@ -1046,7 +1083,7 @@ inline SEXP store_wrap_exec(void * data) noexcept {
   SEXP out = PROTECT(R_new_altrep(charvec_altrep::class_t, xp, R_NilValue));
 
   // Transfer ownership only after every allocation above has succeeded.
-  R_SetExternalPtrAddr(xp, state->pending);
+  R_SetExternalPtrAddr(xp, static_cast<cpv::Store *>(state->pending));
   state->pending = nullptr;
   UNPROTECT(2);
   return out;
@@ -1060,7 +1097,7 @@ inline void store_wrap_cleanup(void * data) noexcept {
   state->pending = nullptr;
 }
 
-inline SEXP wrap_store_with_cleanup(cpv::Store * source) noexcept {
+inline SEXP wrap_store_with_cleanup(owned_store * source) noexcept {
   if(source == nullptr) {
     Rf_error("charvec wrap: source is NULL");
   }

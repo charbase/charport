@@ -1,4 +1,22 @@
-# charport 0.3.0 (2026-11-10)
+# charport 0.3.0 (2026-11-24)
+
+* A `Reader`'s views of a `charvec` or `charpack` stay valid when the vector
+  is materialized while the `Reader` is open, for example through another
+  reference to it or a wrapper around it. Both classes count open Readers and
+  keep their packed data while any is open; it is then freed with the vector.
+  The `charpack` serialization format is unchanged.
+* Readers are acquired and released on the main thread, and worker threads
+  only call access methods. Keep the vector protected until its `Reader` is
+  released. `charport_info()` now reports `stateful_reader` for `charvec` and
+  `charpack`.
+* A failed `resize()` or copy assignment of `charport::ByteViews` or
+  `charport::StrViews` leaves the buffer as it was. An allocation failure
+  could previously leave `size()` larger than one of its arrays. These are
+  inline header classes, so a consumer package picks up the fix on rebuild.
+* A moved-from `charport::Reader` is empty, with size 0. It previously kept
+  its length and access callbacks without its state. Also a header fix.
+* `charport_materialize()` materializes any character vector through R's
+  accessor, including base R deferred strings.
 
 * `RecordTable(n)` and fixed-size builders allocate uninitialized records.
   Callers must fill every output index, including explicit missing values.

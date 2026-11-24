@@ -4,7 +4,7 @@ VERSION := $(shell perl -aF: -ne 'print, exit if s/^Version:\s+//' DESCRIPTION)
 BUILD   := $(PACKAGE)_$(VERSION).tar.gz
 
 .PHONY: doc build install check check-no-vignette rhub-platforms test \
-	test-native-cleanup test-cxx \
+	test-cxx \
 	bench bench-list vignette \
 	reflow-docs pkgdown pkgdown-index clean-pkgdown clean clean-native \
 	clean-build-products
@@ -98,12 +98,6 @@ test: install
 	  Rscript $$f || exit 1; \
 	done
 
-# Developer-only GNU linker fault-injection probe.  It lives outside
-# tests/test_*.R because it compiles package source and wraps 64-bit Linux
-# C++ allocation symbols; standard R CMD check must not run it.
-test-native-cleanup: install
-	Rscript tools/test-native-cleanup.R
-
 test-cxx:
 	bash tools/check-cxx-standards.sh
 
@@ -112,6 +106,12 @@ bench:
 
 bench-list:
 	Rscript tools/benchmark/benchmark_list.R 5 1 100000
+
+# Load this recipe's build explicitly before each instrumented test script.
+# Unlike Rscript on a file, source() runs a top-level on.exit() at once, so
+# test scripts clean up explicitly instead. Test scripts are ASCII only;
+# non-ASCII strings are written as escapes.
+run_instrumented_test = 'library(charport, lib.loc = Sys.getenv("R_LIBS")); source(commandArgs(TRUE)[1L])'
 
 # ASan + UBSan over the full test suite. Only the package (and the
 # test-compiled consumer library, via R_MAKEVARS_USER) is instrumented -- R
@@ -125,25 +125,25 @@ bench-list:
 # the uninstrumented user-library charport -- i.e. it stops instrumenting at
 # all. The test loop below does the real (preloaded) load.
 test-san:
-	tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-san-XXXXXX); \
+	set -e; tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-san-XXXXXX); \
+	trap 'rm -rf "$$tmp_lib"' EXIT; \
 	printf 'CXXFLAGS = -g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all\nSHLIB_CXXLDFLAGS = -fsanitize=address,undefined -shared\n' > $$tmp_lib/Makevars.san; \
 	R_MAKEVARS_USER=$$tmp_lib/Makevars.san R CMD INSTALL --preclean --no-test-load -l $$tmp_lib .; \
 	for f in tests/test_*.R; do \
 	  echo "== $$f"; \
 	  LD_PRELOAD=$$(gcc -print-file-name=libasan.so) ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 \
-	  R_MAKEVARS_USER=$$tmp_lib/Makevars.san R_LIBS=$$tmp_lib Rscript $$f || exit 1; \
-	done; \
-	rm -rf $$tmp_lib
+	  R_MAKEVARS_USER=$$tmp_lib/Makevars.san R_LIBS=$$tmp_lib Rscript --vanilla -e $(run_instrumented_test) "$$f"; \
+	done
 
 # Full suite under valgrind memcheck (no rebuild; slow). Requires valgrind.
 test-valgrind:
-	tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-vg-XXXXXX); \
+	set -e; tmp_lib=$$(mktemp -d /tmp/$(PACKAGE)-vg-XXXXXX); \
+	trap 'rm -rf "$$tmp_lib"' EXIT; \
 	R CMD INSTALL --preclean -l $$tmp_lib .; \
 	for f in tests/test_*.R; do \
 	  echo "== $$f"; \
-	  R_LIBS=$$tmp_lib R --vanilla -d "valgrind --tool=memcheck --leak-check=no --error-exitcode=1" -f $$f || exit 1; \
-	done; \
-	rm -rf $$tmp_lib
+	  R_LIBS=$$tmp_lib R --vanilla -d "valgrind --tool=memcheck --leak-check=no --error-exitcode=1" -e $(run_instrumented_test) --args "$$f"; \
+	done
 
 vignette:
 	mkdir -p local/cache

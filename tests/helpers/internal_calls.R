@@ -86,3 +86,8 @@ register_charpack <- function() {
 unregister_charpack <- function() {
   invisible(.Call(charport_native_symbol("C_unregister_charpack")))
 }
+
+# Readers open on x's packed data, or NA once materialization dropped it.
+reader_count <- function(x) {
+  .Call(charport_native_symbol("C_reader_count"), x)
+}

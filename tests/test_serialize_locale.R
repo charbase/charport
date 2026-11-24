@@ -39,9 +39,10 @@ c_native_is_utf8 <- function() .Call(getNativeSymbolInfo("C_charport_c_native_is
 
 raw_bytes <- function(x) lapply(as.character(x), function(s) if (is.na(s)) NA else charToRaw(s))
 
-# Unmarked "é", made in the UTF-8 locale. The others carry their own marks.
+# U+00E9 as an unmarked native string made in the UTF-8 locale, and as
+# strings that carry their own marks. A \u escape is always marked UTF-8.
 native <- rawToChar(as.raw(c(0xc3, 0xa9)))
-utf8 <- "é"
+utf8 <- "\u00e9"
 latin1 <- iconv(utf8, "UTF-8", "latin1")
 bytes <- rawToChar(as.raw(0xe9)); Encoding(bytes) <- "bytes"
 input <- c("plain", native, utf8, latin1, bytes, NA)

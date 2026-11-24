@@ -11,26 +11,34 @@
 //
 //   [u64 head][end offset x n][u8 cetype_ext x n][bytes]
 //
-// head holds n in its low 63 bits. Bit 63 clear means u32 end offsets, set
-// means u64; u64 is used only when the payload exceeds 2^32 - 1 bytes.
-// Bits 52-62 are always zero, since R's maximum vector length is 2^52 - 1:
-// this layout is version 0, and a later layout can put a nonzero version
-// there. A reader that predates it rejects that state without a version check,
-// because the count then exceeds the state's length. Record i spans bytes
-// [end[i-1], end[i]), with end[-1] = 0, so any record is found in constant
-// time. NA (CETYPE_EXT_NA) and "" span zero bytes. The payload is end[n-1]
-// bytes (0 when n is 0) and data1 ends exactly there.
+// head holds n in its low 52 bits, since R's maximum vector length is
+// 2^52 - 1. Bit 63 clear means u32 end offsets, set means u64; u64 is used
+// only when the payload exceeds 2^32 - 1 bytes. Bits 52-62 are zero in a
+// serialized state: this layout is version 0, and a later layout can put a
+// nonzero version in bits 60-62. A reader that predates it rejects that state
+// without a version check, because the count then exceeds the state's length.
+// Record i spans bytes [end[i-1], end[i]), with end[-1] = 0, so any record is
+// found in constant time. NA (CETYPE_EXT_NA) and "" span zero bytes. The
+// payload is end[n-1] bytes (0 when n is 0) and data1 ends exactly there.
+//
+// In memory, bits 52-59 count the Readers open on data1, up to 255; a count
+// that reaches 255 stays there. Only the main thread changes the count, as
+// the Reader contract requires, but worker threads read the head meanwhile,
+// so every head access is atomic. Duplicates share data1 and so its count.
 //
 // The serialized state is data1 itself, little-endian: a little-endian host
 // sends data1 and adopts the incoming raw vector after validating it, without
 // copying; a big-endian host byte-swaps the head and end offsets on the way
-// out (into a copy) and in (in place). A later format could also send a state
+// out (into a copy) and in (in place). While a Reader is open, a copy with
+// the count cleared goes out instead. A later format could also send a state
 // of another type, which Unserialize rejects.
 //
 // States:
 //   unfilled      data1 and data2 nil; length 0
-//   filled        data1 is the RAWSXP, immutable once installed
-//   materialized  data2 is a STRSXP; data1 nil
+//   filled        data1 is the RAWSXP; only its reader count changes
+//   materialized  data2 is a STRSXP; data1 nil, unless a Reader was open
+//                 when it materialized, in which case data1 stays for the
+//                 vector's lifetime and keeps that Reader's views valid
 //
 // A fill moves unfilled to filled (fill_materialized_na: to materialized).
 // Reads and duplicates never yield an unfilled vector.
@@ -39,6 +47,47 @@ namespace charpack_layout {
 
 constexpr size_t header_bytes = sizeof(uint64_t);
 constexpr uint64_t wide_bit = uint64_t(1) << 63;
+constexpr uint64_t length_mask = (uint64_t(1) << 52) - 1;
+constexpr int readers_shift = 52;
+constexpr uint64_t readers_one = uint64_t(1) << readers_shift;
+constexpr uint64_t readers_mask = uint64_t(0xFF) << readers_shift;
+
+// A relaxed atomic load: an ordinary load on x86-64 and arm64. data1 is an R
+// vector, whose data R aligns for a double.
+inline uint64_t load_head(const unsigned char * raw) noexcept {
+  return __atomic_load_n(reinterpret_cast<const uint64_t *>(raw), __ATOMIC_RELAXED);
+}
+
+inline void store_head(unsigned char * raw, uint64_t head) noexcept {
+  __atomic_store_n(reinterpret_cast<uint64_t *>(raw), head, __ATOMIC_RELAXED);
+}
+
+// Readers open on data1. Main thread only, like add_reader and drop_reader:
+// a single writer needs no read-modify-write.
+inline unsigned readers(const unsigned char * raw) noexcept {
+  return static_cast<unsigned>((load_head(raw) & readers_mask) >> readers_shift);
+}
+
+inline void add_reader(unsigned char * raw) noexcept {
+  const uint64_t head = load_head(raw);
+  if((head & readers_mask) != readers_mask) {
+    store_head(raw, head + readers_one);
+  }
+}
+
+// A saturated count stays, and so does a zero one: subtracting from it would
+// borrow from the version and width bits.
+inline void drop_reader(unsigned char * raw) noexcept {
+  const uint64_t head = load_head(raw);
+  const uint64_t count = head & readers_mask;
+  if(count != 0 && count != readers_mask) {
+    store_head(raw, head - readers_one);
+  }
+}
+
+inline void clear_readers(unsigned char * raw) noexcept {
+  store_head(raw, load_head(raw) & ~readers_mask);
+}
 
 inline size_t offset_bytes(bool wide) noexcept {
   return wide ? sizeof(uint64_t) : sizeof(uint32_t);
@@ -69,11 +118,10 @@ struct view {
 };
 
 inline view parse(const unsigned char * raw) noexcept {
-  uint64_t head;
-  std::memcpy(&head, raw, sizeof(head));
+  const uint64_t head = load_head(raw);
   view v;
   v.wide = (head & wide_bit) != 0;
-  v.n = static_cast<size_t>(head & ~wide_bit);
+  v.n = static_cast<size_t>(head & length_mask);
   v.ends = raw + header_bytes;
   v.tags = v.ends + offset_bytes(v.wide) * v.n;
   v.bytes = reinterpret_cast<const char *>(v.tags + v.n);
@@ -182,7 +230,9 @@ struct charpack_altrep {
     return v.n > 0 && std::memchr(v.tags, CETYPE_EXT_NATIVE.value, v.n) != nullptr;
   }
 
-  // data2 is installed only once complete.
+  // data2 is installed only once complete. data1 is dropped unless a Reader
+  // has it open, for example when another reference to the vector, or a
+  // wrapper around it, materializes it during the borrow.
   static SEXP Materialize(SEXP x) {
     SEXP data2 = R_altrep_data2(x);
     if(data2 != R_NilValue) {
@@ -191,7 +241,9 @@ struct charpack_altrep {
     SEXP data1 = R_altrep_data1(x);
     data2 = PROTECT(data1 == R_NilValue ? Rf_allocVector(STRSXP, 0) : strings(data1));
     R_set_altrep_data2(x, data2);
-    R_set_altrep_data1(x, R_NilValue);
+    if(data1 != R_NilValue && charpack_layout::readers(RAW(data1)) == 0) {
+      R_set_altrep_data1(x, R_NilValue);
+    }
     UNPROTECT(1);
     return data2;
   }
@@ -247,18 +299,22 @@ struct charpack_altrep {
   // to R's default; R copies names and other attributes itself. Nothing here
   // owns a C++ object, so R errors (allocation, size) need no cleanup.
   static SEXP Extract_subset(SEXP x, SEXP indx, SEXP /* call */) {
-    SEXP data1 = R_altrep_data1(x);
-    if(R_altrep_data2(x) != R_NilValue || data1 == R_NilValue) {
+    if(R_altrep_data2(x) != R_NilValue || R_altrep_data1(x) == R_NilValue) {
       return nullptr;
     }
     if(TYPEOF(indx) != INTSXP && TYPEOF(indx) != REALSXP) {
       return nullptr;
     }
     const R_xlen_t m = Rf_xlength(indx);
-    // May expand a compact sequence, so before any pointer into data1 is taken.
+    // ALTREP index methods can materialize x through another reference.
     const int * ints = TYPEOF(indx) == INTSXP ? INTEGER(indx) : nullptr;
     const double * reals = ints == nullptr ? REAL(indx) : nullptr;
 
+    SEXP data1 = R_altrep_data1(x);
+    if(R_altrep_data2(x) != R_NilValue || data1 == R_NilValue) {
+      return nullptr;
+    }
+    PROTECT(data1);
     const size_t n = charpack_layout::parse(data1).n;
     size_t payload = 0;
     {
@@ -283,7 +339,6 @@ struct charpack_altrep {
       Rf_error("charport charpack Extract_subset: vector exceeds the maximum raw vector size");
     }
     SEXP out = PROTECT(Rf_allocVector(RAWSXP, static_cast<R_xlen_t>(total)));
-    // Neither data1 nor indx moves during the allocation, so both views hold.
     const charpack_layout::view v = charpack_layout::parse(data1);
     unsigned char * p = RAW(out);
     charpack_layout::write_head(p, count, wide);
@@ -309,7 +364,7 @@ struct charpack_altrep {
       charpack_layout::write_end(ends, wide, out_j, end);
     }
     SEXP result = R_new_altrep(class_t, out, R_NilValue);
-    UNPROTECT(1);
+    UNPROTECT(2);
     return result;
   }
 
@@ -334,15 +389,24 @@ struct charpack_altrep {
   }
 
   // The Reader state is data1's bytes, read in place: the end offsets give
-  // any record in constant time, so a Reader allocates nothing and needs no
-  // release. data1 is immutable and dropped only by materialization, which
-  // the Reader contract rules out during a borrow.
+  // any record in constant time, so a Reader allocates nothing. A Reader is
+  // counted in the head from init to release; materialization keeps data1
+  // while the count is nonzero, so the Reader's views stay valid.
   static void * reader_init(SEXP x) {
     if(R_altrep_data2(x) != R_NilValue) {
       return nullptr;
     }
     SEXP data1 = R_altrep_data1(x);
-    return data1 == R_NilValue ? nullptr : static_cast<void *>(RAW(data1));
+    if(data1 == R_NilValue) {
+      return nullptr;
+    }
+    unsigned char * raw = RAW(data1);
+    charpack_layout::add_reader(raw);
+    return raw;
+  }
+
+  static void reader_release(void * state) {
+    charpack_layout::drop_reader(static_cast<unsigned char *>(state));
   }
 
   static charpack_layout::view state_view(void * state) noexcept {
@@ -579,13 +643,20 @@ struct charpack_altrep {
     if(has_native(data1) && !charport_native_is_utf8_impl()) {
       return strings(data1);
     }
-    if(charvec_host_is_little_endian()) {
+    // An open Reader's count must not reach the stream, where bits 52-62 are
+    // zero, so data1 itself goes out only when no Reader has it open.
+    const bool little_endian = charvec_host_is_little_endian();
+    const bool reader_open = charpack_layout::readers(RAW(data1)) != 0;
+    if(little_endian && !reader_open) {
       return data1;
     }
     const R_xlen_t len = Rf_xlength(data1);
     SEXP state = Rf_allocVector(RAWSXP, len);
     std::memcpy(RAW(state), RAW(data1), static_cast<size_t>(len));
-    swap_words(RAW(state), true);
+    charpack_layout::clear_readers(RAW(state));
+    if(!little_endian) {
+      swap_words(RAW(state), true);
+    }
     return state;
   }
 

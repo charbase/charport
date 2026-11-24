@@ -478,7 +478,7 @@ extern "C" SEXP C_charport_info(SEXP x) {
 extern "C" void charport_register_charvec_impl(void) {
   charport_register_altrep(
     charvec_altrep::class_t,
-    charport_reader_state_fns{charvec_altrep::reader_init, nullptr},
+    charport_reader_state_fns{charvec_altrep::reader_init, charvec_altrep::reader_release},
     charport_reader_range_fns{
       charvec_altrep::reader_strviews_range,
       charvec_altrep::reader_byteviews_range,

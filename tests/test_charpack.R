@@ -181,6 +181,13 @@ stopifnot(is_charpack(x), identical(names(x), c("a", "b", "c")), is.null(attr(x,
 stopifnot(identical(unname(as.character(x)), c("x", NA, "")))
 x <- as_charpack(c(one = 1L, two = NA))
 stopifnot(is_charpack(x), identical(names(x), c("one", "two")), identical(as.character(x), c("1", NA)))
+as.character.charpack_test_swatch <- function(x, ...) c(colour = "blue")
+swatch <- structure(1L, class = "charpack_test_swatch")
+stopifnot(identical(names(as_charpack(swatch)), "colour"))
+names(swatch) <- "original"
+stopifnot(identical(names(as_charpack(swatch)), "original"))
+swatch <- structure(c(first = 1L, second = 2L), class = "charpack_test_swatch")
+stopifnot(identical(names(as_charpack(swatch)), "colour"))
 stopifnot(is_charpack(as_charpack(character(0))), length(as_charpack(character(0))) == 0L)
 cv <- charvec("p", "q")
 x <- as_charpack(cv)
