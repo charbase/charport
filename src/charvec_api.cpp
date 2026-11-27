@@ -135,21 +135,25 @@ extern "C" SEXP C_as_charvec(SEXP x) {
   });
 }
 
-extern "C" SEXP charport_charvec_alloc_na_impl(R_xlen_t n) {
-  if(n < 0) {
-    Rf_error("charport charvec alloc_na: negative length");
+extern "C" SEXP charport_charvec_placeholder_impl(void) {
+  return charvec_altrep::Placeholder();
+}
+
+extern "C" void charport_charvec_fill_store_impl(SEXP x, void * source) {
+  if(source == nullptr || TYPEOF(x) != STRSXP || ALTREP(x) != TRUE ||
+      !is_charvec_sexp(x)) {
+    Rf_error("charport charvec fill_store: expected an unfilled charvec placeholder and a Store");
   }
-  return charport_sexp_guard("charvec alloc_na", [&]() -> SEXP {
-    charvec_detail::owned_store * store =
-      charvec_detail::heap_store(cpv::Store(static_cast<size_t>(n), 0));
-    for(size_t i = 0; i < store->size(); ++i) store->records.set_na(i);
-    return charvec_detail::wrap_store_with_cleanup(store);
-  });
+  if(R_altrep_data2(x) != R_NilValue ||
+      charvec_altrep::Ptr(x) != charvec_altrep::placeholder_store) {
+    Rf_error("charport charvec fill_store: expected an unfilled charvec placeholder");
+  }
+  charvec_altrep::AttachStore(R_altrep_data1(x), *static_cast<cpv::Store *>(source));
 }
 
 // No data2 and no Elt cache means R holds no CHARSXP derived from the Store.
 // get_store() cannot see other references to the vector, so the caller must
-// own it (see writer.h).
+// own it.
 extern "C" void * charport_charvec_get_store_impl(SEXP x) {
   if(TYPEOF(x) != STRSXP || ALTREP(x) != TRUE || !is_charvec_sexp(x)) {
     return nullptr;
@@ -161,7 +165,8 @@ extern "C" void * charport_charvec_get_store_impl(SEXP x) {
   if(R_ExternalPtrProtected(xp) != R_NilValue) {
     return nullptr;
   }
-  return R_ExternalPtrAddr(xp);
+  void * store = R_ExternalPtrAddr(xp);
+  return store == charvec_altrep::placeholder_store ? nullptr : store;
 }
 
 extern "C" SEXP C_is_charvec(SEXP x) {

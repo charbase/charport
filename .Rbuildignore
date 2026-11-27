@@ -10,6 +10,7 @@
 ^benchmark_results$
 ^LICENSE\.md$
 ^Makefile$
+^autom4te\.cache$
 ^inst/extra/benchmark\.R$
 ^inst/extra/benchmark\.cpp$
 ^inst/extra/benchmark-table\.csv$

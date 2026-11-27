@@ -236,7 +236,7 @@ R's encoding scheme is aggregated into this single type. `CETYPE_EXT_ASCII`, `CE
 
 `CETYPE_EXT_NA` carries the missing-string case alongside the pointer and length.
 
-ASCII text is always tagged `CETYPE_EXT_ASCII` or `CETYPE_EXT_ASCII_OR_UTF8`. R drops the encoding mark of every ASCII string, so the other four tags always describe at least one non-ASCII byte. charport's own conversions from R strings follow this rule. Constructors and `Writer` store the tags they are given without checking them, so a producer that tags its own strings must follow it too. Tags are part of `charport_strview` equality: `"a"` tagged `CETYPE_EXT_NATIVE` does not compare equal to `"a"` tagged `CETYPE_EXT_ASCII`.
+ASCII text is always tagged `CETYPE_EXT_ASCII` or `CETYPE_EXT_ASCII_OR_UTF8`. R drops the encoding mark of every ASCII string, so the other four tags always describe at least one non-ASCII byte. charport's conversions from R strings follow this rule.
 
 Ordinary `cetype_t` values correspond to `cetype_ext_t` values, so you can wrap R's encoding mark when you already have a `cetype_t`. `Rf_getCharCE()` reports `CE_NATIVE` for ASCII strings, so check the ASCII mark first:
 
@@ -248,7 +248,7 @@ cetype_ext_t enc = Rf_charIsASCII(x)
 
 That cast preserves the encoding marks for native, UTF-8, Latin-1 and byte strings.
 
-What a native-tagged string means depends on the session's locale, which `Sys.setlocale()` can change. `charport_native_is_utf8()` (C++: `charport::native_is_utf8()`) reports whether R currently reads native strings as UTF-8. It follows `Sys.setlocale()`, so call it at the start of each operation rather than caching the answer. On R 4.5 or later it costs a few nanoseconds; older versions run a short iconv probe. Call it from the main thread.
+What a native-tagged string means depends on the session's locale, which `Sys.setlocale()` can change. `charport_native_is_utf8()` (C++: `charport::native_is_utf8()`) reports whether R currently reads native strings as UTF-8.
 
 ### Reader Lifetime and Multithreading
 
@@ -569,10 +569,9 @@ SEXP out = b.to_sexp();
 
 `charvec::Store` is a public struct with `records` and `slices`. The constructor allocates a fixed record table and, when `initial_slice_bytes` is nonzero, one slice of storage.
 
-Example:
-
 ``` cpp
-charvec::Store store(3, total_bytes);
+charvec::Store store(3, 0); // fills all three elements as NA
+// charvec::Store store(3, 0, charvec::uninitialized); // does not fill
 
 char * data = store.slices.front_data();
 std::memcpy(data, src, total_bytes);
@@ -611,20 +610,20 @@ SEXP out = charport_charvec_from_views(3, ptrs, lengths, encodings);
 
 ### Filling a `charvec` in place
 
-Sometimes it makes more sense to create the ALTREP object before filling data in. `charvec::alloc_na(n)` returns a `charvec` of `n` NA strings, and `charvec::get_store(x)` returns its underlying `Store` that can be filled.
+Use `charvec::placeholder()` when you need to construct a `charvec` before its strings are available. It's ALTREP data can then be filled in place.
 
 ``` cpp
-SEXP x = PROTECT(charvec::alloc_na(n));
-// ... place x in its parent object ...
-charvec::Store * store = charvec::get_store(x);
-charvec::Writer w(*store);
-
-char * dst = w.reserve(len);
-// write len bytes to dst
-w.set(i, dst, len, CETYPE_EXT_UTF8);
-
-w.copy(j, ptr, len, CETYPE_EXT_UTF8);  // reserve, copy and set
-w.set_na(k);
+SEXP x = PROTECT(charvec::placeholder());
+for(R_xlen_t i = 0; i < n; ++i) {
+  if(lengths[i] == NA_INTEGER) {
+    builder.set_na(i);
+  } else {
+    builder.set(i, ptrs[i], static_cast<size_t>(lengths[i]), encodings[i]);
+  }
+}
+builder.fill_placeholder(x);
+UNPROTECT(1);
+return x;
 ```
 
 ## `charpack`: compact vectors {#charpack}

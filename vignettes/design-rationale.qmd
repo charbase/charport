@@ -88,10 +88,6 @@ The three different builder classes correspond to common vector building pattern
 - `ParallelBuilder` gives each worker its own slice chain while sharing the final metadata arrays. That avoids concurrent writes to the same byte buffer while still producing one `charvec`.
 - `GrowableBuilder` handles serial output whose final vector length is not yet known at the start.
 
-Builder conversion creates an external pointer with a null address, registers its finalizer, and creates the ALTREP object. It moves the `Store` and installs the address only after those R allocations succeed. On failure, the caller's `Store` remains intact, so `to_sexp_with_rcpp()` and `to_sexp_with_cpp11()` can unwind without losing it.
-
-When a `charvec` is fully materialized, it caches an ordinary `STRSXP` in ALTREP `data2` and releases the `charvec::Store` held in `data1`. The reader then naturally uses the ordinary fallback path over the cached `STRSXP`.
-
 ## `charpack`: compact representation of short vectors
 
 A `charvec` holds its `Store` through an external pointer with a finalizer. It makes sense for large vectors and is usually more memory efficient than base R strings. However, using an external pointer costs extra R objects and churn from garbage collection. `charpack` stores its strings and metadata in one ordinary R raw vector. It has smaller per-vector overhead compared to `charvec` and frequently base R strings as well. The tradeoff is it requires a copy of the full vector at construction, so is not suited for large vectors.

@@ -523,8 +523,12 @@ extern "C" void charport_registry_init(DllInfo * dll) {
     reinterpret_cast<DL_FUNC>(&charport_charvec_from_views_impl)
   );
   R_RegisterCCallable(
-    "charport", "charport_charvec_alloc_na_v1",
-    reinterpret_cast<DL_FUNC>(&charport_charvec_alloc_na_impl)
+    "charport", "charport_charvec_placeholder_v1",
+    reinterpret_cast<DL_FUNC>(&charport_charvec_placeholder_impl)
+  );
+  R_RegisterCCallable(
+    "charport", "charport_charvec_fill_store_v1",
+    reinterpret_cast<DL_FUNC>(&charport_charvec_fill_store_impl)
   );
   R_RegisterCCallable(
     "charport", "charport_charvec_get_store_v1",

@@ -15,6 +15,10 @@
 
 namespace charport {
 namespace charvec {
+
+struct uninitialized_t {};
+constexpr uninitialized_t uninitialized{};
+
 namespace components {
 
 inline attribute_hidden const char * empty_data() noexcept {
@@ -143,9 +147,15 @@ struct RecordTable {
   RecordTable() noexcept
     : ptrs_(), lens_(), encs_(), vector_length_(0), capacity_(0) {}
 
-  // Allocates uninitialized records. The caller must set every record before
-  // reading, copying, or publishing the table, including explicit NA entries.
   explicit RecordTable(size_t vector_length)
+    : RecordTable(vector_length, uninitialized) {
+    for(size_t i = 0; i < vector_length; ++i) {
+      set_na(i);
+    }
+  }
+
+  // Set every record before reading, copying, or publishing the table.
+  RecordTable(size_t vector_length, uninitialized_t)
     : RecordTable() {
     reserve(vector_length);
     vector_length_ = vector_length;
@@ -301,6 +311,13 @@ public:
     }
   }
 
+  Store(size_t vector_size, size_t initial_slice_bytes, uninitialized_t tag)
+    : slices(), records(vector_size, tag) {
+    if(initial_slice_bytes > 0) {
+      slices.push_front(initial_slice_bytes);
+    }
+  }
+
   Store(const Store &) = delete;
   Store & operator=(const Store &) = delete;
   Store(Store &&) noexcept = default;
@@ -308,13 +325,13 @@ public:
 
   static Store scalar(const char * src, size_t nbytes, cetype_ext_t enc) {
     if(src == nullptr || enc == CETYPE_EXT_NA) {
-      Store out(1, 0);
+      Store out(1, 0, uninitialized);
       out.records.set_na(0);
       return out;
     }
 
     const int len = components::checked_string_size(nbytes, "stored string length");
-    Store out(1, nbytes);
+    Store out(1, nbytes, uninitialized);
     if(len == 0) {
       out.records.set(0, components::empty_data(), 0, enc);
     } else {

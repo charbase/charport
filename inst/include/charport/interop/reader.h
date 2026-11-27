@@ -158,16 +158,15 @@ typedef int (*charport_native_is_utf8_t)(void);
  * error and does not throw a C++ exception.
  */
 typedef SEXP (*charport_charvec_wrap_t)(void * store);
+typedef SEXP (*charport_charvec_placeholder_t)(void);
+typedef void (*charport_charvec_fill_store_t)(SEXP x, void * store);
 typedef SEXP (*charport_charvec_from_views_t)(
     R_xlen_t n, const char * const * ptrs, const int * lengths,
     const cetype_ext_t * encodings);
 /*
- * charvec in-place fill (see charvec/writer.h). alloc_na returns a charvec of
- * n NA strings and may raise an R error. get_store returns the Store of a
- * charvec that is neither materialized nor cached, or NULL, and raises no
- * errors. The Store type is C++ only.
+ * get_store returns a borrowed Store from a filled charvec that is neither
+ * materialized nor cached, or NULL. The Store type is C++ only.
  */
-typedef SEXP (*charport_charvec_alloc_na_t)(R_xlen_t n);
 typedef void * (*charport_charvec_get_store_t)(SEXP x);
 
 #ifndef __cplusplus
@@ -222,21 +221,6 @@ static inline SEXP charport_charvec_from_views(
 #endif
   }
   return fn(n, ptrs, lengths, encodings);
-}
-
-static inline SEXP charport_charvec_alloc_na(R_xlen_t n) {
-  static charport_charvec_alloc_na_t fn = NULL;
-  if(fn == NULL) {
-#ifdef __cplusplus
-    fn = reinterpret_cast<charport_charvec_alloc_na_t>(
-      R_GetCCallable("charport", "charport_charvec_alloc_na_v1")
-    );
-#else
-    fn = (charport_charvec_alloc_na_t)
-      R_GetCCallable("charport", "charport_charvec_alloc_na_v1");
-#endif
-  }
-  return fn(n);
 }
 
 #ifdef __cplusplus

@@ -3,7 +3,7 @@ PACKAGE := $(shell perl -aF: -ne 'print, exit if s/^Package:\s+//' DESCRIPTION)
 VERSION := $(shell perl -aF: -ne 'print, exit if s/^Version:\s+//' DESCRIPTION)
 BUILD   := $(PACKAGE)_$(VERSION).tar.gz
 
-.PHONY: doc build install check check-no-vignette rhub-platforms test \
+.PHONY: doc reconf build install check check-no-vignette rhub-platforms test \
 	test-cxx \
 	bench bench-list vignette \
 	reflow-docs pkgdown pkgdown-index clean-pkgdown clean clean-native \
@@ -70,6 +70,9 @@ rhub-platforms:
 	  $(RHUB_WORKFLOW); \
 	echo "Updated $(RHUB_WORKFLOW). Review it, commit it, and push it to the"; \
 	echo "default branch, or the Run workflow button will use the old list."
+
+reconf:
+	autoreconf -fi
 
 doc:
 	Rscript -e 'roxygen2::roxygenise(roclets = "rd")'

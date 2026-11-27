@@ -7,6 +7,7 @@
 #include <cmath>
 
 R_altrep_class_t charvec_altrep::class_t;
+cpv::Store * charvec_altrep::placeholder_store;
 
 R_altrep_class_t charpack_altrep::class_t;
 
@@ -28,8 +29,8 @@ cpv::Store & checked_store(SEXP x) {
     throw std::runtime_error("charvec is materialized; its store has been released");
   }
   auto * ptr = charvec_altrep::Ptr(x);
-  if(ptr == nullptr) {
-    throw std::runtime_error("charvec store pointer is null");
+  if(ptr == charvec_altrep::placeholder_store) {
+    throw std::runtime_error("charvec placeholder has no owned Store");
   }
   return *ptr;
 }
@@ -44,9 +45,12 @@ size_t checked_len_arg(SEXP n_) {
 }
 
 extern "C" SEXP C_charvec_alloc(SEXP n_) {
-  return charport_sexp_guard("charvec_alloc", [&]() -> SEXP {
+  return charport_consumer::boundary("charvec_alloc", [&]() -> SEXP {
     const size_t n = checked_len_arg(n_);
-    return charport::charvec::alloc_na(static_cast<R_xlen_t>(n));
+    cpv::Store store(n, 0);
+    return charport_consumer::unwind_protect([&]() -> SEXP {
+      return cpv::wrap(std::move(store));
+    });
   });
 }
 
@@ -70,6 +74,18 @@ extern "C" SEXP C_charvec_stats(SEXP x) {
     UNPROTECT(1);
     return out;
   });
+}
+
+// NULL for a dropped slot, otherwise whether data1 points to an owned Store.
+extern "C" SEXP C_charvec_data1_has_store(SEXP x) {
+  SEXP data1 = R_altrep_data1(x);
+  if(data1 == R_NilValue) {
+    return R_NilValue;
+  }
+  if(TYPEOF(data1) != EXTPTRSXP || R_ExternalPtrAddr(data1) == nullptr) {
+    Rf_error("charvec data1 must point to a Store");
+  }
+  return Rf_ScalarLogical(R_ExternalPtrAddr(data1) != charvec_altrep::placeholder_store);
 }
 
 extern "C" SEXP C_charvec_assign(SEXP x, SEXP i_, SEXP value) {
@@ -190,11 +206,12 @@ extern "C" SEXP C_register_charvec(void) {
 }
 
 extern "C" void R_init_internal_calls(DllInfo *) {
-  SEXP v = PROTECT(charport::charvec::alloc_na(0));
+  SEXP v = PROTECT(charport::charvec::placeholder());
   SEXP p = PROTECT(charport::charpack::placeholder());
   R_altrep_class_t vc = R_SUBTYPE_INIT(ALTREP_CLASS(v));
   R_altrep_class_t pc = R_SUBTYPE_INIT(ALTREP_CLASS(p));
   charvec_altrep::class_t = vc;
+  charvec_altrep::placeholder_store = charvec_altrep::Ptr(v);
   charpack_altrep::class_t = pc;
   UNPROTECT(2);
 }
@@ -276,8 +293,8 @@ extern "C" SEXP C_charpack_fill_from(
   });
 }
 
-// Readers counted on x's packed data: the charpack head's count or the
-// charvec Store's. NA once materialization has dropped the packed data.
+// Reader count on x's backing, which can be shared with other vectors.
+// NA once materialization has dropped the backing.
 extern "C" SEXP C_reader_count(SEXP x) {
   return charport_sexp_guard("reader_count", [&]() -> SEXP {
     if(charpack_altrep::is(x)) {
@@ -288,7 +305,10 @@ extern "C" SEXP C_reader_count(SEXP x) {
       return Rf_ScalarInteger(static_cast<int>(charpack_layout::readers(RAW(data1))));
     }
     if(is_charvec_sexp(x)) {
-      cpv::Store * store = charvec_altrep::Ptr(x);
+      // Materialized vectors still have backing when a Reader held it open.
+      SEXP data1 = R_altrep_data1(x);
+      auto * store = data1 == R_NilValue ? nullptr :
+        static_cast<cpv::Store *>(R_ExternalPtrAddr(data1));
       if(store == nullptr) {
         return Rf_ScalarInteger(NA_INTEGER);
       }

@@ -1,4 +1,4 @@
-# charport 0.3.0 (2026-11-24)
+# charport 0.3.0 (2026-11-26)
 
 * A `Reader`'s views of a `charvec` or `charpack` stay valid when the vector
   is materialized while the `Reader` is open, for example through another
@@ -17,10 +17,15 @@
   its length and access callbacks without its state. Also a header fix.
 * `charport_materialize()` materializes any character vector through R's
   accessor, including base R deferred strings.
-
-* `RecordTable(n)` and fixed-size builders allocate uninitialized records.
-  Callers must fill every output index, including explicit missing values.
-  `charvec::alloc_na(n)` continues to initialize every element to NA.
+* `Store(n, initial_slice_bytes)` and `RecordTable(n)` initialize records to NA.
+  Pass `charvec::uninitialized` to skip the fill when the caller writes every
+  record, including missing values. Fixed-size builders use that path.
+* `charvec::placeholder()` creates a charvec that receives a completed Store
+  through `Builder::fill_placeholder()` or `charvec::fill_store()`. To create an
+  NA-filled charvec, wrap a two-argument Store. The `alloc_na()` entry point has
+  been removed.
+* `charvec::Writer` has been removed. Use `charvec::Builder` to fill the records
+  and call `release_store()` when you need the finished Store.
 * New `charport::is_ascii(ptr, len)` in `charport/ascii.h`: an R-free ASCII
   scan that is fast on ASCII text and stops early on non-ASCII text.
 * Test-only native entry points and forced-wide charpack controls now live in

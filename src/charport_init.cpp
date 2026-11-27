@@ -2,6 +2,8 @@
 #include "charpack_altrep.h"
 #include "charport_registry.h"
 
+static charvec_detail::owned_store charvec_placeholder_store{cpv::Store()};
+cpv::Store * charvec_altrep::placeholder_store = &charvec_placeholder_store;
 R_altrep_class_t charvec_altrep::class_t;
 R_altrep_class_t charpack_altrep::class_t;
 

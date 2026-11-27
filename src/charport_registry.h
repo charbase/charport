@@ -19,7 +19,8 @@ SEXP charport_charvec_wrap(void * store);
 SEXP charport_charvec_from_views_impl(
     R_xlen_t n, const char * const * ptrs, const int * lengths,
     const cetype_ext_t * encodings);
-SEXP charport_charvec_alloc_na_impl(R_xlen_t n);
+SEXP charport_charvec_placeholder_impl(void);
+void charport_charvec_fill_store_impl(SEXP x, void * source);
 void * charport_charvec_get_store_impl(SEXP x);
 
 SEXP charport_charpack_placeholder_impl(void);

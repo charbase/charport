@@ -155,6 +155,47 @@ inline SEXP wrap(Store && store) noexcept {
   return builder_detail::wrap_store(store);
 }
 
+// Create an unfinished charvec for use in an object graph under construction.
+// Fill it before using its contents or exposing the graph to other code.
+inline attribute_hidden SEXP placeholder() noexcept {
+  static charport_charvec_placeholder_t fn = nullptr;
+  if(fn == nullptr) {
+    fn = reinterpret_cast<charport_charvec_placeholder_t>(
+      charport::detail::fetch("charport_charvec_placeholder_v1")
+    );
+  }
+  return fn();
+}
+
+// Move a completed Store into an unfilled placeholder. R errors leave the
+// Store with its caller, as in wrap().
+inline attribute_hidden void fill_store(SEXP x, Store && store) noexcept {
+  static charport_charvec_fill_store_t fn = nullptr;
+  if(fn == nullptr) {
+    fn = reinterpret_cast<charport_charvec_fill_store_t>(
+      charport::detail::fetch("charport_charvec_fill_store_v1")
+    );
+  }
+  fn(x, &store);
+}
+
+// The Store of a filled charvec that is neither materialized nor cached, or
+// nullptr (also for a non-charvec).
+//
+// Use this only on a vector you own, such as one fresh from wrap(). Keep the
+// vector private while editing. Non-empty records must point into disjoint
+// ranges of the Store's slices so element assignment can reuse those bytes.
+// The pointer is valid until the vector is read from R or collected.
+inline attribute_hidden Store * get_store(SEXP x) noexcept {
+  static charport_charvec_get_store_t fn = nullptr;
+  if(fn == nullptr) {
+    fn = reinterpret_cast<charport_charvec_get_store_t>(
+      charport::detail::fetch("charport_charvec_get_store_v1")
+    );
+  }
+  return static_cast<Store *>(fn(x));
+}
+
 #if defined(RCPP_VERSION)
 inline SEXP wrap_with_rcpp(Store && store) {
   return charport::detail::call_with_rcpp(
@@ -176,7 +217,7 @@ inline SEXP wrap_with_cpp11(Store && store) {
 class Builder {
 public:
   explicit Builder(R_xlen_t n)
-    : store_(builder_detail::checked_vector_size(n), 0), shard_() {}
+    : store_(builder_detail::checked_vector_size(n), 0, uninitialized), shard_() {}
 
   Builder(const Builder &) = delete;
   Builder & operator=(const Builder &) = delete;
@@ -184,7 +225,7 @@ public:
   Builder & operator=(Builder &&) noexcept = default;
 
   void reset(R_xlen_t n) {
-    Store next(builder_detail::checked_vector_size(n), 0);
+    Store next(builder_detail::checked_vector_size(n), 0, uninitialized);
     store_ = std::move(next);
     shard_ = builder_detail::Shard();
   }
@@ -228,6 +269,12 @@ public:
     return wrap(std::move(store_));
   }
 
+  // The Builder keeps its Store if attachment raises an R error.
+  void fill_placeholder(SEXP x) noexcept {
+    finish_store();
+    charvec::fill_store(x, std::move(store_));
+  }
+
 #if defined(RCPP_VERSION)
   SEXP to_sexp_with_rcpp();
 #endif
@@ -261,7 +308,7 @@ public:
     if(n_shards == 0) {
       throw std::runtime_error("charvec builder: n_shards must be >= 1");
     }
-    Store next_store(builder_detail::checked_vector_size(n), 0);
+    Store next_store(builder_detail::checked_vector_size(n), 0, uninitialized);
     std::vector<builder_detail::ShardCell> next_shards;
     next_shards.reserve(n_shards);
     for(size_t i = 0; i < n_shards; ++i) {
@@ -312,6 +359,11 @@ public:
   SEXP to_sexp() noexcept {
     finish_store();
     return wrap(std::move(store_));
+  }
+
+  void fill_placeholder(SEXP x) noexcept {
+    finish_store();
+    charvec::fill_store(x, std::move(store_));
   }
 
 #if defined(RCPP_VERSION)
@@ -401,6 +453,11 @@ public:
   SEXP to_sexp() noexcept {
     finish_store();
     return wrap(std::move(store_));
+  }
+
+  void fill_placeholder(SEXP x) noexcept {
+    finish_store();
+    charvec::fill_store(x, std::move(store_));
   }
 
 #if defined(RCPP_VERSION)

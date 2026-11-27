@@ -45,7 +45,8 @@ extern "C" {
 
 SEXP C_cpc_callables(void) {
   const char * names[] = {
-    "charport_charvec_alloc_na_v1",
+    "charport_charvec_placeholder_v1",
+    "charport_charvec_fill_store_v1",
     "charport_charvec_get_store_v1",
     "charport_charpack_placeholder_v1",
     "charport_charpack_fill_views_v1",
@@ -55,7 +56,7 @@ SEXP C_cpc_callables(void) {
     ""
   };
   SEXP out = PROTECT(Rf_mkNamed(LGLSXP, names));
-  for(int i = 0; i < 7; ++i) {
+  for(int i = 0; names[i][0] != '\0'; ++i) {
     LOGICAL(out)[i] = R_GetCCallable("charport", names[i]) != NULL ? TRUE : FALSE;
   }
   UNPROTECT(1);
@@ -205,41 +206,27 @@ SEXP C_cpc_is_charpack(SEXP x) {
   return Rf_ScalarLogical(charport::charpack::is_charpack(x) ? TRUE : FALSE);
 }
 
-// alloc_na, then fill in place through get_store and Writer, in reverse
-// order. With partial = TRUE, stop at the midpoint with an out-of-range write,
-// which must leave a valid vector whose unwritten records are NA.
-SEXP C_cpc_charvec_fill(SEXP strings, SEXP partial_) {
-  return charport_consumer::boundary("charvec_fill", [&]() -> SEXP {
+SEXP C_cpc_charvec_placeholder(void) {
+  return charport::charvec::placeholder();
+}
+
+SEXP C_cpc_charvec_fill_placeholder(SEXP x, SEXP strings) {
+  return charport_consumer::boundary("charvec_fill_placeholder", [&]() -> SEXP {
     Views v;
     read_views(strings, v);
     const R_xlen_t n = static_cast<R_xlen_t>(v.ptrs.size());
-    const bool partial = Rf_asLogical(partial_) == TRUE;
-    SEXP x = charport_consumer::unwind_protect([&]() -> SEXP {
-      return charport::charvec::alloc_na(n);
+    charport::charvec::Builder builder(n);
+    for(R_xlen_t i = 0; i < n; ++i) {
+      if(v.lengths[i] == NA_INTEGER) {
+        builder.set_na(i);
+      } else {
+        builder.set(i, v.ptrs[i], static_cast<size_t>(v.lengths[i]), v.encodings[i]);
+      }
+    }
+    return charport_consumer::unwind_protect([&]() -> SEXP {
+      builder.fill_placeholder(x);
+      return x;
     });
-    PROTECT(x);
-    charport::charvec::Store * store = charport::charvec::get_store(x);
-    if(store == nullptr) {
-      UNPROTECT(1);
-      throw std::runtime_error("get_store returned NULL for a fresh charvec");
-    }
-    charport::charvec::Writer writer(*store);
-    try {
-      for(R_xlen_t i = n - 1; i >= 0; --i) {
-        if(partial && i == n / 2) {
-          writer.set_na(static_cast<size_t>(n));
-        }
-        const size_t len = v.lengths[i] == NA_INTEGER ? 0 : static_cast<size_t>(v.lengths[i]);
-        writer.copy(static_cast<size_t>(i), v.ptrs[i], len, v.encodings[i]);
-      }
-    } catch(const std::out_of_range &) {
-      if(!partial) {
-        UNPROTECT(1);
-        throw;
-      }
-    }
-    UNPROTECT(1);
-    return x;
   });
 }
 
